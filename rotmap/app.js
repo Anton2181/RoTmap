@@ -39,6 +39,10 @@ const FSTYLE = {
 const LAYERS = [
   { id: 'terrain',  name: 'Terrain',        def: 1 },
   { id: 'coast',    name: 'Coast fills',    def: 1, linked: 'coastSea' }, // land subhex fills (+ its sea half, below)
+  // Who holds what, read off the borders scan. It colours land only, so it belongs directly on top of
+  // the land fills — and below everything you draw, which then reads over it the way the sidebar
+  // implies. It needs no place above the sea fills, since it never paints water.
+  { id: 'borders',  name: 'Borders',        def: 0, lazy: renderBorders },
   // The thematic ref scans are underlays: over the terrain but under everything you draw, so your
   // own line always sits on top of the scan you traced it from. The Classic map is the exception —
   // see below.
@@ -71,10 +75,15 @@ const LAYERS = [
 // fills/lines stay paired at the top, right under Terrain.
 // The tracing refs sit next, because they're what you flick on and off against the coast you're
 // drawing; the river/road/etc. layers you're producing come below them.
-const PANEL_ORDER = ['terrain', 'coast', 'coastLines',
+const PANEL_ORDER = ['terrain', 'coast', 'coastLines', 'borders',
                      'refClassic', 'refRivers', 'refRoads', 'refNames', 'refCities', 'refBorders',
                      'sheetRivers', 'riverMajor', 'riverMinor',
                      'iso', 'grid', 'hexIds', 'roads', 'trade', 'labels'];
+// The tracing scans are for drawing against, not for reading, so they exist only when the app is
+// served locally. Dropping them from the layer list rather than hiding their rows means the published
+// site never fetches the ~800 KB of PNGs it would never show. Borders is not one of them: it reads
+// its scan once, on demand, and paints hexes from it.
+if (!LOCAL) for (let i = LAYERS.length - 1; i >= 0; i--) if (LAYERS[i].img) LAYERS.splice(i, 1);
 // feature type -> id of the layer group its drawn line renders into
 const TYPE_LAYER = { road: 'roads', river_major: 'riverMajor', river_minor: 'riverMinor',
                      trade: 'trade', coast: 'coastLines' };
@@ -225,6 +234,111 @@ function renderTerrain() {
 // hovering. 4,230 <text> nodes is enough to notice, so this is a `lazy` layer: buildLayerUI only
 // calls it the first time the toggle is switched on, and thereafter the group is just hidden.
 // Sits above the grid and below roads/strongholds so a stronghold marker never hides its number.
+// Colour each piece of land by whoever holds it, read straight off the borders scan: sample the
+// region's own interior point and whichever of the hex's thirteen grid points fall inside it, and
+// take the colour most of them agree on. The scan is flat colour per realm with everything unclaimed
+// left transparent, so this is a reading rather than an interpretation. A *subhex* is the unit, not a
+// hex: two pieces of land in one hex, either side of a strait or a river, need not be held by the
+// same realm and are asked separately. Lazy — nothing is fetched until the layer is switched on.
+// Painted opaque; the layer's own opacity slider is there if you want terrain showing through.
+async function renderBorders() {
+  const img = new Image();
+  img.src = 'ref/Borders_clean.png';
+  try { await img.decode(); } catch { return; }
+  const cv = document.createElement('canvas');
+  cv.width = img.naturalWidth; cv.height = img.naturalHeight;
+  const ctx = cv.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(img, 0, 0);
+  try { borderScan = { d: ctx.getImageData(0, 0, cv.width, cv.height).data, w: cv.width, h: cv.height }; }
+  catch { return; } // tainted, which happens on file://
+  paintBorders();
+}
+// The scan is decoded once and kept; everything below is cheap enough to redo whenever the land
+// changes shape, which it does every time a coastline is drawn — and region indices shift with it,
+// so nothing here may be cached against them.
+let borderScan = null;
+function paintBorders() {
+  const g = groups.borders;
+  if (!g || !borderScan) return;
+  g.innerHTML = '';
+  if (!S.adj) deriveAdj();
+  const { d: data, w, h: hh } = borderScan;
+  const sx = w / S.G.image_width, sy = hh / S.G.image_height;
+  // The scan's realm colours are semi-transparent washes. Composite each onto white here, so what
+  // gets painted is the solid colour the wash reads as and the land can be filled opaquely.
+  const at = (x, y) => {
+    const px = Math.round(x * sx), py = Math.round(y * sy);
+    if (px < 0 || py < 0 || px >= w || py >= hh) return null;
+    const i = (py * w + px) * 4, a = data[i + 3] / 255;
+    if (a < 40 / 255) return null; // unclaimed ground is left transparent in the scan
+    if (data[i] === 0x56 && data[i + 1] === 0x56 && data[i + 2] === 0x56) return null; // the border line itself
+    const over = k => Math.round(data[i + k] * a + 255 * (1 - a));
+    return `${over(0)},${over(1)},${over(2)}`;
+  };
+  const inRegion = (r, p) => !r.poly || pointInPoly(p, r.poly) || (r.extra || []).some(x => pointInPoly(p, x));
+  const cols = new Map(); // "hex:region" -> "r,g,b"
+  for (const idS in S.hexes) {
+    const hx = +idS;
+    if (S.hexes[idS].t === 'N/A') continue;
+    const [cx, cy] = hexCenter(hx), rs = regionsOf(hx);
+    for (let ri = 0; ri < rs.length; ri++) {
+      const r = rs[ri];
+      if (r.sea) continue; // water holds no realm
+      const pts = [];
+      for (const [ox, oy] of [[0, 0], ...SUB]) {
+        const p = [cx + ox, cy + oy];
+        if (inRegion(r, p)) pts.push(p);
+      }
+      // A subhex is often smaller than the gaps between those points — a spit catches none of them —
+      // so it always votes from its own interior point too, which guarantees every piece a say.
+      if (r.cent) pts.push(r.cent);
+      const votes = new Map();
+      for (const p of pts) { const c = at(p[0], p[1]); if (c) votes.set(c, (votes.get(c) || 0) + 1); }
+      let best = null, bn = 0;
+      for (const [c, n] of votes) if (n > bn) { bn = n; best = c; }
+      if (best) cols.set(hx + ':' + ri, best);
+    }
+  }
+  // Land the scan doesn't speak for. Its washes stop at the coastline *it* was drawn with, so a spit
+  // or headland that your own coast puts further out falls outside every wash and comes back blank.
+  // Such a piece takes the realm of the land it adjoins — land it could be walked to, by the same
+  // region adjacency the marching rules use, not merely land in a neighbouring hex, since a spit
+  // faces plenty of hexes across water and taking a realm from one of those strands a piece of it
+  // out at sea. Collected before being applied, so nothing inherits from an inheritance and creeps
+  // inland a ring at a time, and land with no claimed neighbour simply stays unclaimed.
+  const inherited = new Map();
+  for (const [hx, cells] of S.adj.sub) {
+    const rs = cells.regions;
+    for (let ri = 0; ri < rs.length; ri++) {
+      if (rs[ri].sea || cols.has(hx + ':' + ri)) continue;
+      const votes = new Map();
+      for (const n of neighbors(hx)) {
+        if (!S.hexes[n] || S.hexes[n].t === 'N/A') continue;
+        const nrs = regionsOf(n);
+        for (let rj = 0; rj < nrs.length; rj++) {
+          const c = cols.get(n + ':' + rj);
+          if (c && !nrs[rj].sea && regionsMeet(hx, ri, n, rj)) votes.set(c, (votes.get(c) || 0) + 1);
+        }
+      }
+      let best = null, bn = 0;
+      for (const [c, n] of votes) if (n > bn) { bn = n; best = c; }
+      if (best) inherited.set(hx + ':' + ri, best);
+    }
+  }
+  for (const [k, c] of inherited) cols.set(k, c);
+  const shape = (hx, r) => {
+    if (!r.poly) { const [cx, cy] = hexCenter(hx); return hexPath(cx, cy); }
+    return [r.poly, ...(r.extra || [])].filter(p => p && p.length >= 3)
+      .map(p => p.map((q, i) => (i ? 'L' : 'M') + q[0].toFixed(1) + ' ' + q[1].toFixed(1)).join('') + 'Z').join('');
+  };
+  const byColour = new Map();
+  for (const [key, c] of cols) {
+    const [hs, ris] = key.split(':'), r = regionsOf(+hs)[+ris];
+    if (r) byColour.set(c, (byColour.get(c) || '') + shape(+hs, r));
+  }
+  for (const [c, d] of byColour) // one path per realm, so 4,000 hexes cost a couple of dozen nodes
+    el('path', { d, fill: `rgb(${c})`, 'fill-rule': 'evenodd', stroke: 'none' }, g);
+}
 function renderHexIds() {
   groups.hexIds.innerHTML = '';
   for (const idS in S.hexes) {
@@ -390,7 +504,19 @@ function computeSplit(h, chain, seaLeft, seaPt) {
   const seaPoly = aIsSea ? polyA : polyB, landPoly = aIsSea ? polyB : polyA;
   return { seaPoly, landPoly };
 }
+// How far a point is from the boundary of hex h.
+function distToHexEdge(h, p) {
+  const [cx, cy] = hexCenter(h), c = CORN.map(o => [cx + o[0], cy + o[1]]);
+  let d = Infinity;
+  for (let i = 0; i < 6; i++) {
+    const j = (i + 1) % 6;
+    d = Math.min(d, distToSeg(p[0], p[1], c[i][0], c[i][1], c[j][0], c[j][1]));
+  }
+  return d;
+}
 // Cut a drawn polyline into one chain per hex it runs through, each clipped to that hex's boundary.
+// `open` says the line has a loose end inside this hex — it stops there rather than crossing out the
+// far side — which means it doesn't divide the hex at all: you can walk round the end of it.
 function forEachHexChain(pts0, cb) {
   const pts = [];
   for (let i = 0; i + 1 < pts0.length; i++) {
@@ -407,12 +533,14 @@ function forEachHexChain(pts0, cb) {
       else if (!runs[h] || (i - runs[h].i0) > (runs[h].i1 - runs[h].i0)) runs[h] = { i0: i, i1: i };
     }
   }
+  const TOL = 1.5; // a line drawn right up to the boundary still counts as crossing it
   for (const h in runs) {
     const { i0, i1 } = runs[h];
     const E = i0 > 0 ? refineBoundary(pts[i0 - 1][0], pts[i0 - 1][1], pts[i0][0], pts[i0][1], +h) : pts[i0];
     const X = i1 < hs.length - 1 ? refineBoundary(pts[i1 + 1][0], pts[i1 + 1][1], pts[i1][0], pts[i1][1], +h) : pts[i1];
+    const open = (i0 === 0 && distToHexEdge(+h, E) > TOL) || (i1 === hs.length - 1 && distToHexEdge(+h, X) > TOL);
     const chain = [E, ...pts.slice(i0, i1 + 1), X];
-    if (chain.length >= 2) cb(+h, chain);
+    if (chain.length >= 2) cb(+h, chain, open);
   }
 }
 // Run cb(hex, chain, seaPt, kind) for every per-hex barrier segment. Two kinds of line cut a hex up.
@@ -421,7 +549,14 @@ function forEachHexChain(pts0, cb) {
 // the only way between them is a bridge. Both are handed to the same splitter.
 function forEachHexSplit(cb) {
   for (const f of S.features.features) {
-    if (f.type === 'river_major') { forEachHexChain(f.pts, (h, chain) => cb(h, chain, null, 'river')); continue; }
+    // A river that peters out inside a hex — where a major river becomes a minor one, say — leaves
+    // that hex whole: there is nothing to stop you walking round the end of it. Splitting on it
+    // anyway made a barrier that isn't there, and left the two "banks" failing to tile the hex, which
+    // is the wedge of bare terrain showing through at the river's end.
+    if (f.type === 'river_major') {
+      forEachHexChain(f.pts, (h, chain, open) => { if (!open) cb(h, chain, null, 'river'); });
+      continue;
+    }
     if (f.type !== 'coast') continue;
     // sea point: explicit click, else derive from the seaLeft half's centroid (legacy)
     const seaPtFor = (h, chain) => {
@@ -666,7 +801,8 @@ function saveLocal() {
   document.getElementById('saveInfo').textContent =
     `Autosaved locally — ${S.features.features.length} features.`;
 }
-function commitFeatures() { renderFeatures(); renderLabels(); saveLocal(); computeRoute(); }
+// computeRoute rebuilds S.adj, so the borders repaint picks up the coastline that was just drawn.
+function commitFeatures() { renderFeatures(); renderLabels(); saveLocal(); computeRoute(); paintBorders(); }
 
 /* ---------------- snapping ---------------- */
 // A hidden layer is not a snap target: if a feature's type layer is toggled off, new lines
