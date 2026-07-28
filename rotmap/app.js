@@ -52,8 +52,9 @@ const LAYERS = [
   { id: 'refCities',  name: 'Ref: cities/forts', def: 0, img: 'ref/citiestownsforts.png' },
   { id: 'refBorders', name: 'Ref: borders', def: 0,   img: 'ref/Borders_clean.png' },
   { id: 'sheetRivers', name: 'Sheet: river hexes', def: 0 },
-  { id: 'riverMajor', name: 'Rivers (major)', def: 1, types: ['river_major'] },
+  // Minor first, so a major river draws over the minor ones feeding into it rather than under them.
   { id: 'riverMinor', name: 'Rivers (minor)', def: 1, types: ['river_minor'] },
+  { id: 'riverMajor', name: 'Rivers (major)', def: 1, types: ['river_major'] },
   { id: 'coastSea', slave: true, def: 1 },  // sea subhex fills — above the rivers, so a river runs
                                             // over the land half and disappears under open water
   // The Classic map sits above BOTH halves of the coast fills: it's the basemap you trace coastlines
@@ -167,6 +168,13 @@ function segCrossPt(ax, ay, bx, by, cx, cy, dx, dy) {
   if (!r) return [ax, ay];
   const t = ((cx - ax) * (dy - cy) - (cy - ay) * (dx - cx)) / r;
   return [ax + (bx - ax) * t, ay + (by - ay) * t];
+}
+// The point on segment ab nearest p.
+function closestOnSeg(p, a, b) {
+  const dx = b[0] - a[0], dy = b[1] - a[1], l2 = dx * dx + dy * dy;
+  let t = l2 ? ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  return [a[0] + t * dx, a[1] + t * dy];
 }
 function distToSeg(px, py, ax, ay, bx, by) {
   const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
@@ -408,7 +416,9 @@ function coastSubcells() {
   const byHex = new Map();
   forEachHexSplit((h, chain, seaPt, kind) => {
     if (!byHex.has(h)) byHex.set(h, { chains: [], seaPts: [], kinds: [] });
-    const e = byHex.get(h); e.chains.push(chain); e.kinds.push(kind); if (seaPt) e.seaPts.push(seaPt);
+    // seaPts is kept in step with chains — null where a chain has none — so a coast chain can be
+    // asked which of its sides is the water.
+    const e = byHex.get(h); e.chains.push(chain); e.kinds.push(kind); e.seaPts.push(seaPt || null);
   });
   const out = new Map();
   for (const [h, e] of byHex) {
@@ -579,33 +589,51 @@ const isClosedRing = ch => ch.length >= 4 &&
   Math.abs(ch[0][0] - ch[ch.length - 1][0]) < 0.5 && Math.abs(ch[0][1] - ch[ch.length - 1][1]) < 0.5;
 // Split a hex crossed by a coast and/or a major river into regions.
 function hexSubcells(h, chains, seaPts, kinds) {
-  // A river only divides a hex if both its ends are anchored: on the hex boundary, on another line
-  // in this hex (a coast it flows into, a river it joins), or inside a closed one (a lake it empties
-  // into). An end loose in open ground is a river petering out — you walk round it — and splitting
-  // on it invents a barrier and leaves the two "banks" failing to tile the hex, which shows as a
-  // wedge of bare terrain at the river's end. Where a polyline merely stops says nothing by itself:
-  // a long river is drawn as several lines laid end to end, and a join lands inside a hex like any
-  // other end would.
-  // Generous, because a freehand line stops a few pixels short of what it visibly runs into, while a
-  // river petering out in open ground ends nowhere near anything at all.
-  const TOL = S.G.hex_size * 0.2;
-  const nearChain = (p, ci) => chains.some((c, k) => {
-    if (k === ci) return false;
-    for (let i = 0; i + 1 < c.length; i++)
-      if (distToSeg(p[0], p[1], c[i][0], c[i][1], c[i + 1][0], c[i + 1][1]) <= TOL) return true;
-    return isClosedRing(c) && pointInPoly(p, c);
+  // A river drawn stopping a little short of what it flows into — the coast at its mouth, another
+  // river it joins — is meant to reach it, and freehand lines routinely fall a few pixels short.
+  // Extend it to the nearest point on that line, so the split sees a barrier that meets the water
+  // instead of a gap an army could file through.
+  const SNAP = S.G.hex_size * 0.4;
+  // Which side of a chain a point lies on, by its nearest segment. Used to tell a river that stops
+  // short of the water from one that has already reached it.
+  const sideOf = (c, p) => {
+    let bi = 0, bd = Infinity;
+    for (let i = 0; i + 1 < c.length; i++) {
+      const d = distToSeg(p[0], p[1], c[i][0], c[i][1], c[i + 1][0], c[i + 1][1]);
+      if (d < bd) { bd = d; bi = i; }
+    }
+    const a = c[bi], b = c[bi + 1];
+    return Math.sign((b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]));
+  };
+  const reachOut = (p, ci) => {
+    if (distToHexEdge(h, p) <= 2) return null; // already anchored where it leaves the hex
+    let best = null, bd = SNAP;
+    for (let k = 0; k < chains.length; k++) {
+      if (k === ci) continue;
+      const c = chains[k];
+      // A river that ends *in* the water has arrived; dragging it to the nearest shore would draw a
+      // line across the lake and cut it in two. Only a river still on land is reaching for anything.
+      if (seaPts[k] && sideOf(c, p) === sideOf(c, seaPts[k])) return null;
+      for (let i = 0; i + 1 < c.length; i++) {
+        const q = closestOnSeg(p, c[i], c[i + 1]), d = Math.hypot(q[0] - p[0], q[1] - p[1]);
+        if (d <= 2) return null;               // already touching it
+        if (d < bd) { bd = d; best = q; }
+      }
+    }
+    return best;
+  };
+  chains = chains.map((c, ci) => {
+    if (kinds[ci] !== 'river') return c;
+    const a = reachOut(c[0], ci), b = reachOut(c[c.length - 1], ci);
+    return a || b ? [...(a ? [a] : []), ...c, ...(b ? [b] : [])] : c;
   });
-  const anchored = (p, ci) => distToHexEdge(h, p) <= TOL || nearChain(p, ci);
-  const keep = chains.map((c, ci) =>
-    kinds[ci] !== 'river' || (anchored(c[0], ci) && anchored(c[c.length - 1], ci)));
-  if (keep.some(k => !k)) {
-    chains = chains.filter((_, i) => keep[i]);
-    kinds = kinds.filter((_, i) => keep[i]);
-    if (!chains.length) return { regions: [], adj: [], riverPairs: [], seaPolys: [], landPolys: [] };
-  }
-  // Common case — one line running through the hex: exact vector two-way split (clean, follows
-  // the line). A single *closed* chain falls through to the flood fill instead.
-  if (chains.length === 1 && !isClosedRing(chains[0])) {
+  // Common case — one line running clean through the hex: exact vector two-way split, which follows
+  // the line precisely. It assumes the chain runs boundary to boundary, so a line that stops short
+  // inside the hex must not use it: it would invent a split where you can simply walk round the end,
+  // and leave the two halves failing to tile the hex. Those, and closed rings, fall through to the
+  // flood fill, which separates only where the wall actually blocks and so answers that honestly.
+  const spansHex = c => distToHexEdge(h, c[0]) <= 2 && distToHexEdge(h, c[c.length - 1]) <= 2;
+  if (chains.length === 1 && !isClosedRing(chains[0]) && spansHex(chains[0])) {
     const river = kinds[0] === 'river';
     const sp = (!river && seaPts[0] && nearestHex(seaPts[0][0], seaPts[0][1]) === h) ? seaPts[0] : null;
     const { seaPoly: A, landPoly: B } = computeSplit(h, chains[0], true, sp);
@@ -679,6 +707,7 @@ function hexSubcellsFlood(h, chains, seaPts, kinds = []) {
   for (let c = 0; c < R * R; c++) if (reg[c] <= -2) reg[c] = -2 - reg[c]; // commit, once, after the pass
   const seaReg = new Set();
   for (const sp of seaPts) {
+    if (!sp) continue; // chains without a sea side (rivers, unclicked coasts) say nothing here
     let i = Math.floor((sp[0] - x0) / cell), j = Math.floor((sp[1] - y0) / cell);
     i = Math.max(0, Math.min(R - 1, i)); j = Math.max(0, Math.min(R - 1, j));
     let r = reg[j * R + i];
