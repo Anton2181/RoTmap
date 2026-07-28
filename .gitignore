@@ -1,0 +1,12 @@
+# Earlier versions of the map. Kept on disk, kept out of the repo — together they are ~90 MB of
+# raster data that nothing in rotmap/ depends on.
+old_ravages/
+ravagesRP/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini
+*~
