@@ -138,12 +138,13 @@ input[type=number], select {
     <div class="grid2">
       <label>Infantry <input type="number" id="inf" value="8000" step="500"></label>
       <label>Cavalry <input type="number" id="cav" value="2000" step="500"></label>
+      <label title="How many of the infantry above are light infantry. At a third of the army they set the pace off-road and in the mountains.">Light inf. <input type="number" id="li" value="0" step="500"></label>
       <label>Wagons <input type="number" id="wag" value="80" step="10"></label>
       <label>Noncomb. <input type="number" id="non" value="2500" step="100"></label>
     </div>
     <!-- The detail lives in the tooltips; the labels stay short enough to scan. -->
     <label class="chk" title="Double pace, at a cost — see the rules."><input type="checkbox" id="forced"> Forced march</label>
-    <label class="chk" title="No baggage: the column moves at light-infantry speed."><input type="checkbox" id="liOnly"> Light infantry only</label>
+    <label class="chk" title="Marines tradition: put the army ashore anywhere, not only at a port. Taking ship still needs one."><input type="checkbox" id="marines"> Marines (land anywhere)</label>
     <label class="chk" title="Take ship at coastal/river ports. +7 IRL days to secure a fleet if you have none, +1 to get back aboard after a landing; going ashore is free."><input type="checkbox" id="embark" checked> Allow embarking</label>
     <label class="chk" title="Begin the route already aboard ship."><input type="checkbox" id="fleet"> Start as fleet</label>
     <label class="chk" title="Trade routes are used by default. They run end to end only, with no stops in between."><input type="checkbox" id="noTrade"> Avoid trade routes</label>

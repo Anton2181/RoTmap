@@ -1375,15 +1375,19 @@ function minorCross(a, b) {
 function armyOpts() {
   const v = id => +document.getElementById(id).value || 0;
   const c = id => document.getElementById(id).checked;
-  const army = { inf: v('inf'), cav: v('cav'), wag: v('wag'), non: v('non') };
+  const army = { inf: v('inf'), cav: v('cav'), wag: v('wag'), non: v('non'), li: v('li') };
   return {
     army,
+    // Light infantry set the pace once they are a third of the fighting strength — not, as this used
+    // to have it, only when the army is nothing else. Baggage isn't counted in the reckoning.
+    liThird: army.li > 0 && army.li >= (army.inf + army.cav) * RULES.LI_FRACTION,
+    marines: c('marines'),
     // "Cavalry-only army" = nothing marching on foot and nothing rolling: no infantry, no wagons.
     // Noncombatants don't disqualify it — camp followers keep up or get left behind, either way they
     // are not what holds the column to a walking pace. They still lengthen the column for fords.
     cavOnly: army.cav > 0 && army.inf === 0 && army.wag === 0,
     colMiles: columnMiles(army),
-    forced: c('forced'), liOnly: c('liOnly'), fleet: c('fleet'),
+    forced: c('forced'), fleet: c('fleet'),
     embark: c('embark'), tradeRoad: !c('noTrade'), // the box is the opt-out; trade routes are on by default
     weather: document.getElementById('weather').value,
   };
@@ -1451,7 +1455,7 @@ const DISEMBARK_NOTE = DISEMBARK ? 'disembark +' + DISEMBARK + 'd' : 'disembark'
 // a march that never approached the water.
 function landStep(a, b, o, road, crossMajor) {
   const key = pairKey(a, b), tb = S.hexes[b].t;
-  const mpi = landMilesPerIRL({ road, terrain: tb, forced: o.forced, liOnly: o.liOnly, cavOnly: o.cavOnly, weather: o.weather, colMiles: o.colMiles });
+  const mpi = landMilesPerIRL({ road, terrain: tb, forced: o.forced, liThird: o.liThird, cavOnly: o.cavOnly, weather: o.weather, colMiles: o.colMiles });
   if (mpi <= 0) return null;
   let irl = RULES.HEX_MILES / mpi, note = road ? 'road' : 'off-road';
   if (RULES.WATER.has(tb) || S.adj.coastHexes.has(b)) note += ' (coastal strip)';
@@ -1520,12 +1524,13 @@ function expand(h, ri, af, ships, g, o) {
       if (a === ri && regSail(region(h, b)) && waterLink(h, ri, h, b)) out.push({ toH: h, toRi: b, af: 1, ships: 1, g: 0, irl: 0, note: 'sail (within hex)' });
       if (b === ri && regSail(region(h, a)) && waterLink(h, ri, h, a)) out.push({ toH: h, toRi: a, af: 1, ships: 1, g: 0, irl: 0, note: 'sail (within hex)' });
     }
-    if (isPort(h)) for (const [a, b] of regionAdj(h)) { // disembark within hex at a port
+    // Ashore inside this hex. Needs a port — unless the army is Marines, who land anywhere.
+    if (isPort(h) || o.marines) for (const [a, b] of regionAdj(h)) {
       if (a === ri && regWalkable(region(h, b))) out.push({ toH: h, toRi: b, af: 0, ships: 1, g: 0, irl: DISEMBARK, note: DISEMBARK_NOTE });
       if (b === ri && regWalkable(region(h, a))) out.push({ toH: h, toRi: a, af: 0, ships: 1, g: 0, irl: DISEMBARK, note: DISEMBARK_NOTE });
     }
     for (const { n, e } of N) {
-      if (!isPort(n) || !regionOnEdge(h, ri, e)) continue;
+      if (!(isPort(n) || o.marines) || !regionOnEdge(h, ri, e)) continue;
       const rs = regionsOf(n);
       for (let rj = 0; rj < rs.length; rj++) if (regWalkable(rs[rj]) && regionOnEdge(n, rj, e))
         out.push({ toH: n, toRi: rj, af: 0, ships: 1, g: 0, irl: SHIP_IRL + DISEMBARK, note: DISEMBARK_NOTE });
@@ -1624,7 +1629,7 @@ function expand(h, ri, af, ships, g, o) {
   if (o.tradeRoad) for (const link of (S.adj.tradeByHex.get(h) || [])) {
     const other = link.a === h ? link.b : link.a;
     if (other === h) continue;
-    const mpi = landMilesPerIRL({ road: true, terrain: 'Flatlands', forced: o.forced, liOnly: o.liOnly, cavOnly: o.cavOnly, weather: o.weather, colMiles: o.colMiles });
+    const mpi = landMilesPerIRL({ road: true, terrain: 'Flatlands', forced: o.forced, liThird: o.liThird, cavOnly: o.cavOnly, weather: o.weather, colMiles: o.colMiles });
     if (mpi <= 0) continue;
     const miles = link.miles ?? (link.chain.length - 1) * RULES.HEX_MILES;
     const chain = link.a === h ? link.chain : [...link.chain].reverse();
@@ -2490,7 +2495,7 @@ document.getElementById('isoClear').onclick = () => {
 for (const id of ['isoBand', 'isoMax', 'isoMode'])
   document.getElementById(id).addEventListener('change', computeRoute);
 document.getElementById('clearRoute').onclick = () => { S.routes = []; S.activeRoute = -1; computeRoute(); };
-for (const id of ['inf', 'cav', 'wag', 'non', 'forced', 'liOnly', 'fleet', 'embark', 'noTrade', 'weather'])
+for (const id of ['inf', 'cav', 'wag', 'non', 'li', 'forced', 'marines', 'fleet', 'embark', 'noTrade', 'weather'])
   document.getElementById(id).addEventListener('change', computeRoute);
 
 document.getElementById('refetchBtn').onclick = async () => {

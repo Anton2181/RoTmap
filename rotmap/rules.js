@@ -26,7 +26,12 @@ const RULES = {
 
   MOUNTAIN_MULT: 0.5,       // "Mountains ... Movement speed halved."
   CAV_FORCED_MULT: 2,       // "Armies of exclusively cavalry double their forced march pace."
-  // Light infantry detachments: "can move at normal speed off-road and ignore the mountain speed penalty."
+  // "Light infantry detachments can move at normal speed off-road and ignore the mountain speed
+  // penalty." Taken here to set the pace of the whole army once light infantry are a third of it —
+  // the same threshold the rules use for light infantry elsewhere ("if at least ⅓ of your army is
+  // light infantry..."). Measured against the fighting strength, infantry and cavalry; the baggage
+  // is what the column drags along, not part of what it is.
+  LI_FRACTION: 1 / 3,
 
   // Column: 1 mile of road per 5,000 infantry+noncombatants, 2,000 cavalry, or 50 wagons.
   COLUMN: { infPer: 5000, cavPer: 2000, wagPer: 50 },
@@ -59,21 +64,23 @@ const RULES = {
   WATER: new Set(['Ocean', 'Sea', 'Lake']),
   IMPASSABLE: new Set(['N/A']),
 
-  // Reference (not used by the path cost): messengers 48 mi/day (36 hostile),
-  // news 30 mi/day overland / 180 coastal; night march 6 mi (12 forced), roads only;
-  // light-cavalry harassment can halve speed; morale check per forced-march day.
+  // Marines (a tradition): "Marines can disembark anywhere." Taking ship still needs a port.
+  // Reference, not used by the path cost: messengers 48 mi per in-game day (240/IRL), news 90 mi per
+  // IRL day overland; night march 6 mi a night (12 forced), roads only, no night marching off-road;
+  // light-cavalry harassment can halve speed; morale check per forced-march day; the Engineers
+  // tradition ignores river-crossing penalties; fog costs no speed but risks losing the way.
 };
 
 // Miles per IRL day for one land step, given context.
-// opts: {road, terrain, forced, liOnly, cavOnly, weather, colMiles}
+// opts: {road, terrain, forced, liThird, cavOnly, weather, colMiles}
 function landMilesPerIRL(o) {
   const W = RULES.WEATHER[o.weather] || RULES.WEATHER.clear;
   const forced = o.forced && W.forced;
   let day;
   if (o.road) day = forced ? RULES.MARCH.forcedRoad : RULES.MARCH.road;
-  else if (o.liOnly) day = forced ? RULES.MARCH.forcedRoad : RULES.MARCH.road; // LI move at normal (road) speed off-road
+  else if (o.liThird) day = forced ? RULES.MARCH.forcedRoad : RULES.MARCH.road; // light infantry keep road pace off-road
   else day = forced ? RULES.MARCH.forcedOffroad : RULES.MARCH.offroad;
-  if (o.terrain === 'Mountains' && !o.liOnly) day *= RULES.MOUNTAIN_MULT;
+  if (o.terrain === 'Mountains' && !o.liThird) day *= RULES.MOUNTAIN_MULT;
   if (forced && o.cavOnly) day *= RULES.CAV_FORCED_MULT;
   day *= o.road ? W.road : W.off;
   if (o.colMiles > RULES.LONG_COLUMN.limit)

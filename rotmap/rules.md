@@ -14,6 +14,9 @@ Scale: 1 hex = 30 miles. 1 IRL day = 5 in-game days. Normal march = 4 marching d
 
 ("Cavalry-only" = nothing on foot and nothing on wheels: zero infantry and zero wagons. Noncombatants do not disqualify it. The bonus applies only on a forced march.)
 
+- **Light infantry**: once light infantry are at least ⅓ of the fighting strength (infantry + cavalry), the army keeps its road pace off-road and ignores the mountain halving. The rules give the movement clause per *detachment* ("light infantry detachments can move at normal speed off-road and ignore the mountain speed penalty") and the ⅓ threshold for the battle "rough terrain" modifier; this calculator applies the ⅓ threshold to the movement clause as well.
+- **Marines** (tradition): the army can be put ashore anywhere, not only at a port. Taking ship still requires a coastal/large-river stronghold.
+
 | Mountains | ×0.5 | — |
 | Column > 6 mi, normal | capped 6 | 24 |
 | Column > 6 mi, forced | capped 12 | 60 |
