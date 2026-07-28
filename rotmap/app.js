@@ -61,7 +61,8 @@ const LAYERS = [
   // the consequence — since the sea fills are above the rivers, putting the scan above the fills
   // necessarily puts it above the drawn rivers too. Coast lines, roads, trade and strongholds stay
   // above it, so the coast you are drawing is still visible over the scan.
-  { id: 'refClassic', name: 'Classic map',  def: 0,   img: 'ref/classic_map.png' },
+  // `keep`: this one is the map itself, not a tracing aid, so it ships with the published site too.
+  { id: 'refClassic', name: 'Classic map',  def: 0,   img: 'ref/classic_map.png', keep: true },
   { id: 'coastLines', name: 'Coast lines',  def: 0.28, types: ['coast'] }, // drawn shore: reads as a grid line, so it defaults to the grid's opacity
   { id: 'iso',      name: 'Isochrone',      def: 0.55 },
   { id: 'grid',     name: 'Hex grid',       def: 0.28 },
@@ -80,10 +81,10 @@ const PANEL_ORDER = ['terrain', 'coast', 'coastLines', 'borders',
                      'sheetRivers', 'riverMajor', 'riverMinor',
                      'iso', 'grid', 'hexIds', 'roads', 'trade', 'labels'];
 // The tracing scans are for drawing against, not for reading, so they exist only when the app is
-// served locally. Dropping them from the layer list rather than hiding their rows means the published
-// site never fetches the ~800 KB of PNGs it would never show. Borders is not one of them: it reads
-// its scan once, on demand, and paints hexes from it.
-if (!LOCAL) for (let i = LAYERS.length - 1; i >= 0; i--) if (LAYERS[i].img) LAYERS.splice(i, 1);
+// served locally — dropped from the list rather than hidden, so the published site has no trace of
+// them at all. The Classic map is exempt (`keep`): it is the map, not an aid to redrawing it.
+// Borders is not one of these either: it reads its scan once, on demand, and paints land from it.
+if (!LOCAL) for (let i = LAYERS.length - 1; i >= 0; i--) if (LAYERS[i].img && !LAYERS[i].keep) LAYERS.splice(i, 1);
 // feature type -> id of the layer group its drawn line renders into
 const TYPE_LAYER = { road: 'roads', river_major: 'riverMajor', river_minor: 'riverMinor',
                      trade: 'trade', coast: 'coastLines' };
@@ -185,8 +186,10 @@ function el(tag, attrs, parent) {
 function buildScaffold() {
   for (const L of LAYERS) {
     if (L.img) {
+      // No href yet: a scan that is off — and they all start off — shouldn't be fetched at all. It
+      // gets its source the first time the layer is switched on. See buildLayerUI.
       const g = el('g', { id: 'lyr_' + L.id });
-      el('image', { href: L.img, x: 0, y: 0, width: S.G.image_width, height: S.G.image_height }, g);
+      L._img = el('image', { x: 0, y: 0, width: S.G.image_width, height: S.G.image_height }, g);
       groups[L.id] = g;
     } else groups[L.id] = el('g', { id: 'lyr_' + L.id });
   }
@@ -2528,6 +2531,7 @@ function buildLayerUI() {
     const inv = row.querySelector('.inv');
     const apply = () => {
       if (chk.checked && L.lazy && !L._built) { L.lazy(); L._built = true; } // build on first use
+      if (chk.checked && L._img && !L._img.getAttribute('href')) L._img.setAttribute('href', L.img); // fetch on first use
       for (const id of [L.id, L.linked].filter(Boolean)) {
         const g = groups[id];
         g.style.display = chk.checked ? '' : 'none';
