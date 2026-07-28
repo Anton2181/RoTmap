@@ -141,11 +141,12 @@ input[type=number], select {
       <label>Wagons <input type="number" id="wag" value="80" step="10"></label>
       <label>Noncomb. <input type="number" id="non" value="2500" step="100"></label>
     </div>
-    <label class="chk"><input type="checkbox" id="forced"> Forced march</label>
-    <label class="chk"><input type="checkbox" id="liOnly"> Light infantry only</label>
-    <label class="chk"><input type="checkbox" id="fleet"> Travelling as fleet (ships)</label>
-    <label class="chk"><input type="checkbox" id="embark" checked> Embark/disembark at ports (+7 d securing a fleet if you have none; +1 d to get back aboard after landing; going ashore is free)</label>
-    <label class="chk"><input type="checkbox" id="tradeRoad" checked> Use trade routes (end-to-end only, no stops)</label>
+    <!-- The detail lives in the tooltips; the labels stay short enough to scan. -->
+    <label class="chk" title="Double pace, at a cost — see the rules."><input type="checkbox" id="forced"> Forced march</label>
+    <label class="chk" title="No baggage: the column moves at light-infantry speed."><input type="checkbox" id="liOnly"> Light infantry only</label>
+    <label class="chk" title="Take ship at coastal/river ports. +7 IRL days to secure a fleet if you have none, +1 to get back aboard after a landing; going ashore is free."><input type="checkbox" id="embark" checked> Allow embarking</label>
+    <label class="chk" title="Begin the route already aboard ship."><input type="checkbox" id="fleet"> Start as fleet</label>
+    <label class="chk" title="Trade routes are used by default. They run end to end only, with no stops in between."><input type="checkbox" id="noTrade"> Avoid trade routes</label>
     <label>Weather <select id="weather">
       <option value="clear">Clear / Light rain / Hot</option>
       <option value="heavy_rain">Heavy rain (bad)</option>

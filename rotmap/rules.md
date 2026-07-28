@@ -12,7 +12,7 @@ Scale: 1 hex = 30 miles. 1 IRL day = 5 in-game days. Normal march = 4 marching d
 | Off-road, forced | 9 | 45 |
 | Cavalry-only army, forced | ×2 | up to 180 |
 
-("Cavalry-only" = **exclusively** cavalry: zero infantry, wagons, and noncombatants. Any baggage disqualifies the ×2, and the bonus applies only on a forced march.)
+("Cavalry-only" = nothing on foot and nothing on wheels: zero infantry and zero wagons. Noncombatants do not disqualify it. The bonus applies only on a forced march.)
 
 | Mountains | ×0.5 | — |
 | Column > 6 mi, normal | capped 6 | 24 |
@@ -29,6 +29,7 @@ Light infantry detachments move at normal (road) speed off-road and ignore the m
 - Fording a minor river: each mile of column (infantry + noncombatants + wagons) = half an in-game day. Cavalry ford at their regular speed (no delay for cavalry-only armies).
 - No fording in Heavy Rain or Storm.
 - Roads crossing a river are assumed bridged. Where a road crosses a *major* river the crossing is a ferry rather than a bridge — mechanically the same thing, a free crossing for everyone including wagons. Ferries are therefore never drawn; they are derived from road × major-river crossings.
+- A major river is a barrier **wherever it is drawn, including inside a single hex**. A drawn major river splits the hexes it runs through into a region per bank, exactly as a coastline splits a hex into land and sea. The two banks are separate places that happen to share a hex: an army on one cannot reach the other, or a road on the other, unless a road bridges the river there — in which case crossing between them is free, since the cost of a hex is paid by the step that enters it. This is what stops a column stepping onto a road across the water without ever crossing it, in cases where both hex centres sit on the same side and no hex boundary is involved.
 
 ## Water
 

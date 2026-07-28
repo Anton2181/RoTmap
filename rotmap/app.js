@@ -289,12 +289,19 @@ function coastColors(h) {
 // Gather coast lines per hex, then flood-fill each into sea/land region polygons.
 function coastSubcells() {
   const byHex = new Map();
-  forEachCoastSplit((h, chain, seaPt) => {
-    if (!byHex.has(h)) byHex.set(h, { chains: [], seaPts: [] });
-    const e = byHex.get(h); e.chains.push(chain); if (seaPt) e.seaPts.push(seaPt);
+  forEachHexSplit((h, chain, seaPt, kind) => {
+    if (!byHex.has(h)) byHex.set(h, { chains: [], seaPts: [], kinds: [] });
+    const e = byHex.get(h); e.chains.push(chain); e.kinds.push(kind); if (seaPt) e.seaPts.push(seaPt);
   });
   const out = new Map();
-  for (const [h, e] of byHex) out.set(h, hexSubcells(h, e.chains, e.seaPts));
+  for (const [h, e] of byHex) {
+    const cells = hexSubcells(h, e.chains, e.seaPts, e.kinds);
+    // Say so rather than corrupt the search: region indices are packed into a fixed-width field, so
+    // a hex carved into more pieces than that would address would alias onto another hex entirely.
+    if (cells.regions.length > MAX_REGIONS)
+      console.warn(`hex ${h}: ${cells.regions.length} regions, only ${MAX_REGIONS} are addressable`);
+    out.set(h, cells);
+  }
   return out;
 }
 function renderCoasts() {
@@ -383,9 +390,38 @@ function computeSplit(h, chain, seaLeft, seaPt) {
   const seaPoly = aIsSea ? polyA : polyB, landPoly = aIsSea ? polyB : polyA;
   return { seaPoly, landPoly };
 }
-// Run cb(hex, chain, seaPt) for every per-hex coastline segment across all coast features.
-function forEachCoastSplit(cb) {
+// Cut a drawn polyline into one chain per hex it runs through, each clipped to that hex's boundary.
+function forEachHexChain(pts0, cb) {
+  const pts = [];
+  for (let i = 0; i + 1 < pts0.length; i++) {
+    const [ax, ay] = pts0[i], [bx, by] = pts0[i + 1];
+    const len = Math.hypot(bx - ax, by - ay), n = Math.max(1, Math.ceil(len / 2));
+    for (let k = (i === 0 ? 0 : 1); k <= n; k++) pts.push([ax + (bx - ax) * k / n, ay + (by - ay) * k / n]);
+  }
+  const hs = pts.map(p => nearestHex(p[0], p[1]));
+  const runs = {};
+  for (let i = 0; i < hs.length; i++) {
+    const h = hs[i]; if (!h) continue;
+    if (!runs[h] || runs[h].i1 === i - 1) {
+      if (runs[h] && runs[h].i1 === i - 1) runs[h].i1 = i;
+      else if (!runs[h] || (i - runs[h].i0) > (runs[h].i1 - runs[h].i0)) runs[h] = { i0: i, i1: i };
+    }
+  }
+  for (const h in runs) {
+    const { i0, i1 } = runs[h];
+    const E = i0 > 0 ? refineBoundary(pts[i0 - 1][0], pts[i0 - 1][1], pts[i0][0], pts[i0][1], +h) : pts[i0];
+    const X = i1 < hs.length - 1 ? refineBoundary(pts[i1 + 1][0], pts[i1 + 1][1], pts[i1][0], pts[i1][1], +h) : pts[i1];
+    const chain = [E, ...pts.slice(i0, i1 + 1), X];
+    if (chain.length >= 2) cb(+h, chain);
+  }
+}
+// Run cb(hex, chain, seaPt, kind) for every per-hex barrier segment. Two kinds of line cut a hex up.
+// A coast separates land from water. A drawn *major* river separates land from land: it can't be
+// forded anywhere, so the two banks are as good as different places even inside a single hex, and
+// the only way between them is a bridge. Both are handed to the same splitter.
+function forEachHexSplit(cb) {
   for (const f of S.features.features) {
+    if (f.type === 'river_major') { forEachHexChain(f.pts, (h, chain) => cb(h, chain, null, 'river')); continue; }
     if (f.type !== 'coast') continue;
     // sea point: explicit click, else derive from the seaLeft half's centroid (legacy)
     const seaPtFor = (h, chain) => {
@@ -395,32 +431,10 @@ function forEachCoastSplit(cb) {
       return polyCentroid(s.seaPoly);
     };
     if (f.hex != null) {
-      if (f.pts.length >= 2) cb(f.hex, f.pts, seaPtFor(f.hex, f.pts));
+      if (f.pts.length >= 2) cb(f.hex, f.pts, seaPtFor(f.hex, f.pts), 'coast');
       continue;
     }
-    const pts = [];
-    for (let i = 0; i + 1 < f.pts.length; i++) {
-      const [ax, ay] = f.pts[i], [bx, by] = f.pts[i + 1];
-      const len = Math.hypot(bx - ax, by - ay), n = Math.max(1, Math.ceil(len / 2));
-      for (let k = (i === 0 ? 0 : 1); k <= n; k++) pts.push([ax + (bx - ax) * k / n, ay + (by - ay) * k / n]);
-    }
-    const hs = pts.map(p => nearestHex(p[0], p[1]));
-    const runs = {};
-    for (let i = 0; i < hs.length; i++) {
-      const h = hs[i]; if (!h) continue;
-      if (!runs[h] || runs[h].i1 === i - 1) {
-        if (runs[h] && runs[h].i1 === i - 1) runs[h].i1 = i;
-        else if (!runs[h] || (i - runs[h].i0) > (runs[h].i1 - runs[h].i0)) runs[h] = { i0: i, i1: i };
-      }
-    }
-    for (const h in runs) {
-      const { i0, i1 } = runs[h];
-      const E = i0 > 0 ? refineBoundary(pts[i0 - 1][0], pts[i0 - 1][1], pts[i0][0], pts[i0][1], +h) : pts[i0];
-      const X = i1 < hs.length - 1 ? refineBoundary(pts[i1 + 1][0], pts[i1 + 1][1], pts[i1][0], pts[i1][1], +h) : pts[i1];
-      const chain = [E, ...pts.slice(i0, i1 + 1), X];
-      if (chain.length < 2) continue;
-      cb(+h, chain, seaPtFor(+h, chain));
-    }
+    forEachHexChain(f.pts, (h, chain) => cb(h, chain, seaPtFor(h, chain), 'coast'));
   }
 }
 // A coast that ends where it started: an island (or an inner lake) wholly inside one hex. It has
@@ -428,22 +442,30 @@ function forEachCoastSplit(cb) {
 // to find the inside and the outside for it.
 const isClosedRing = ch => ch.length >= 4 &&
   Math.abs(ch[0][0] - ch[ch.length - 1][0]) < 0.5 && Math.abs(ch[0][1] - ch[ch.length - 1][1]) < 0.5;
-// Split a coast-crossed hex into sea/land regions.
-function hexSubcells(h, chains, seaPts) {
-  // Common case — one coast running through the hex: exact vector two-way split (clean, follows
+// Split a hex crossed by a coast and/or a major river into regions.
+function hexSubcells(h, chains, seaPts, kinds) {
+  // Common case — one line running through the hex: exact vector two-way split (clean, follows
   // the line). A single *closed* chain falls through to the flood fill instead.
   if (chains.length === 1 && !isClosedRing(chains[0])) {
-    const sp = (seaPts[0] && nearestHex(seaPts[0][0], seaPts[0][1]) === h) ? seaPts[0] : null;
-    const { seaPoly, landPoly } = computeSplit(h, chains[0], true, sp);
-    const mk = (poly, sea) => ({ sea, poly, cent: polyCentroid(poly), extra: [] });
-    return { regions: [mk(seaPoly, true), mk(landPoly, false)], adj: [[0, 1]],
-             seaPolys: [seaPoly], landPolys: [landPoly] };
+    const river = kinds[0] === 'river';
+    const sp = (!river && seaPts[0] && nearestHex(seaPts[0][0], seaPts[0][1]) === h) ? seaPts[0] : null;
+    const { seaPoly: A, landPoly: B } = computeSplit(h, chains[0], true, sp);
+    const mk = (poly, sea) => ({ sea, poly, cent: insidePoint(poly), extra: [] });
+    // A river splits like from like — both halves are whatever the hex already was — and the pair is
+    // recorded so movement knows the two are separated by something only a bridge crosses.
+    if (river) {
+      const wet = baseSea(h);
+      return { regions: [mk(A, wet), mk(B, wet)], adj: [[0, 1]], riverPairs: [[0, 1]],
+               seaPolys: wet ? [A, B] : [], landPolys: wet ? [] : [A, B] };
+    }
+    return { regions: [mk(A, true), mk(B, false)], adj: [[0, 1]], riverPairs: [],
+             seaPolys: [A], landPolys: [B] };
   }
-  return hexSubcellsFlood(h, chains, seaPts); // multiple coasts / enclosed seas
+  return hexSubcellsFlood(h, chains, seaPts, kinds); // several lines / enclosed seas / islands
 }
 // Flood-fill fallback for hexes crossed by several coasts (enclosed inner seas, straits): coast
 // lines are barriers, a region is SEA iff it contains a marked sea point.
-function hexSubcellsFlood(h, chains, seaPts) {
+function hexSubcellsFlood(h, chains, seaPts, kinds = []) {
   const [cx, cy] = hexCenter(h), size = S.G.hex_size;
   // The grid has to resolve the drawn line, not merely find which side of it you are on: at R = 30 a
   // cell was ~2px, so the traced outline came back as a visible staircase and everything downstream
@@ -452,16 +474,16 @@ function hexSubcellsFlood(h, chains, seaPts) {
   // into each other — measured against the drawn lines, quality collapses again somewhere past 128.)
   const R = 96, x0 = cx - size * 1.06, y0 = cy - size * 1.06, cell = size * 2.12 / R;
   const hexPoly = CORN.map(o => [cx + o[0], cy + o[1]]);
-  const inside = new Uint8Array(R * R), wall = new Uint8Array(R * R);
+  const inside = new Uint8Array(R * R), wall = new Uint8Array(R * R), wallRiver = new Uint8Array(R * R);
   for (let j = 0; j < R; j++) for (let i = 0; i < R; i++)
     if (pointInPoly([x0 + (i + 0.5) * cell, y0 + (j + 0.5) * cell], hexPoly)) inside[j * R + i] = 1;
-  for (const chain of chains) for (let s = 0; s + 1 < chain.length; s++) {
+  chains.forEach((chain, ci) => { for (let s = 0; s + 1 < chain.length; s++) {
     const [ax, ay] = chain[s], [bx, by] = chain[s + 1], len = Math.hypot(bx - ax, by - ay), n = Math.max(1, Math.ceil(len / (cell * 0.4)));
     for (let k = 0; k <= n; k++) {
       const i = Math.floor((ax + (bx - ax) * k / n - x0) / cell), j = Math.floor((ay + (by - ay) * k / n - y0) / cell);
-      if (i >= 0 && i < R && j >= 0 && j < R) wall[j * R + i] = 1;
+      if (i >= 0 && i < R && j >= 0 && j < R) { wall[j * R + i] = 1; if (kinds[ci] === 'river') wallRiver[j * R + i] = 1; }
     }
-  }
+  } });
   const reg = new Int16Array(R * R).fill(-1); let nreg = 0;
   for (let start = 0; start < R * R; start++) {
     if (!inside[start] || wall[start] || reg[start] >= 0) continue;
@@ -473,6 +495,19 @@ function hexSubcellsFlood(h, chains, seaPts) {
       }
     }
     nreg++;
+  }
+  // Which pairs of regions face each other across the *river* wall specifically. Read now, while the
+  // wall cells are still unclaimed, because the dilation below hands them out to their neighbours.
+  const riverPairSet = new Set();
+  for (let j = 0; j < R; j++) for (let i = 0; i < R; i++) {
+    const c = j * R + i; if (!wallRiver[c] || !inside[c]) continue;
+    const seen = [];
+    for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const ni = i + di, nj = j + dj; if (ni < 0 || ni >= R || nj < 0 || nj >= R) continue;
+      const r = reg[nj * R + ni]; if (r >= 0 && !seen.includes(r)) seen.push(r);
+    }
+    for (let a = 0; a < seen.length; a++) for (let b = a + 1; b < seen.length; b++)
+      riverPairSet.add(Math.min(seen[a], seen[b]) + '-' + Math.max(seen[a], seen[b]));
   }
   // dilate regions once into the wall band (snapping later closes the rest without eroding features)
   for (let j = 0; j < R; j++) for (let i = 0; i < R; i++) {
@@ -514,7 +549,10 @@ function hexSubcellsFlood(h, chains, seaPts) {
     for (const p of polys) { const a = Math.abs(polyArea(p)); if (a > ba) { ba = a; poly = p; } }
     if (!poly) continue;
     slot[r] = regions.length;
-    regions.push({ sea: seaReg.has(r), poly, cent: polyCentroid(poly), extra: polys.filter(p => p !== poly) });
+    // With no coast in this hex nothing marks a sea side, so the hex is simply what it always was —
+    // otherwise a river drawn across open water would carve two patches of dry land out of the sea.
+    regions.push({ sea: seaPts.length ? seaReg.has(r) : baseSea(h),
+                   poly, cent: insidePoint(poly), extra: polys.filter(p => p !== poly) });
   }
   // within-hex adjacency: regions whose cells touch (across the coastline)
   const adjSet = new Set();
@@ -529,7 +567,10 @@ function hexSubcellsFlood(h, chains, seaPts) {
     }
   }
   const adj = [...adjSet].map(s => s.split('-').map(Number));
-  return { regions, adj,
+  const riverPairs = [...riverPairSet]
+    .map(s => s.split('-').map(Number).map(r => slot[r]))
+    .filter(([a, b]) => a >= 0 && b >= 0 && a !== b);
+  return { regions, adj, riverPairs,
            seaPolys: regions.filter(r => r.sea).flatMap(r => [r.poly, ...r.extra]),
            landPolys: regions.filter(r => !r.sea).flatMap(r => [r.poly, ...r.extra]) };
 }
@@ -889,71 +930,74 @@ function deriveAdj() {
     for (const id of ids) { const r = find(id); let gi = roots.indexOf(r); if (gi < 0) { gi = roots.length; roots.push(r); } gmap.set(id, Math.min(gi + 1, 7)); }
     hexRoadGroup.set(h, gmap);
   }
-  const ferryGeom = new Map(); // pairKey -> {a, pts}: the ferry road a crossing of this edge follows
-  S.adj = { roads, roadPairFi, roadGeomFi, hexRoadGroup, ferry, ferryGeom, tradeByHex, riverByHex, geom, riverGeom, coastHexes, majorHexes, majorPairs, sub: new Map() };
+  const ferryAt = new Map(); // pairKey -> {pt, spur}: where this edge is ferried, and the spur to follow
+  const meet = new Set();      // "h|n|ri|rj": region rj of n is reachable from region ri of h
+  const riverEdge = new Set(); // pairKey: a major river runs along this edge, so it is a bank
+  S.adj = { roads, roadPairFi, roadGeomFi, hexRoadGroup, ferry, ferryAt, meet, riverEdge, tradeByHex, riverByHex, geom, riverGeom, coastHexes, majorHexes, majorPairs, sub: new Map() };
   // A ferry is not something you draw — it is simply what a road does where it meets a major river,
-  // which can't be forded by anyone. Every road-crossed edge that a major river also crosses is a
-  // ferry crossing: passable by the whole column, wagons included, with no delay. (`ferry` is the
-  // same Set that went into S.adj above, so filling it here is enough.)
-  for (const key of roadPairFi.keys()) {
-    const [a, b] = key.split('|').map(Number);
-    if (riverCross(a, b) === 'major') ferry.add(key);
-  }
-  // The loop above only sees crossings that sit on a hex *edge*, because that is the only place a
-  // road becomes a step in the graph. A ferry drawn in place — a short spur that runs down to the
-  // water, over, and stops, beginning and ending inside the same hex — never produces a road step,
-  // so it used to be invisible and the major river stayed impassable there. So find the crossings
-  // geometrically instead: every point where a drawn road actually cuts a drawn major river is a
-  // ferry, wherever it falls.
-  // Each crossing keeps the road it was drawn on, so a route that takes the ferry is drawn going
-  // over that road rather than straight across the water beside it. A spur that never leaves its
-  // hex is drawn whole — the whole of it *is* the crossing. A road that runs on gets the stretch
-  // within a hex's reach of the water: the approach, the crossing, and the road away from it.
-  const roadNear = (pts, i, pt) => {
-    const far = p => Math.hypot(p[0] - pt[0], p[1] - pt[1]) > S.G.hex_width;
-    let a = i, b = i + 1;
-    while (a > 0 && !far(pts[a - 1])) a--;
-    while (b + 1 < pts.length && !far(pts[b + 1])) b++;
-    return pts.slice(a, b + 1);
-  };
-  const ferryPts = []; // {pt, pts}: where a road cuts a major river, and the road line to draw there
+  // which can't be forded by anyone: a free crossing for the whole column, wagons included.
+  // It is found geometrically, by actually intersecting the drawn lines. The older test asked instead
+  // whether a road crossed this hex edge AND a major river crossed the line between the two hex
+  // centres, which are two unrelated facts — a road running *alongside* a river satisfies both and
+  // was handed a ferry it never had. Nothing is a ferry now unless road and river genuinely meet.
+  // Each crossing also keeps its road, if that road is a spur drawn wholly inside one hex — a ferry
+  // sketched in place. Such a spur is safe to draw a route along in full: it cannot leave its hex, so
+  // it can't drag the line off the step the way an arbitrary stretch of a longer road could, and
+  // following the whole of it is the point — the spur IS the crossing.
+  const ferryPts = []; // {pt, spur}: where a drawn road cuts a major river, and the spur if it is one
   for (const f of S.features.features) {
     if (f.type !== 'road') continue;
-    const whole = lineChain(f.pts).length <= 1; // the spur begins and ends in one hex
+    const spur = lineChain(f.pts).length <= 1 ? f.pts : null;
     for (let i = 0; i + 1 < f.pts.length; i++) {
       const [ax, ay] = f.pts[i], [bx, by] = f.pts[i + 1];
       // riverByHex buckets each segment into its hex and that hex's neighbours, so looking up the
       // road segment's midpoint finds every river it could possibly touch.
       for (const s of riverByHex.get(nearestHex((ax + bx) / 2, (ay + by) / 2)) || []) {
         if (s.minor) continue;
-        if (!segIntersect(ax, ay, bx, by, s.x1, s.y1, s.x2, s.y2)) continue;
-        const pt = segCrossPt(ax, ay, bx, by, s.x1, s.y1, s.x2, s.y2);
-        ferryPts.push({ pt, pts: whole ? f.pts : roadNear(f.pts, i, pt) });
+        if (segIntersect(ax, ay, bx, by, s.x1, s.y1, s.x2, s.y2))
+          ferryPts.push({ pt: segCrossPt(ax, ay, bx, by, s.x1, s.y1, s.x2, s.y2), spur });
       }
     }
   }
   S.adj.ferryPts = ferryPts;
-  // A ferry serves the crossing it was drawn at, not the whole length of the river: an edge is
-  // ferried when the ferry sits on the line the column would walk, within half a hex or so. The
-  // nearest one wins, and its road becomes the geometry that edge's crossing is drawn along.
+  // A ferry serves one crossing — the one it was drawn at — so an edge is ferried only when the ferry
+  // sits at the point where *that* march meets the water. Testing it against the whole line from hex
+  // to hex was far too loose: it lit up edges whose crossing was most of a hex upstream, so a column
+  // could cross the river in open country and the pathfinder would happily detour to do it.
   if (ferryPts.length) {
-    const FERRY_R = S.G.hex_size * 0.75;
+    const FERRY_R = S.G.hex_size * 0.5;
     const near = new Set();
     for (const h of majorHexes) { near.add(h); for (const n of neighbors(h)) near.add(n); }
     for (const h of near) for (const n of neighbors(h)) {
-      if (h > n || !S.hexes[n] || !S.hexes[h] || riverCross(h, n) !== 'major') continue;
-      const [ax, ay] = hexCenter(h), [bx, by] = hexCenter(n);
+      if (h > n || !S.hexes[n] || !S.hexes[h]) continue;
+      const X = majorCrossPt(h, n); if (!X) continue; // where this march actually meets the river
       let best = null, bd = FERRY_R;
-      for (const fp of ferryPts) {
-        const d = distToSeg(fp.pt[0], fp.pt[1], ax, ay, bx, by);
-        if (d <= bd) { bd = d; best = fp; }
-      }
+      for (const p of ferryPts) { const d = Math.hypot(p.pt[0] - X[0], p.pt[1] - X[1]); if (d <= bd) { bd = d; best = p; } }
       if (!best) continue;
       ferry.add(pairKey(h, n));
-      // Orient the road the way the column walks: whichever end lies nearer h is where it sets off.
-      const p0 = best.pts[0], p1 = best.pts[best.pts.length - 1];
-      const hFirst = Math.hypot(p0[0] - ax, p0[1] - ay) <= Math.hypot(p1[0] - ax, p1[1] - ay);
-      ferryGeom.set(pairKey(h, n), { a: hFirst ? h : n, pts: best.pts });
+      ferryAt.set(pairKey(h, n), best); // remembered so the drawn route crosses at the ferry, not beside it
+    }
+  }
+  // A major river drawn ALONG a hex boundary rather than across it. The split can't see such a river:
+  // it never separates one hex's own regions from each other, so both hexes come out whole and their
+  // regions duly "meet" along the edge — while the water lies right between them. Measure how much of
+  // the shared edge runs in the river, and where most of it does, that edge is barred like any bank.
+  {
+    const RE_N = 9, RE_THR = S.G.hex_size * 0.22, RE_MIN = Math.ceil(RE_N * 0.6);
+    const near = new Set();
+    for (const h of majorHexes) { near.add(h); for (const n of neighbors(h)) near.add(n); }
+    for (const h of near) for (const n of neighbors(h)) {
+      if (h > n || !S.hexes[h] || !S.hexes[n]) continue;
+      const segs = riverByHex.get(h) || [];
+      if (!segs.length) continue;
+      const [c1, c2] = sharedEdgeCorners(h, n);
+      let wet = 0;
+      for (let k = 0; k < RE_N; k++) {
+        const t = (k + 0.5) / RE_N, mx = c1[0] + (c2[0] - c1[0]) * t, my = c1[1] + (c2[1] - c1[1]) * t;
+        for (const s of segs)
+          if (!s.minor && distToSeg(mx, my, s.x1, s.y1, s.x2, s.y2) <= RE_THR) { wet++; break; }
+      }
+      if (wet >= RE_MIN) riverEdge.add(pairKey(h, n));
     }
   }
   // Subhex geometry: flood-filled sea/land regions per coast-crossed hex (barriers = coast lines).
@@ -981,10 +1025,85 @@ function deriveAdj() {
       for (let m = 0; m <= n; m++) markRiver(ax + (bx - ax) * m / n, ay + (by - ay) * m / n);
     }
   }
+  // A river now runs *between* regions rather than through one, so sampling points along it can miss
+  // both — the line lies on the shared boundary. The split already knows which pairs it separated,
+  // and those regions are exactly the ones it runs through, so take them straight from there.
+  for (const [h, cells] of S.adj.sub) for (const [a, b] of cells.riverPairs || []) {
+    if (!riverRegions.has(h)) riverRegions.set(h, new Set());
+    riverRegions.get(h).add(a); riverRegions.get(h).add(b);
+  }
   S.adj.riverRegions = riverRegions;
+  // Where a road crosses the river inside a hex, that is a bridge, and the two banks are joined
+  // again for anyone on foot. Without one they are separate places that happen to share a hex.
+  const bridged = new Map(); // hex -> the crossing itself, so the drawn route can go over it
+  for (const p of ferryPts) { const bh = nearestHex(p.pt[0], p.pt[1]); if (bh && !bridged.has(bh)) bridged.set(bh, p); }
+  S.adj.bridged = bridged;
+  // Which region faces which across each hex edge. Sampled finely and requiring the two to share
+  // more than a single sample: where a river crosses an edge, the two hexes place that crossing a
+  // pixel or so apart, and one stray sample of overlap would otherwise pair a north bank with a
+  // south one and let the column stroll across.
+  const MEET_N = 16, MEET_MIN = 2, MEET_DRY = S.G.hex_size * 0.12;
+  for (const h of S.adj.sub.keys()) for (const n of neighbors(h)) {
+    if (!S.hexes[n] || S.hexes[n].t === 'N/A') continue;
+    const [c1, c2] = sharedEdgeCorners(h, n);
+    const [ax, ay] = hexCenter(h), [bx, by] = hexCenter(n);
+    const wet = (riverByHex.get(h) || []).filter(s => !s.minor);
+    const tally = new Map();
+    for (let k = 0; k < MEET_N; k++) {
+      const t = (k + 0.5) / MEET_N;
+      const m = [c1[0] + (c2[0] - c1[0]) * t, c1[1] + (c2[1] - c1[1]) * t];
+      // Only dry ground counts as a meeting. The two hexes put the river's crossing a pixel or two
+      // apart, leaving a sliver at the water's edge where opposite banks appear to touch — a gap the
+      // column was stepping through. Ground within a stride of the river is not a way across it.
+      if (wet.some(s => distToSeg(m[0], m[1], s.x1, s.y1, s.x2, s.y2) <= MEET_DRY)) continue;
+      const i = regionAtEdge(h, m, ax, ay), j = regionAtEdge(n, m, bx, by);
+      if (i < 0 || j < 0) continue;
+      const key = i + ':' + j;
+      tally.set(key, (tally.get(key) || 0) + 1);
+    }
+    for (const [key, c] of tally) if (c >= MEET_MIN) {
+      const [i, j] = key.split(':');
+      meet.add(`${h}|${n}|${i}|${j}`); meet.add(`${n}|${h}|${j}|${i}`); // both ways round
+    }
+  }
 }
-const polyCentroid = poly => poly.reduce((a, p) => [a[0] + p[0] / poly.length, a[1] + p[1] / poly.length], [0, 0]);
+// The centroid of the *area*, not of the vertex list. A region traced from a drawn line carries all
+// its detail on that one side — dozens of points along a river, two or three hex corners elsewhere —
+// so averaging vertices drags the node onto the riverbank, which is both wrong to march from and the
+// last place a route should be drawn through. Falls back to the vertex mean for degenerate slivers.
+const polyCentroid = poly => {
+  let a = 0, cx = 0, cy = 0;
+  for (let i = 0; i < poly.length; i++) {
+    const j = (i + 1) % poly.length;
+    const f = poly[i][0] * poly[j][1] - poly[j][0] * poly[i][1];
+    a += f; cx += (poly[i][0] + poly[j][0]) * f; cy += (poly[i][1] + poly[j][1]) * f;
+  }
+  if (Math.abs(a) < 1e-6) return poly.reduce((s, p) => [s[0] + p[0] / poly.length, s[1] + p[1] / poly.length], [0, 0]);
+  return [cx / (3 * a), cy / (3 * a)];
+};
 const polyArea = p => { let a = 0; for (let i = 0; i < p.length; i++) { const j = (i + 1) % p.length; a += p[i][0] * p[j][1] - p[j][0] * p[i][1]; } return a / 2; };
+// Somewhere to stand inside a region. Usually its centroid — but a bank curled around a river bend
+// is concave enough that the centroid lands in the water, and a node outside its own region is a
+// place no march can start from and no line should be drawn through. For those, take the interior
+// point furthest from any edge: the roomiest spot in it.
+function insidePoint(poly) {
+  const c = polyCentroid(poly);
+  if (pointInPoly(c, poly)) return c;
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const p of poly) { x0 = Math.min(x0, p[0]); y0 = Math.min(y0, p[1]); x1 = Math.max(x1, p[0]); y1 = Math.max(y1, p[1]); }
+  const N = 24; let best = c, bd = -1;
+  for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
+    const p = [x0 + (i + 0.5) * (x1 - x0) / N, y0 + (j + 0.5) * (y1 - y0) / N];
+    if (!pointInPoly(p, poly)) continue;
+    let d = Infinity;
+    for (let k = 0; k < poly.length; k++) {
+      const l = (k + 1) % poly.length;
+      d = Math.min(d, distToSeg(p[0], p[1], poly[k][0], poly[k][1], poly[l][0], poly[l][1]));
+    }
+    if (d > bd) { bd = d; best = p; }
+  }
+  return best;
+}
 const anyPoly = (polys, pt) => polys.some(p => pointInPoly(pt, p));
 const baseSea = h => RULES.WATER.has(S.hexes[h].t);
 const majorRiverHex = h => S.adj.majorHexes.has(h);
@@ -1028,6 +1147,11 @@ function regionAt(h, pt) {
   return bi;
 }
 const nodePoint = (h, ri) => region(h, ri)?.cent || hexCenter(h);
+// How far along the way from a to b the point p falls: 0 at a, 1 at b, negative if it lies behind a.
+const onWayFrac = (p, a, b) => {
+  const dx = b[0] - a[0], dy = b[1] - a[1], l2 = dx * dx + dy * dy;
+  return l2 ? ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2 : 0;
+};
 // Where a stronghold actually stands: its own marker if one was placed, else the hex centre. Null
 // unless the marker sits in region ri — a coastal hex's sea half must not claim the keep on its
 // land half, and an unplaced marker only counts if the hex centre falls in the region you asked for.
@@ -1049,26 +1173,64 @@ function regionOnEdge(h, ri, edgePts) {
   const [cx, cy] = hexCenter(h);
   return edgePts.some(m => pointInPoly([m[0] + (cx - m[0]) * 0.18, m[1] + (cy - m[1]) * 0.18], r.poly));
 }
-// Points sampled along the shared edge between adjacent hexes a and b.
-function sharedEdgePts(a, b) {
+// Do regions (h,ri) and (n,rj) actually meet — over a real stretch of the edge they share? That each
+// of them touches that edge *somewhere* is not enough: where a major river crosses the edge, both
+// hexes have a bank on either side of it, so all four regions touch it and pairing them blindly
+// walks the column over the water. Answered from a table built once in deriveAdj; when neither hex
+// is carved up there is only one region a side and the whole edge is shared.
+function regionsMeet(h, ri, n, rj) {
+  if (!S.adj.sub.has(h) && !S.adj.sub.has(n)) return true;
+  return S.adj.meet.has(h + '|' + n + '|' + ri + '|' + rj);
+}
+// Which region of h a point on its boundary belongs to, stepped a little inside first. -1 in the
+// seam between regions.
+function regionAtEdge(h, m, cx, cy) {
+  const rs = regionsOf(h);
+  const p = [m[0] + (cx - m[0]) * 0.06, m[1] + (cy - m[1]) * 0.06];
+  for (let i = 0; i < rs.length; i++) if (rs[i].whole || !rs[i].poly || pointInPoly(p, rs[i].poly)) return i;
+  return -1;
+}
+// The two corners a shares with its neighbour b — the edge between them.
+function sharedEdgeCorners(a, b) {
   const [ax, ay] = hexCenter(a), c = CORN.map(o => [ax + o[0], ay + o[1]]);
   const [bx, by] = hexCenter(b);
-  const two = c.map((p, i) => [Math.hypot(p[0] - bx, p[1] - by), i]).sort((u, v) => u[0] - v[0]).slice(0, 2).map(x => c[x[1]]);
-  const [c1, c2] = two, out = [];
+  return c.map((p, i) => [Math.hypot(p[0] - bx, p[1] - by), i]).sort((u, v) => u[0] - v[0]).slice(0, 2).map(x => c[x[1]]);
+}
+// Points sampled along the shared edge between adjacent hexes a and b.
+function sharedEdgePts(a, b) {
+  const [c1, c2] = sharedEdgeCorners(a, b), out = [];
   for (const t of [0.12, 0.3, 0.5, 0.7, 0.88]) out.push([c1[0] + (c2[0] - c1[0]) * t, c1[1] + (c2[1] - c1[1]) * t]);
   return out;
 }
-function riverCross(a, b) {
-  const segs = (S.adj.riverByHex.get(a) || []);
+// Where the march from a to b meets a drawn major river, or null if it never does. This is the spot
+// a crossing would have to be at to be of any use on this step.
+function majorCrossPt(a, b) {
   const [ax, ay] = hexCenter(a), [bx, by] = hexCenter(b);
-  let hit = null;
-  for (const s of segs)
-    if (segIntersect(ax, ay, bx, by, s.x1, s.y1, s.x2, s.y2)) {
-      if (!s.minor) return 'major';
-      hit = 'minor';
-    }
-  return hit;
+  for (const s of S.adj.riverByHex.get(a) || [])
+    if (!s.minor && segIntersect(ax, ay, bx, by, s.x1, s.y1, s.x2, s.y2))
+      return segCrossPt(ax, ay, bx, by, s.x1, s.y1, s.x2, s.y2);
+  return null;
 }
+// Does a drawn segment cut a major river? The movement rules ask this of the line between two hex
+// centres; this asks it of a line actually being drawn, which is not the same question and is what
+// keeps the cosmetic shortcuts in routeLeg from putting the column across water it never forded.
+function segCrossesMajor(p, q) {
+  const segs = new Set([...(S.adj.riverByHex.get(nearestHex(p[0], p[1])) || []),
+                        ...(S.adj.riverByHex.get(nearestHex(q[0], q[1])) || [])]);
+  for (const s of segs)
+    if (!s.minor && segIntersect(p[0], p[1], q[0], q[1], s.x1, s.y1, s.x2, s.y2)) return true;
+  return false;
+}
+// Does the march from a to b ford a *minor* river? Minor rivers aren't barriers and so aren't part
+// of the subhex split; centre to centre is all there is to go on for them.
+function minorCross(a, b) {
+  const [ax, ay] = hexCenter(a), [bx, by] = hexCenter(b);
+  for (const s of S.adj.riverByHex.get(a) || [])
+    if (s.minor && segIntersect(ax, ay, bx, by, s.x1, s.y1, s.x2, s.y2)) return true;
+  return false;
+}
+// (There is no longer a hex-centre-to-hex-centre test for *major* rivers. Whether one is in the way
+// is a question about the banks, answered by the subhex regions — see regionsMeet and riverEdge.)
 
 /* ---------------- travel calculator ---------------- */
 function armyOpts() {
@@ -1077,12 +1239,13 @@ function armyOpts() {
   const army = { inf: v('inf'), cav: v('cav'), wag: v('wag'), non: v('non') };
   return {
     army,
-    // "Cavalry-only army" = exclusively cavalry: no infantry, wagons, or noncombatant baggage.
-    // (Noncombatants and wagons are slow baggage — they count in the column and disqualify the ×2.)
-    cavOnly: army.cav > 0 && army.inf === 0 && army.wag === 0 && army.non === 0,
+    // "Cavalry-only army" = nothing marching on foot and nothing rolling: no infantry, no wagons.
+    // Noncombatants don't disqualify it — camp followers keep up or get left behind, either way they
+    // are not what holds the column to a walking pace. They still lengthen the column for fords.
+    cavOnly: army.cav > 0 && army.inf === 0 && army.wag === 0,
     colMiles: columnMiles(army),
     forced: c('forced'), liOnly: c('liOnly'), fleet: c('fleet'),
-    embark: c('embark'), tradeRoad: c('tradeRoad'),
+    embark: c('embark'), tradeRoad: !c('noTrade'), // the box is the opt-out; trade routes are on by default
     weather: document.getElementById('weather').value,
   };
 }
@@ -1133,31 +1296,66 @@ function isPort(h) {
   if (hasSea(h)) return true;
   return neighbors(h).some(n => { const e = sharedEdgePts(h, n); return regionsOf(n).some((r, rj) => regSail(r) && regionOnEdge(n, rj, e)); });
 }
+// Too small to show in any total (steps are tenths of a day), big enough to settle a tie. Used to
+// make a free move lose to not making it at all, where both reach the same place for the same price.
+const NUDGE = 1e-6;
 const SHIP_IRL = RULES.HEX_MILES / (RULES.SHIP_MILES_PER_DAY * RULES.GAME_DAYS_PER_IRL);
 const SECURE = RULES.SECURE_SHIPS_IRL_DAYS, EMBARK = RULES.EMBARK_IRL_DAYS, DISEMBARK = RULES.DISEMBARK_IRL_DAYS;
 const DISEMBARK_NOTE = DISEMBARK ? 'disembark +' + DISEMBARK + 'd' : 'disembark';
 
 // Land-march cost from land subhex of a to land subhex of b. `road` says whether this step
 // follows a road (speed bonus + bridges); off-road steps are always available at the slower rate.
-function landStep(a, b, o, road) {
+// `crossMajor` says whether this particular step puts a drawn major river between the column and
+// where it is going. That is a question about the two *banks* — the regions — not about the two hex
+// centres: a river bending between two hexes can leave their centres on opposite sides while the
+// regions being marched between are both on the near side, and asking the centres said "ferry" for
+// a march that never approached the water.
+function landStep(a, b, o, road, crossMajor) {
   const key = pairKey(a, b), tb = S.hexes[b].t;
   const mpi = landMilesPerIRL({ road, terrain: tb, forced: o.forced, liOnly: o.liOnly, cavOnly: o.cavOnly, weather: o.weather, colMiles: o.colMiles });
   if (mpi <= 0) return null;
   let irl = RULES.HEX_MILES / mpi, note = road ? 'road' : 'off-road';
   if (RULES.WATER.has(tb) || S.adj.coastHexes.has(b)) note += ' (coastal strip)';
-  const cr = riverCross(a, b);
   let fer = false;
-  if (cr && !road) {
-    // Off the road there is usually no crossing to use: a major river stops the column dead, a minor
-    // one costs fording time. The exception is a ferry, which is a place rather than a piece of road
-    // — a column that marches up to one boards it whether or not it followed the road there.
-    if (cr === 'major') { if (!S.adj.ferry.has(key)) return null; note += ', ferry'; fer = true; }
+  if (crossMajor) {
+    // No fording a major river, by anyone, on or off a road: only a ferry gets you over. And it is a
+    // place rather than a piece of road, so a column that marches up to one boards it either way.
+    if (!S.adj.ferry.has(key)) return null;
+    note += ', ferry'; fer = true; irl += NUDGE;
+  } else if (minorCross(a, b)) {
+    if (road) note += ', bridge';
     else if (!o.cavOnly) { const f = fordIRLDays(o.army, o.weather); if (f === null) return null; irl += f; note += ', ford minor +' + f.toFixed(1) + 'd'; }
     else note += ', ford (cav, free)';
-  } else if (cr && road) note += S.adj.ferry.has(key) ? ', ferry' : ', bridge';
+  }
   return { irl, note, fer };
 }
 
+// Can a column standing at the node of (h, ri) get onto road `fi` where it leaves h for n? Only if
+// nothing uncrossable lies between: within a hex that means a drawn major river with no bridge over
+// it. The road's own point in h is where you would join it, so that is the walk to test.
+function roadUnreachable(h, ri, n, fi) {
+  const ge = S.adj.roadGeomFi.get(pairKey(h, n) + '#' + fi);
+  if (!ge || !ge.pts.length) return false;
+  const at = ge.a === h ? ge.pts[0] : ge.pts[ge.pts.length - 1];
+  // Where the river has actually split this hex, the question is simply which bank the road is on.
+  if (S.adj.sub.get(h)?.riverPairs?.length) return regionAt(h, at) !== ri;
+  return segCrossesMajor(nodePoint(h, ri), at);
+}
+// The line to draw for a crossing, approached from `from`. A one-hex spur is walked end to end,
+// entered at whichever end you arrive at — it cannot leave its hex, so it can't drag the route off
+// its own step. Any other road is only known to touch the water, not to run the way you are going,
+// so that one contributes just the crossing point itself.
+function ferryRoad(fa, from) {
+  const s = fa.spur;
+  if (!s) return [fa.pt];
+  const d2 = (p, q) => (p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2;
+  const road = d2(s[0], from) <= d2(s[s.length - 1], from) ? s : [...s].reverse();
+  // And only as far along it as it takes to get across. The remainder of a stub doubles back the way
+  // it came, and following that drew the route out over the water and straight back again.
+  let k = 0, bd = Infinity;
+  for (let i = 0; i < road.length; i++) { const d = d2(road[i], fa.pt); if (d < bd) { bd = d; k = i; } }
+  return road.slice(0, Math.min(k + 2, road.length));
+}
 // All moves out of node (h, ri, af, g). `af` = afloat (on the water with a fleet). `g` = the road
 // connectivity group the army is currently travelling on (0 = not on a road). A river region can
 // be occupied either afloat (sailing) or on foot (marching); sea = always afloat, land = never.
@@ -1196,6 +1394,21 @@ function expand(h, ri, af, ships, g, o) {
     return out;
   }
   // on land (af === 0)
+  // Cross to the other bank of a major river that cuts this hex. Only where a road bridges it, and
+  // free — one hex is one hex, the cost of a hex is paid by the step that enters it. With no bridge
+  // there is simply no move, which is what makes the far bank unreachable without going round.
+  const br = S.adj.bridged.get(h);
+  if (br) for (const [a, b] of S.adj.sub.get(h)?.riverPairs || []) {
+    const to = a === ri ? b : b === ri ? a : -1;
+    if (to < 0 || !regWalkable(region(h, to))) continue;
+    // Drawn over the bridge, not between the two banks' middles — otherwise the line meets the water
+    // wherever those middles happen to line up, which is exactly the crossing that isn't there.
+    // Free, but not *quite* free: a hair of cost so that crossing loses every tie against not
+    // crossing. Both a bridge and a ferry are free by the rules, so "over the river and straight
+    // back" cost exactly what staying on one bank cost, and the search was as happy to pick it.
+    out.push({ toH: h, toRi: to, af: 0, ships: 0, g: 0, irl: NUDGE, note: 'bridge (within hex)',
+               geom: [...ferryRoad(br, nodePoint(h, ri)), nodePoint(h, to)] });
+  }
   const grpH = S.adj.hexRoadGroup.get(h);  // Map(roadId -> group) for this hex, or undefined
   for (const { n, e } of N) {
     if (!regionOnEdge(h, ri, e)) continue;
@@ -1205,21 +1418,43 @@ function expand(h, ri, af, ships, g, o) {
     const usable = [];
     if (fis) for (const fi of fis) {
       const gAtH = grpH?.get(fi) || 0;
-      if (g === 0 || g === gAtH) usable.push(fi); // g===0: joining fresh; else must be same group
+      if (g !== 0 && g !== gAtH) continue;   // already on a road: only its own group is joinable
+      // Joining a road you are not already on means walking to it across this hex, and a major river
+      // is a barrier there exactly as it is between hexes: it is only crossed at a bridge. Without
+      // this, a column standing on one bank could step onto a road on the other and be away, having
+      // forded nothing — the crossing never showed up because both hex centres sit on the same side.
+      if (g === 0 && roadUnreachable(h, ri, n, fi)) continue;
+      usable.push(fi);
     }
+    const ferried = S.adj.ferry.has(pairKey(h, n));
     for (let rj = 0; rj < rs.length; rj++) {
-      if (!regWalkable(rs[rj]) || !regionOnEdge(n, rj, e)) continue;
+      if (!regWalkable(rs[rj])) continue;
+      // Same bank: the two regions face each other along the edge, and no water is involved. Facing
+      // banks that DON'T meet are a crossing — possible only where a ferry serves this edge, and only
+      // between regions that both actually reach it.
+      const meet = regionsMeet(h, ri, n, rj) && !S.adj.riverEdge.has(pairKey(h, n));
+      const crossMajor = !meet;
+      if (crossMajor && !(ferried && regionOnEdge(n, rj, e))) continue;
       // off-road step is always available (slower, no road bonus), and drops us off any road (g:0)
-      const off = landStep(h, n, o, false);
+      const off = landStep(h, n, o, false, crossMajor);
+      // A ferry step bends through the crossing itself, so the drawn line meets the water where the
+      // road does and nowhere else. Just the one vertex, then on to the destination as usual —
+      // splicing in the ferry's road instead let the line wander off the step and, at the end of a
+      // route, out past the final waypoint and back.
       if (off) {
-        // A ferry crossing is walked over its road even though the step is off-road either side.
-        const fg = off.fer ? S.adj.ferryGeom.get(pairKey(h, n)) : null;
-        out.push({ toH: n, toRi: rj, af: 0, ships: 0, g: 0, irl: off.irl, note: off.note,
-                   geom: fg ? (fg.a === h ? fg.pts : [...fg.pts].reverse()) : undefined });
+        const fa = off.fer ? S.adj.ferryAt.get(pairKey(h, n)) : null;
+        let geom;
+        // Only draw the crossing when it is genuinely on the way. Whether the river is in the way is
+        // decided between hex centres, but the line is drawn between subhex centroids — and at a
+        // stronghold, its marker — so the crossing can end up behind where this step sets off. Bending
+        // through it then would have the route reach backwards to the bridge before setting out.
+        if (fa && onWayFrac(fa.pt, nodePoint(h, ri), nodePoint(n, rj)) > 0.05)
+          geom = [...ferryRoad(fa, hexCenter(h)), nodePoint(n, rj)];
+        out.push({ toH: n, toRi: rj, af: 0, ships: 0, g: 0, irl: off.irl, note: off.note, geom });
       }
       // road steps: one per usable road, tracing that road's drawn geometry, arriving on its group
       for (const fi of usable) {
-        const rs2 = landStep(h, n, o, true);
+        const rs2 = landStep(h, n, o, true, crossMajor);
         if (!rs2) continue;
         const ge = S.adj.roadGeomFi.get(pairKey(h, n) + '#' + fi);
         const geom = ge ? (ge.a === h ? ge.pts : [...ge.pts].reverse()) : null;
@@ -1275,9 +1510,16 @@ const forcedAf = r => (r.sea && !r.river) ? 1 : ((!r.sea && !r.river) ? 0 : null
 
 // Dijkstra over region nodes. Key encodes (hex, region, afloat, ships, roadGroup).
 const STATES = [[0, 0], [0, 1], [1, 1]]; // (afloat, ships); afloat ⇒ ships
+// A search node packed into one integer: hex, region, afloat, ships, road group. Widths are declared
+// once and BOTH the packer and the unpacker are derived from them. Writing the two by hand is how
+// widening the region field to 16 slots silently turned every hex id into double itself.
+const SKW = { g: 3, sh: 1, af: 1, ri: 4 };
+const SK_RI = SKW.af + SKW.sh + SKW.g, SK_AF = SKW.sh + SKW.g, SK_H = SKW.ri + SK_RI;
+const sk = (h, ri, af, sh, g) => ((((h << SKW.ri | ri) << SKW.af | af) << SKW.sh | sh) << SKW.g) | g;
+const skDec = k => ({ h: k >>> SK_H, ri: (k >>> SK_RI) & ((1 << SKW.ri) - 1), af: (k >>> SK_AF) & 1 });
+const MAX_REGIONS = 1 << SKW.ri; // regions per hex the packing can address
 function dijkstraField(fromH, fromRi, af0, sh0, o) {
   const dist = new Map(), prev = new Map();
-  const sk = (h, ri, af, sh, g) => (((h * 8 + ri) * 2 + af) * 2 + sh) * 8 + g;
   dist.set(sk(fromH, fromRi, af0, sh0, 0), 0);
   const pq = [[0, fromH, fromRi, af0, sh0, 0]];
   while (pq.length) {
@@ -1296,7 +1538,7 @@ function dijkstraField(fromH, fromRi, af0, sh0, o) {
       }
     }
   }
-  const dec = k => ({ h: k >> 8, ri: (k >> 5) & 7, af: (k >> 4) & 1 });
+  const dec = skDec;
   const reconstruct = (toH, toRi, af, sh, g) => {
     let cur = sk(toH, toRi, af, sh, g);
     if (!dist.has(cur)) return null;
@@ -1394,14 +1636,29 @@ function routeLeg(rt, o) {
       totHex += nh;
       totMiles += st.miles ?? nh * RULES.HEX_MILES;
     }
+    // When the *next* step only moves to another part of this same hex — embarking into its sea
+    // subhex, crossing its bridge — the node this step lands on is not on the way to anything. The
+    // column is arriving at the hex, and where in the hex it ends up is the next step's business.
+    // Drawing to it first and away again is what put a spike in the line at Kisra.
+    const nxt = flat[idx + 1];
+    const staysInHex = nxt && nxt.st.h === st.h;
     const gpts = stepGeom(st, ph);
-    if (gpts) { allPts.push(...gpts); continue; }
-    // Off-road / plain march (no feature to trace). If the *next* step rejoins a drawn feature
+    if (gpts) {
+      // A crossing's geometry is the road over the water, then the node it lands on. That last point
+      // is only a default — if anything follows, the next step's point should stand instead. Going
+      // via the node puts a jog in the line the moment the node lies off to one side, which is what
+      // it does coming off a bridge. A road's geometry ends on the road itself, so it is left alone.
+      const np = nodePoint(st.h, st.ri), last = gpts[gpts.length - 1];
+      const drop = nxt && gpts.length > 1 && Math.hypot(last[0] - np[0], last[1] - np[1]) < 0.01;
+      allPts.push(...(drop ? gpts.slice(0, -1) : gpts));
+      continue;
+    }
+    if (staysInHex) continue;
+    // Off-road / plain march (no feature to trace). If the next step rejoins a drawn feature
     // (a road), aim straight at where we rejoin it — its nearest end in this hex — rather than
     // detouring through the hex centroid, which leaves a jagged corner at the point of diversion.
-    const nxt = flat[idx + 1];
     let joinPt = null;
-    if (nxt && nxt.st.h !== st.h) {
+    if (nxt) {
       const ng = stepGeom(nxt.st, st.h);
       if (ng && ng.length) joinPt = ng[0];
     }
@@ -1439,7 +1696,6 @@ function hpop(a) {
 
 // Travel time from `from` to every reachable hex within maxD IRL days (min over fleet states).
 function dijkstraAll(fromNode, o, maxD) {
-  const sk = (h, ri, af, sh, g) => (((h * 8 + ri) * 2 + af) * 2 + sh) * 8 + g;
   const dist = new Map(), best = new Map();
   const r0 = fromNode.ri | 0, [af0, sh0] = startState(fromNode.h, r0, o);
   dist.set(sk(fromNode.h, r0, af0, sh0, 0), 0);
@@ -1575,10 +1831,8 @@ function computeRoute() {
   let paceRow = '';
   if (o.cavOnly && o.forced && wForced)
     paceRow = `<tr><td>Pace</td><td><span style="color:#6ef3a5">exclusively cavalry — forced ×2 speed</span></td></tr>`;
-  else if (o.forced && o.army.inf === 0 && o.army.cav > 0) {
-    const bag = [o.army.wag ? 'wagons' : '', o.army.non ? 'noncombatants' : ''].filter(Boolean).join(' + ');
-    if (bag) paceRow = `<tr><td>Pace</td><td><span class="warn">not cavalry-only (${bag}) — no ×2. Zero them for the bonus.</span></td></tr>`;
-  }
+  else if (o.forced && o.army.inf === 0 && o.army.cav > 0 && o.army.wag)
+    paceRow = `<tr><td>Pace</td><td><span class="warn">not cavalry-only (wagons) — no ×2. Zero them for the bonus.</span></td></tr>`;
   out.innerHTML =
     `<div class="big" style="color:${rt.color}">${rt.name}: ${r.irl.toFixed(1)} IRL days <span style="color:#9aa4b2">(${game.toFixed(0)} in-game)</span></div>` +
     `<table><tr><td>Distance</td><td>${r.hexes} hexes ≈ ${Math.round(r.miles ?? r.hexes * RULES.HEX_MILES)} mi</td></tr>` +
@@ -1676,7 +1930,14 @@ svg.addEventListener('pointermove', e => {
   onHover(e);
 });
 svg.addEventListener('pointerup', e => {
-  if (pan) { pan = null; return; }
+  if (pan) {
+    // A left-press starts a pan optimistically, since it can't yet be known whether it will turn
+    // into a drag. If the pointer never really moved it was a click after all, so fall through and
+    // let it place a waypoint. Middle-button and space-held drags are only ever panning.
+    const moved = !downPos || Math.hypot(e.clientX - downPos[0], e.clientY - downPos[1]) > 5;
+    pan = null;
+    if (moved || e.button !== 0 || spaceHeld) return;
+  }
   if (S.dragErase) {
     const dr = S.dragErase; S.dragErase = null;
     if (dr.undoPushed) { if (S.needRecompute) { computeRoute(); S.needRecompute = false; } return; } // was a drag wipe
@@ -2090,7 +2351,7 @@ document.getElementById('isoClear').onclick = () => {
 for (const id of ['isoBand', 'isoMax', 'isoMode'])
   document.getElementById(id).addEventListener('change', computeRoute);
 document.getElementById('clearRoute').onclick = () => { S.routes = []; S.activeRoute = -1; computeRoute(); };
-for (const id of ['inf', 'cav', 'wag', 'non', 'forced', 'liOnly', 'fleet', 'embark', 'tradeRoad', 'weather'])
+for (const id of ['inf', 'cav', 'wag', 'non', 'forced', 'liOnly', 'fleet', 'embark', 'noTrade', 'weather'])
   document.getElementById(id).addEventListener('change', computeRoute);
 
 document.getElementById('refetchBtn').onclick = async () => {
