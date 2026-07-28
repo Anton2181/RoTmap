@@ -536,14 +536,12 @@ function forEachHexChain(pts0, cb) {
       else if (!runs[h] || (i - runs[h].i0) > (runs[h].i1 - runs[h].i0)) runs[h] = { i0: i, i1: i };
     }
   }
-  const TOL = 1.5; // a line drawn right up to the boundary still counts as crossing it
   for (const h in runs) {
     const { i0, i1 } = runs[h];
     const E = i0 > 0 ? refineBoundary(pts[i0 - 1][0], pts[i0 - 1][1], pts[i0][0], pts[i0][1], +h) : pts[i0];
     const X = i1 < hs.length - 1 ? refineBoundary(pts[i1 + 1][0], pts[i1 + 1][1], pts[i1][0], pts[i1][1], +h) : pts[i1];
-    const open = (i0 === 0 && distToHexEdge(+h, E) > TOL) || (i1 === hs.length - 1 && distToHexEdge(+h, X) > TOL);
     const chain = [E, ...pts.slice(i0, i1 + 1), X];
-    if (chain.length >= 2) cb(+h, chain, open);
+    if (chain.length >= 2) cb(+h, chain);
   }
 }
 // Run cb(hex, chain, seaPt, kind) for every per-hex barrier segment. Two kinds of line cut a hex up.
@@ -552,12 +550,11 @@ function forEachHexChain(pts0, cb) {
 // the only way between them is a bridge. Both are handed to the same splitter.
 function forEachHexSplit(cb) {
   for (const f of S.features.features) {
-    // A river that peters out inside a hex — where a major river becomes a minor one, say — leaves
-    // that hex whole: there is nothing to stop you walking round the end of it. Splitting on it
-    // anyway made a barrier that isn't there, and left the two "banks" failing to tile the hex, which
-    // is the wedge of bare terrain showing through at the river's end.
     if (f.type === 'river_major') {
-      forEachHexChain(f.pts, (h, chain, open) => { if (!open) cb(h, chain, null, 'river'); });
+      // Where a polyline stops is not where the river stops: a long river is drawn as several lines
+      // laid end to end, and a join lands somewhere inside a hex like any other end would. So an end
+      // only counts as the river petering out if no *other* major river takes up where it left off.
+      forEachHexChain(f.pts, (h, chain) => cb(h, chain, null, 'river'));
       continue;
     }
     if (f.type !== 'coast') continue;
@@ -582,6 +579,30 @@ const isClosedRing = ch => ch.length >= 4 &&
   Math.abs(ch[0][0] - ch[ch.length - 1][0]) < 0.5 && Math.abs(ch[0][1] - ch[ch.length - 1][1]) < 0.5;
 // Split a hex crossed by a coast and/or a major river into regions.
 function hexSubcells(h, chains, seaPts, kinds) {
+  // A river only divides a hex if both its ends are anchored: on the hex boundary, on another line
+  // in this hex (a coast it flows into, a river it joins), or inside a closed one (a lake it empties
+  // into). An end loose in open ground is a river petering out — you walk round it — and splitting
+  // on it invents a barrier and leaves the two "banks" failing to tile the hex, which shows as a
+  // wedge of bare terrain at the river's end. Where a polyline merely stops says nothing by itself:
+  // a long river is drawn as several lines laid end to end, and a join lands inside a hex like any
+  // other end would.
+  // Generous, because a freehand line stops a few pixels short of what it visibly runs into, while a
+  // river petering out in open ground ends nowhere near anything at all.
+  const TOL = S.G.hex_size * 0.2;
+  const nearChain = (p, ci) => chains.some((c, k) => {
+    if (k === ci) return false;
+    for (let i = 0; i + 1 < c.length; i++)
+      if (distToSeg(p[0], p[1], c[i][0], c[i][1], c[i + 1][0], c[i + 1][1]) <= TOL) return true;
+    return isClosedRing(c) && pointInPoly(p, c);
+  });
+  const anchored = (p, ci) => distToHexEdge(h, p) <= TOL || nearChain(p, ci);
+  const keep = chains.map((c, ci) =>
+    kinds[ci] !== 'river' || (anchored(c[0], ci) && anchored(c[c.length - 1], ci)));
+  if (keep.some(k => !k)) {
+    chains = chains.filter((_, i) => keep[i]);
+    kinds = kinds.filter((_, i) => keep[i]);
+    if (!chains.length) return { regions: [], adj: [], riverPairs: [], seaPolys: [], landPolys: [] };
+  }
   // Common case — one line running through the hex: exact vector two-way split (clean, follows
   // the line). A single *closed* chain falls through to the flood fill instead.
   if (chains.length === 1 && !isClosedRing(chains[0])) {
@@ -1181,7 +1202,12 @@ function deriveAdj() {
   // more than a single sample: where a river crosses an edge, the two hexes place that crossing a
   // pixel or so apart, and one stray sample of overlap would otherwise pair a north bank with a
   // south one and let the column stroll across.
-  const MEET_N = 16, MEET_MIN = 2, MEET_DRY = S.G.hex_size * 0.12;
+  // Sampled finely, because a real meeting can be narrow: where a river crosses an edge near a corner
+  // the far bank keeps only a short stretch of it, and at 16 samples — most of them then thrown out
+  // for being in the water — a genuine connection could come down to a single sample and be refused,
+  // which sent routes the long way round. 3 of 32 is about a tenth of an edge: enough to shrug off the
+  // stray sample or two where the two hexes put the crossing point slightly differently.
+  const MEET_N = 32, MEET_MIN = 3, MEET_DRY = S.G.hex_size * 0.12;
   for (const h of S.adj.sub.keys()) for (const n of neighbors(h)) {
     if (!S.hexes[n] || S.hexes[n].t === 'N/A') continue;
     const [c1, c2] = sharedEdgeCorners(h, n);
@@ -1766,13 +1792,18 @@ function routeLeg(rt, o) {
     for (let j = 0; j < legSteps.length; j++) {
       const st = legSteps[j];
       if (i > 0 && j === 0) { prevH = st.h; continue; }
-      flat.push({ st, prevH, first: i === 0 && j === 0 });
+      // The last step of a leg is a waypoint you placed — a stop, not somewhere the line merely
+      // passes through — so it gets anchored like the route's two ends do.
+      flat.push({ st, prevH, first: i === 0 && j === 0, wp: j === legSteps.length - 1 });
       prevH = st.h;
     }
   });
   let totHex = 0, totMiles = 0; const steps = [], allPts = [];
   for (let idx = 0; idx < flat.length; idx++) {
-    const { st, prevH: ph, first } = flat[idx];
+    const { st, prevH: ph, first, wp } = flat[idx];
+    // A waypoint is a place the column actually stops, so the line goes to its stronghold marker if
+    // it has one — the same anchoring the route's start and end have always had.
+    const anchor = wp ? endPoint(st.h, st.ri) : nodePoint(st.h, st.ri);
     steps.push(st);
     if (first) { allPts.push(endPoint(st.h, st.ri)); continue; }
     if (st.h !== ph) { // a trade hop covers several hexes at once and knows its own real length
@@ -1793,10 +1824,12 @@ function routeLeg(rt, o) {
       // via the node puts a jog in the line the moment the node lies off to one side, which is what
       // it does coming off a bridge. A road's geometry ends on the road itself, so it is left alone.
       const np = nodePoint(st.h, st.ri), last = gpts[gpts.length - 1];
-      const drop = nxt && gpts.length > 1 && Math.hypot(last[0] - np[0], last[1] - np[1]) < 0.01;
-      allPts.push(...(drop ? gpts.slice(0, -1) : gpts));
+      const landsOnNode = gpts.length > 1 && Math.hypot(last[0] - np[0], last[1] - np[1]) < 0.01;
+      if (landsOnNode && wp) { allPts.push(...gpts.slice(0, -1), anchor); continue; } // stop at the marker
+      allPts.push(...(nxt && landsOnNode ? gpts.slice(0, -1) : gpts));
       continue;
     }
+    if (wp) { allPts.push(anchor); continue; } // a stop is reached, never cut past or shortcut to
     if (staysInHex) continue;
     // Off-road / plain march (no feature to trace). If the next step rejoins a drawn feature
     // (a road), aim straight at where we rejoin it — its nearest end in this hex — rather than
@@ -1806,7 +1839,7 @@ function routeLeg(rt, o) {
       const ng = stepGeom(nxt.st, st.h);
       if (ng && ng.length) joinPt = ng[0];
     }
-    allPts.push(joinPt || (idx === flat.length - 1 ? endPoint(st.h, st.ri) : nodePoint(st.h, st.ri)));
+    allPts.push(joinPt || anchor);
   }
   // A geometry step (sailing a river, or a road) ends at the feature's mid-hex point, which can
   // stop short of the destination hex's node point (its marker) — e.g. getting off a river into
@@ -1933,9 +1966,8 @@ function computeRoute() {
   const results = [];
   S.routes.forEach((rt, i) => {
     const act = i === S.activeRoute;
-    rt.wps.forEach((w, wi) => {
-      const term = wi === 0 || wi === rt.wps.length - 1; // route ends follow the line to the stronghold
-      const [cx, cy] = term ? endPoint(w.h, w.ri | 0) : nodePoint(w.h, w.ri | 0);
+    rt.wps.forEach(w => {
+      const [cx, cy] = endPoint(w.h, w.ri | 0); // every waypoint is a stop, and stops sit at the marker
       const sea = !!(region(w.h, w.ri | 0)?.sea && !region(w.h, w.ri | 0)?.river);
       el('circle', { cx, cy, r: act ? 6 : 5, fill: sea ? rt.color : 'none', stroke: rt.color,
                      'stroke-width': act ? 2.4 : 1.8, opacity: act ? 1 : 0.7 }, groups.route);
