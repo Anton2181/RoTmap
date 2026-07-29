@@ -208,6 +208,40 @@ function buildScaffold() {
 function applyViewBox() {
   svg.setAttribute('viewBox', `${S.vb.x} ${S.vb.y} ${S.vb.w} ${S.vb.h}`);
 }
+
+// The default viewBox is the whole map, which is half again as wide as it is tall. An SVG letterboxes
+// a viewBox that doesn't match its box, so on a portrait phone the map arrives as a thin band across
+// the middle of a mostly empty screen. On those screens the opening view is instead reshaped to the
+// container's aspect ratio and zoomed until the map covers it. A mouse-driven window keeps the
+// familiar whole-map view.
+const FULL_VB = { ...S.vb };
+const adaptiveView = () => matchMedia('(pointer: coarse), (max-width: 820px)').matches;
+
+function coverView() {
+  const r = svg.getBoundingClientRect();
+  if (!r.width || !r.height) return;
+  const a = r.width / r.height;
+  const h = Math.min(FULL_VB.h, FULL_VB.w / a), w = h * a;
+  S.vb = { x: FULL_VB.x + (FULL_VB.w - w) / 2, y: FULL_VB.y + (FULL_VB.h - h) / 2, w, h };
+  applyViewBox();
+}
+// Rotating a phone swaps the aspect ratio. Reshape the viewBox to match, holding the centre and the
+// visible area, so the view neither letterboxes nor jumps to a different part of the map.
+function reshapeToAspect() {
+  const r = svg.getBoundingClientRect();
+  if (!r.width || !r.height) return;
+  const a = r.width / r.height;
+  const cx = S.vb.x + S.vb.w / 2, cy = S.vb.y + S.vb.h / 2;
+  const h = Math.sqrt(S.vb.w * S.vb.h / a), w = h * a;
+  S.vb = { x: cx - w / 2, y: cy - h / 2, w, h };
+  applyViewBox();
+}
+let reshapeTimer = null;
+addEventListener('resize', () => {
+  if (!adaptiveView()) return;   // desktop keeps whatever the user had, letterboxing and all
+  clearTimeout(reshapeTimer);
+  reshapeTimer = setTimeout(reshapeToAspect, 150);
+});
 function toWorld(e) {
   const r = svg.getBoundingClientRect();
   const s = Math.min(r.width / S.vb.w, r.height / S.vb.h);
@@ -1786,6 +1820,55 @@ function newRoute() {
   computeRoute();
 }
 
+// A drawn route joins points that can sit well off-centre in their hexes: a stronghold marker up
+// against the rim of one, the end of a road inside the next. Straight between two such points the
+// line can leave both hexes and clip the corner of one the column never set foot in — a road ending
+// high in hex 1933 drawn on to Časman's keep, high in 1932, passed clean over the top of the edge
+// they share and through 1843 above it.
+//
+// A hex is convex, so touching the line down on the edge the two hexes share settles it for good:
+// each half then lies wholly inside one of the two. The touch-down goes where the straight line
+// would have crossed that edge, so a line that was already honest doesn't move at all — only one
+// pulled back from the corners, where three hexes meet and a stroke of any width would still show
+// on the wrong side.
+const EDGE_KEEP = 0.06; // fraction of the shared edge left clear at each end when a line is moved
+
+function sharedEdgeTouchdown(a, b, p, q) {
+  const [c1, c2] = sharedEdgeCorners(a, b);
+  const d1 = [q[0] - p[0], q[1] - p[1]], d2 = [c2[0] - c1[0], c2[1] - c1[1]];
+  const den = d1[0] * d2[1] - d1[1] * d2[0];
+  let t;
+  if (Math.abs(den) < 1e-9) {         // running parallel to the edge: aim at the nearest bit of it
+    t = onWayFrac([(p[0] + q[0]) / 2, (p[1] + q[1]) / 2], c1, c2);
+  } else {
+    const r = [c1[0] - p[0], c1[1] - p[1]];
+    const s = (r[0] * d2[1] - r[1] * d2[0]) / den;   // how far along p→q the crossing falls
+    t = (r[0] * d1[1] - r[1] * d1[0]) / den;         // how far along the edge it falls
+    // The line already passes over the shared edge somewhere between the two points, so it never
+    // left the pair of hexes and there is nothing to fix. Crossing close to a corner counts: the
+    // corner belongs to both hexes, and a road drawn over one must not be nudged off it.
+    if (s > 0 && s < 1 && t >= 0 && t <= 1) return null;
+  }
+  t = Math.min(1 - EDGE_KEEP, Math.max(EDGE_KEEP, t));
+  return [c1[0] + d2[0] * t, c1[1] + d2[1] * t];
+}
+function throughSharedEdges(pts) {
+  if (pts.length < 2) return pts;
+  const out = [pts[0]];
+  for (let i = 1; i < pts.length; i++) {
+    const p = pts[i - 1], q = pts[i];
+    const a = nearestHex(p[0], p[1]), b = nearestHex(q[0], q[1]);
+    if (a && b && a !== b && neighbors(a).includes(b)) {
+      const td = sharedEdgeTouchdown(a, b, p, q);
+      // Tidying the geometry must never march the column across a major river it never forded.
+      const safe = td && !(!segCrossesMajor(p, q) && (segCrossesMajor(p, td) || segCrossesMajor(td, q)));
+      if (safe) out.push(td);
+    }
+    out.push(q);
+  }
+  return out;
+}
+
 function routeLeg(rt, o) {
   // DP across waypoints over the (afloat, ships) state, jointly optimal for the whole route.
   const wps = rt.wps;
@@ -1881,7 +1964,7 @@ function routeLeg(rt, o) {
     const last = flat[flat.length - 1].st, np = endPoint(last.h, last.ri), lp = allPts[allPts.length - 1];
     if (!lp || Math.hypot(lp[0] - np[0], lp[1] - np[1]) > 0.5) allPts.push(np);
   }
-  return { irl: best.cost, hexes: totHex, miles: totMiles, steps, pts: allPts, fail: null };
+  return { irl: best.cost, hexes: totHex, miles: totMiles, steps, pts: throughSharedEdges(allPts), fail: null };
 }
 
 /* ---------------- isochrone ---------------- */
@@ -2081,6 +2164,7 @@ function renderRouteList(results) {
     div.onclick = () => { S.activeRoute = i; computeRoute(); };
     list.appendChild(div);
   });
+  updateDrawerBadge(results);
 }
 
 function saveRoutes() {
@@ -2089,6 +2173,45 @@ function saveRoutes() {
 
 /* ---------------- interactions ---------------- */
 let pan = null, downPos = null, spaceHeld = false, edgeSnap = false;
+
+// Touch: every live pointer is tracked so that a second finger can be recognised as a pinch. A
+// finger also needs more slack than a mouse before a press counts as a drag rather than a tap —
+// nobody holds a thumb within 5px while tapping.
+const ptrs = new Map();
+let pinch = null;      // { d, vb, wx, wy } — finger distance and viewBox as the gesture began
+let tapDead = false;   // a pinch happened; ignore the taps as the fingers come off
+const tapSlop = e => (e.pointerType === 'mouse' ? 5 : 12);
+
+function twoFingers() {
+  const [a, b] = [...ptrs.values()];
+  return { clientX: (a.x + b.x) / 2, clientY: (a.y + b.y) / 2, d: Math.hypot(a.x - b.x, a.y - b.y) };
+}
+function startPinch() {
+  pan = null; S.dragErase = null;
+  const m = twoFingers();
+  const [wx, wy] = toWorld(m);
+  pinch = { d: m.d, vb: { ...S.vb }, wx, wy };
+  tooltip.hidden = true; groups.hover.innerHTML = '';
+}
+function movePinch() {
+  const m = twoFingers();
+  if (!m.d || !pinch.d) return;
+  const r = svg.getBoundingClientRect();
+  const w = Math.min(9000, Math.max(80, pinch.vb.w * pinch.d / m.d));  // fingers apart => narrower viewBox
+  const h = pinch.vb.h * (w / pinch.vb.w);
+  const s = Math.min(r.width / w, r.height / h);
+  const ox = (r.width - w * s) / 2, oy = (r.height - h * s) / 2;
+  // Keep the world point that was under the fingers pinned to their midpoint, so the gesture zooms
+  // and pans at once — the same anchoring the wheel handler does around the cursor.
+  S.vb.x = pinch.wx - (m.clientX - r.left - ox) / s;
+  S.vb.y = pinch.wy - (m.clientY - r.top - oy) / s;
+  S.vb.w = w; S.vb.h = h;
+  applyViewBox();
+}
+function dropPointer(e) {
+  ptrs.delete(e.pointerId);
+  if (pinch && ptrs.size < 2) { pinch = null; pan = null; }
+}
 svg.addEventListener('wheel', e => {
   e.preventDefault();
   const [wx, wy] = toWorld(e);
@@ -2108,6 +2231,10 @@ svg.addEventListener('selectstart', e => e.preventDefault());
 svg.addEventListener('pointerdown', e => {
   const sel = window.getSelection?.();
   if (sel && !sel.isCollapsed) sel.removeAllRanges();
+  ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (ptrs.size === 2) { startPinch(); tapDead = true; return; }
+  if (ptrs.size > 2) return;
+  tapDead = false;
   downPos = [e.clientX, e.clientY];
   if (e.button === 0 && S.mode === 'draw' && S.tool === 'erase') {
     S.dragErase = { undoPushed: false };
@@ -2115,14 +2242,17 @@ svg.addEventListener('pointerdown', e => {
     return;
   }
   // Left-drag pans. A click only counts if the pointer barely moved (see pointerup), so this never
-  // steals a waypoint — and it is what View mode used to be for.
-  if (e.button === 1 || spaceHeld || (e.button === 0 && S.mode !== 'draw')) {
+  // steals a waypoint — and it is what View mode used to be for. On touch a one-finger drag always
+  // pans, draw mode included: there points are placed by tapping, so nothing is lost.
+  if (e.button === 1 || spaceHeld || e.pointerType !== 'mouse' || (e.button === 0 && S.mode !== 'draw')) {
     pan = { x: e.clientX, y: e.clientY, vb: { ...S.vb } };
     svg.setPointerCapture(e.pointerId);
     e.preventDefault();
   }
 });
 svg.addEventListener('pointermove', e => {
+  if (ptrs.has(e.pointerId)) ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pinch) { if (ptrs.size >= 2) movePinch(); return; }
   if (pan) {
     const r = svg.getBoundingClientRect();
     const s = Math.min(r.width / S.vb.w, r.height / S.vb.h);
@@ -2131,7 +2261,7 @@ svg.addEventListener('pointermove', e => {
     applyViewBox();
     return;
   }
-  if (S.dragErase && (e.buttons & 1) && Math.hypot(e.clientX - downPos[0], e.clientY - downPos[1]) > 5) {
+  if (S.dragErase && (e.buttons & 1) && Math.hypot(e.clientX - downPos[0], e.clientY - downPos[1]) > tapSlop(e)) {
     const [wx, wy, s] = toWorld(e);
     eraseWholeAt(wx, wy, s);
     return;
@@ -2139,11 +2269,19 @@ svg.addEventListener('pointermove', e => {
   onHover(e);
 });
 svg.addEventListener('pointerup', e => {
+  // A pinch must not leave a tap behind as the fingers lift, one after the other.
+  const afterPinch = !!pinch || tapDead;
+  dropPointer(e);
+  if (afterPinch) {
+    pan = null; S.dragErase = null; downPos = null;
+    if (!ptrs.size) tapDead = false;
+    return;
+  }
   if (pan) {
     // A left-press starts a pan optimistically, since it can't yet be known whether it will turn
     // into a drag. If the pointer never really moved it was a click after all, so fall through and
     // let it place a waypoint. Middle-button and space-held drags are only ever panning.
-    const moved = !downPos || Math.hypot(e.clientX - downPos[0], e.clientY - downPos[1]) > 5;
+    const moved = !downPos || Math.hypot(e.clientX - downPos[0], e.clientY - downPos[1]) > tapSlop(e);
     pan = null;
     if (moved || e.button !== 0 || spaceHeld) return;
   }
@@ -2152,7 +2290,7 @@ svg.addEventListener('pointerup', e => {
     if (dr.undoPushed) { if (S.needRecompute) { computeRoute(); S.needRecompute = false; } return; } // was a drag wipe
     // otherwise fall through: treat as a normal single click (granular erase)
   }
-  if (!downPos || Math.hypot(e.clientX - downPos[0], e.clientY - downPos[1]) > 5) return;
+  if (!downPos || Math.hypot(e.clientX - downPos[0], e.clientY - downPos[1]) > tapSlop(e)) return;
   if (e.button !== 0) return;
   const [wx, wy, s] = toWorld(e);
   if (S.mode === 'draw') drawClick(wx, wy, s, e);
@@ -2171,6 +2309,11 @@ svg.addEventListener('pointerup', e => {
     S.routes[S.activeRoute].wps.push({ h, ri });
     computeRoute();
   }
+});
+// A cancelled pointer (the browser taking over the gesture, a call coming in) never sends pointerup.
+svg.addEventListener('pointercancel', e => {
+  dropPointer(e);
+  if (!ptrs.size) { pan = null; tapDead = false; S.dragErase = null; downPos = null; }
 });
 svg.addEventListener('contextmenu', e => {
   e.preventDefault();
@@ -2560,6 +2703,14 @@ document.getElementById('isoClear').onclick = () => {
 for (const id of ['isoBand', 'isoMax', 'isoMode'])
   document.getElementById(id).addEventListener('change', computeRoute);
 document.getElementById('clearRoute').onclick = () => { S.routes = []; S.activeRoute = -1; computeRoute(); };
+// Same as right-clicking the map, for touchscreens, which have no second button. Two buttons do it:
+// one in the sheet beside its siblings, one floating on the map for when the sheet is shut.
+function removeLastWaypoint() {
+  const rt = S.routes[S.activeRoute];
+  if (rt?.wps.length) { rt.wps.pop(); computeRoute(); }
+}
+document.getElementById('undoWp').onclick = removeLastWaypoint;
+document.getElementById('undoWpFloat').onclick = removeLastWaypoint;
 for (const id of ['inf', 'cav', 'wag', 'non', 'li', 'forced', 'marines', 'fleet', 'embark', 'noTrade', 'weather'])
   document.getElementById(id).addEventListener('change', computeRoute);
 
@@ -2632,7 +2783,7 @@ async function boot() {
   try { S.names = await (await fetch('data/strongholds.json')).json(); } catch {}
   initGeom();
   buildScaffold();
-  applyViewBox();
+  if (adaptiveView()) coverView(); else applyViewBox();
   renderTerrain();
   const ls = localStorage.getItem(LS_KEY);
   if (ls) { try { S.features = JSON.parse(ls); } catch {} }
@@ -2655,6 +2806,62 @@ async function boot() {
   document.getElementById('saveInfo').textContent =
     `${S.features.features.length} features loaded.`;
 }
+/* ---------------- bottom sheet (narrow screens) ----------------
+   The sidebar is the same element at every width; below 820px the stylesheet parks it off the bottom
+   edge and these handlers slide it in. On desktop the button and grip are display:none, so none of
+   this ever fires. */
+const sheetEl = document.getElementById('sidebar');
+const sheetBtn = document.getElementById('drawerToggle');
+const sheetGrip = document.getElementById('drawerGrip');
+const undoFloat = document.getElementById('undoWpFloat');
+
+function openSheet() {
+  sheetEl.classList.add('open');
+  sheetBtn.setAttribute('aria-expanded', 'true');
+}
+function closeSheet() {
+  sheetEl.classList.remove('open');
+  sheetEl.style.transform = '';
+  sheetBtn.setAttribute('aria-expanded', 'false');
+}
+sheetBtn.onclick = openSheet;
+document.getElementById('drawerClose').onclick = closeSheet;
+
+// Carrying the active route's travel time on the opener means the headline number is readable with
+// the sheet shut, which is the state you want while tapping waypoints onto the map.
+function updateDrawerBadge(results) {
+  const b = sheetBtn.querySelector('.badge');
+  if (!b) return;
+  const r = results?.[S.activeRoute];
+  b.textContent = !r ? '' : r.fail ? ' · no route' : ' · ' + r.irl.toFixed(1) + 'd';
+  // The floating Remove last only appears once there is a waypoint it could take back.
+  undoFloat.classList.toggle('nowp', !S.routes[S.activeRoute]?.wps.length);
+}
+
+// Drag the grip down to dismiss; a tap on it closes too, since that is what a handle looks like it
+// should do. Anything shorter than 70px springs back.
+let gripDrag = null;
+sheetGrip.addEventListener('pointerdown', e => {
+  gripDrag = { y: e.clientY, dy: 0 };
+  sheetEl.classList.add('dragging');
+  sheetGrip.setPointerCapture(e.pointerId);
+});
+sheetGrip.addEventListener('pointermove', e => {
+  if (!gripDrag) return;
+  gripDrag.dy = Math.max(0, e.clientY - gripDrag.y);
+  sheetEl.style.transform = `translateY(${gripDrag.dy}px)`;
+});
+function endGrip() {
+  if (!gripDrag) return;
+  const dy = gripDrag.dy;
+  gripDrag = null;
+  sheetEl.classList.remove('dragging');
+  sheetEl.style.transform = '';
+  if (dy > 70 || dy < 4) closeSheet();
+}
+sheetGrip.addEventListener('pointerup', endGrip);
+sheetGrip.addEventListener('pointercancel', endGrip);
+
 boot().catch(err => {
   document.body.innerHTML = `<div style="padding:2em;font-family:sans-serif">Failed to load data: ${err}.<br>
   Serve this folder over HTTP (e.g. <code>python -m http.server</code>) — file:// blocks fetch.</div>`;
