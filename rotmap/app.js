@@ -1430,12 +1430,16 @@ function minorCross(a, b) {
 function armyOpts() {
   const v = id => +document.getElementById(id).value || 0;
   const c = id => document.getElementById(id).checked;
-  const army = { inf: v('inf'), cav: v('cav'), wag: v('wag'), non: v('non'), li: v('li') };
+  // The two infantry boxes are separate kinds, so `inf` is the whole of the foot: everything that
+  // counts infantry — column length, fording, whether this is a cavalry-only army — wants the total,
+  // and gets it without having to know the army was entered in two parts.
+  const li = v('li');
+  const army = { inf: v('inf') + li, cav: v('cav'), wag: v('wag'), non: v('non'), li };
   return {
     army,
     // Light infantry set the pace once they are a third of the fighting strength — not, as this used
     // to have it, only when the army is nothing else. Baggage isn't counted in the reckoning.
-    liThird: army.li > 0 && army.li >= (army.inf + army.cav) * RULES.LI_FRACTION,
+    liThird: li > 0 && li >= (army.inf + army.cav) * RULES.LI_FRACTION,
     marines: c('marines'),
     // "Cavalry-only army" = nothing marching on foot and nothing rolling: no infantry, no wagons.
     // Noncombatants don't disqualify it — camp followers keep up or get left behind, either way they
