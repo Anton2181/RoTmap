@@ -155,6 +155,23 @@ function neighbors(id) {
 }
 const pairKey = (a, b) => a < b ? a + '|' + b : b + '|' + a;
 
+// One line of the sheet's CSV. Splitting on commas was fine while every column was a number or Yes/No,
+// but the Region names are free text and one of them may one day have a comma in it.
+function splitCsv(line) {
+  const out = []; let cur = '', q = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (q) {
+      if (c === '"') { if (line[i + 1] === '"') { cur += '"'; i++; } else q = false; }
+      else cur += c;
+    } else if (c === '"') q = true;
+    else if (c === ',') { out.push(cur); cur = ''; }
+    else cur += c;
+  }
+  out.push(cur);
+  return out.map(s => s.trim());
+}
+
 function segIntersect(ax, ay, bx, by, cx, cy, dx, dy) {
   const d1 = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
   const d2 = (bx - ax) * (dy - ay) - (by - ay) * (dx - ax);
@@ -204,7 +221,10 @@ function buildScaffold() {
   groups.route = el('g', { id: 'lyr_route' });
   groups.edit = el('g', { id: 'lyr_edit' });
   groups.hover = el('g', { id: 'lyr_hover' });
-  groups.find = el('g', { id: 'lyr_find' });   // topmost: the blink that marks a searched-for hex
+  groups.selHex = el('g', { id: 'lyr_selHex' });   // topmost: outlines of the hexes the search picked
+  // The region wash goes under the grid, roads and names — it tints the ground, it doesn't bury it.
+  groups.selRegion = el('g', { id: 'lyr_selRegion' });
+  svg.insertBefore(groups.selRegion, groups.grid);
 }
 function applyViewBox() {
   svg.setAttribute('viewBox', `${S.vb.x} ${S.vb.y} ${S.vb.w} ${S.vb.h}`);
@@ -237,11 +257,22 @@ function reshapeToAspect() {
   S.vb = { x: cx - w / 2, y: cy - h / 2, w, h };
   applyViewBox();
 }
-let reshapeTimer = null;
+// Only a real turn of the phone reshapes the view. Reacting to any resize at all was too eager: a
+// window dragged narrow and back, or the one-pixel-wide blip a browser can report mid-resize, would
+// leave the map at a different zoom than it started, having "adapted" to a shape that no longer
+// existed by the time the handler ran. Orientation is the thing worth adapting to, and it is stable.
+let reshapeTimer = null, wasLandscape = null;
 addEventListener('resize', () => {
-  if (!adaptiveView()) return;   // desktop keeps whatever the user had, letterboxing and all
   clearTimeout(reshapeTimer);
-  reshapeTimer = setTimeout(reshapeToAspect, 150);
+  reshapeTimer = setTimeout(() => {
+    const r = svg.getBoundingClientRect();
+    if (!r.width || !r.height) return;
+    const landscape = r.width >= r.height;
+    if (wasLandscape === null) { wasLandscape = landscape; return; }
+    if (landscape === wasLandscape) return;   // still the same way up: leave the view exactly as it is
+    wasLandscape = landscape;
+    reshapeToAspect();
+  }, 150);
 });
 function toWorld(e) {
   const r = svg.getBoundingClientRect();
@@ -298,6 +329,14 @@ async function renderBorders() {
   try { borderScan = { d: ctx.getImageData(0, 0, cv.width, cv.height).data, w: cv.width, h: cv.height }; }
   catch { return; } // tainted, which happens on file://
   paintBorders();
+}
+// The outline of one piece of a hex — the whole hexagon where a coastline hasn't split it, and the
+// piece's own polygon (plus any islands it left behind) where one has. Realm fills are painted with
+// it, and so is the region highlight, which is why a highlighted shore stops at the water's edge.
+function regionShape(hx, r) {
+  if (!r.poly) { const [cx, cy] = hexCenter(hx); return hexPath(cx, cy); }
+  return [r.poly, ...(r.extra || [])].filter(p => p && p.length >= 3)
+    .map(p => p.map((q, i) => (i ? 'L' : 'M') + q[0].toFixed(1) + ' ' + q[1].toFixed(1)).join('') + 'Z').join('');
 }
 // The scan is decoded once and kept; everything below is cheap enough to redo whenever the land
 // changes shape, which it does every time a coastline is drawn — and region indices shift with it,
@@ -372,15 +411,10 @@ function paintBorders() {
     }
   }
   for (const [k, c] of inherited) cols.set(k, c);
-  const shape = (hx, r) => {
-    if (!r.poly) { const [cx, cy] = hexCenter(hx); return hexPath(cx, cy); }
-    return [r.poly, ...(r.extra || [])].filter(p => p && p.length >= 3)
-      .map(p => p.map((q, i) => (i ? 'L' : 'M') + q[0].toFixed(1) + ' ' + q[1].toFixed(1)).join('') + 'Z').join('');
-  };
   const byColour = new Map();
   for (const [key, c] of cols) {
     const [hs, ris] = key.split(':'), r = regionsOf(+hs)[+ris];
-    if (r) byColour.set(c, (byColour.get(c) || '') + shape(+hs, r));
+    if (r) byColour.set(c, (byColour.get(c) || '') + regionShape(+hs, r));
   }
   for (const [c, d] of byColour) // one path per realm, so 4,000 hexes cost a couple of dozen nodes
     el('path', { d, fill: `rgb(${c})`, 'fill-rule': 'evenodd', stroke: 'none' }, g);
@@ -2613,6 +2647,7 @@ function onHover(e) {
   tooltip.innerHTML = `<span class="t">${name ? name + ' — ' : ''}hex ${h}${subLabel}</span><br>` +
     `${v.t}${isSh ? (isPort(h) ? ' · stronghold (coastal/port)' : ' · stronghold (inland)') : ''}` +
     `${v.r ? ' · river (sheet)' : ''}${v.d ? ' · road (sheet)' : ''}` +
+    (v.g ? `<br><span class="rg">${v.g}</span>` : '') +   // the region it belongs to, from the sheet
     (S.iso.data && S.iso.data.has(h) ? `<br>${S.iso.data.get(h).toFixed(1)} IRL d from origin` : '');
   tooltip.hidden = false;
   const wr = svg.parentElement.getBoundingClientRect();
@@ -2626,7 +2661,7 @@ document.addEventListener('keydown', e => {
   if (e.code === 'Space') { spaceHeld = true; e.preventDefault(); }
   else if (e.key === 'e' || e.key === 'E') edgeSnap = true;
   else if (e.key === 'Enter' && S.drawing) finishDrawing();
-  else if (e.key === 'Escape') { S.drawing = null; groups.edit.innerHTML = ''; }
+  else if (e.key === 'Escape') { S.drawing = null; groups.edit.innerHTML = ''; clearSelection(); }
   else if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
     e.preventDefault();
     if (S.drawing && S.drawing.pts.length) { S.drawing.pts.pop(); renderDrawing(); }
@@ -2722,18 +2757,21 @@ document.getElementById('refetchBtn').onclick = async () => {
   info.textContent = 'Fetching sheet…';
   try {
     const txt = await (await fetch(SHEET_URL)).text();
-    const rows = txt.trim().split('\n').map(l => l.split(',').map(c => c.replace(/^"|"$/g, '')));
+    const rows = txt.trim().split('\n').map(splitCsv);
     const head = rows[0];
     const ix = n => head.indexOf(n);
+    const gi = ix('Region');       // added to the sheet later than the rest; tolerate its absence
     const hexes = {};
     for (const r of rows.slice(1)) {
-      hexes[+r[ix('Hexcode')]] = {
+      const h = {
         t: r[ix('Terrain')], s: r[ix('Stronghold')] === 'Yes',
         r: r[ix('River')] === 'Yes', d: r[ix('Road')] === 'Yes',
       };
+      if (gi >= 0 && r[gi]) h.g = r[gi];
+      hexes[+r[ix('Hexcode')]] = h;
     }
     S.hexes = hexes;
-    renderTerrain(); renderLabels(); S.adj = null; computeRoute();
+    renderTerrain(); renderLabels(); S.adj = null; renderSearch(); computeRoute();
     info.textContent = `Fetched ${Object.keys(hexes).length} hexes from the sheet (in-memory; data/terrain.json unchanged).`;
   } catch (err) { info.textContent = 'Fetch failed: ' + err; }
 };
@@ -2787,6 +2825,7 @@ async function boot() {
   initGeom();
   buildScaffold();
   if (adaptiveView()) coverView(); else applyViewBox();
+  { const r = svg.getBoundingClientRect(); if (r.width && r.height) wasLandscape = r.width >= r.height; }
   renderTerrain();
   const ls = localStorage.getItem(LS_KEY);
   if (ls) { try { S.features = JSON.parse(ls); } catch {} }
@@ -2860,6 +2899,12 @@ function placeList() {
   for (const id in S.features.strongholds) if (!S.features.strongholds[id].removed) add(id, S.names.hexes[id]);
   return out;
 }
+// The regions the sheet gives each hex, with how many hexes each covers.
+function regionList() {
+  const n = new Map();
+  for (const id in S.hexes) { const g = S.hexes[id].g; if (g) n.set(g, (n.get(g) || 0) + 1); }
+  return [...n].map(([name, hexes]) => ({ name, hexes }));
+}
 const SEARCH_MAX = 8;
 function searchPlaces(raw) {
   const q = fold(raw);
@@ -2873,70 +2918,204 @@ function searchPlaces(raw) {
   // a single wrong letter would match half the map. Right spellings always rank above near ones, so
   // being generous here only ever adds rows below the good answers.
   const tol = q.length <= 2 ? 0 : q.length >= 9 ? 2 : 1;
+  // Spelt right beats spelt nearly right; then the whole name, then a name that starts with what was
+  // typed, then one that has it later on. Ties go to the shorter name.
+  const score = n => {
+    const cost = subEdit(q, n);
+    if (cost > tol) return null;
+    const at = cost === 0 ? n.indexOf(q) : 99;
+    return cost * 10 + (n === q ? 0 : at === 0 ? 1 : at > 0 ? 2 + Math.min(at, 20) / 100 : 3) + n.length / 1000;
+  };
   for (const pl of placeList()) {
     const n = fold(pl.name);
     if (!n) continue;
-    const cost = subEdit(q, n);
-    if (cost > tol) continue;
-    const at = cost === 0 ? n.indexOf(q) : 99;
-    // Spelt right beats spelt nearly right; then the whole name, then a name that starts with what
-    // was typed, then one that has it later on. Ties go to the shorter name.
-    const place = n === q ? 0 : at === 0 ? 1 : at > 0 ? 2 + Math.min(at, 20) / 100 : 3;
-    hits.push({ h: pl.h, name: pl.name, rank: cost * 10 + place + n.length / 1000 });
+    const rank = score(n);
+    if (rank !== null) hits.push({ h: pl.h, name: pl.name, rank });
+  }
+  for (const rg of regionList()) {
+    const rank = score(fold(rg.name));
+    if (rank !== null) hits.push({ region: rg.name, name: rg.name, hexes: rg.hexes, rank });
   }
   hits.sort((a, b) => a.rank - b.rank || a.name.localeCompare(b.name));
   const seen = new Set();
-  return hits.filter(x => !seen.has(x.h) && seen.add(x.h)).slice(0, SEARCH_MAX);
+  return hits.filter(x => { const k = x.region ?? x.h; return !seen.has(k) && seen.add(k); }).slice(0, SEARCH_MAX);
 }
 
 const searchInput = document.getElementById('search');
 const searchBox = document.getElementById('searchResults');
 let searchHits = [], searchSel = 0;
 
+/* What the search has picked out is a *selection*, not a pointer: it stays lit until you drop it.
+   A plain click selects one thing and drops everything else; shift-click adds to what is already
+   there, or takes that one back out. Selected rows stay in the list even once the box is empty, so a
+   selection made three searches ago can still be found and switched off. */
+let sel = [];      // [{ region } | { h }] in the order they were chosen
+const selKey = it => (it.region != null ? 'r:' + it.region : 'h:' + it.h);
+const inSel = it => sel.some(s => selKey(s) === selKey(it));
+const regionSize = name => {
+  let n = 0;
+  for (const id in S.hexes) if (S.hexes[id].g === name) n++;
+  return n;
+};
+
+// The rows on show: everything selected, pinned at the top, then whatever the query turns up that
+// isn't selected already.
+function searchRows() {
+  const pinned = sel.map(it => it.region != null
+    ? { region: it.region, name: it.region, hexes: regionSize(it.region) }
+    : { h: it.h, name: S.features.labels[it.h] || S.names.hexes[it.h] || '' });
+  const keys = new Set(pinned.map(selKey));
+  const hits = searchPlaces(searchInput.value).filter(x => !keys.has(selKey(x)));
+  return { pinned, hits, rows: [...pinned, ...hits] };
+}
+
 function renderSearch() {
-  searchHits = searchPlaces(searchInput.value);
+  const { pinned, rows } = searchRows();
+  searchHits = rows;
   searchBox.innerHTML = '';
-  if (!searchInput.value.trim()) return;
-  if (!searchHits.length) {
-    searchBox.innerHTML = '<div class="srnone">Nothing close to that name.</div>';
+  if (!rows.length) {
+    if (searchInput.value.trim()) searchBox.innerHTML = '<div class="srnone">Nothing close to that name.</div>';
     return;
   }
-  searchSel = Math.max(0, Math.min(searchSel, searchHits.length - 1));
-  searchHits.forEach((hit, i) => {
+  // The keyboard cursor lives among the results, not the pinned rows, which are there to be clicked.
+  searchSel = Math.max(pinned.length && rows.length > pinned.length ? pinned.length : 0,
+                       Math.min(searchSel, rows.length - 1));
+  rows.forEach((hit, i) => {
     const d = document.createElement('div');
-    d.className = 'sr' + (i === searchSel ? ' sel' : '');
+    d.className = 'sr' + (i === searchSel ? ' sel' : '') + (inSel(hit) ? ' on' : '');
     const nm = document.createElement('span'), meta = document.createElement('span');
     nm.className = 'nm'; meta.className = 'meta';
     nm.textContent = hit.name || 'hex ' + hit.h;          // textContent: names are data, not markup
-    const t = S.hexes[hit.h]?.t;
-    meta.textContent = hit.h + (t ? ' · ' + t : '');
+    if (hit.region != null) {
+      meta.textContent = `region · ${hit.hexes} hexes`;
+    } else {
+      const t = S.hexes[hit.h]?.t;
+      meta.textContent = hit.h + (t ? ' · ' + t : '');
+    }
+    d.title = inSel(hit) ? 'Click to deselect · shift-click to remove from the selection'
+                         : 'Click to select · shift-click to add to the selection';
+    d.onclick = e => pick(hit.region != null ? { region: hit.region } : { h: hit.h }, e.shiftKey);
     d.append(nm, meta);
-    d.onclick = () => goToPlace(hit.h);
     searchBox.appendChild(d);
   });
 }
-const FIND_ZOOM = 520;   // world units across the view — about ten hexes, close enough to read names
-function goToPlace(h) {
-  const sh = S.features.strongholds[h];
-  const [cx, cy] = (sh && sh.x != null) ? [sh.x, sh.y] : hexCenter(h);
-  const r = svg.getBoundingClientRect();
-  const a = (r.width && r.height) ? r.width / r.height : S.vb.w / S.vb.h;
-  const w = Math.min(FIND_ZOOM, S.vb.w), hh = w / a;      // already closer in? then stay there
-  S.vb = { x: cx - w / 2, y: cy - hh / 2, w, h: hh };
-  applyViewBox();
-  flashHex(h);
+
+/* ---------------- selection ---------------- */
+function pick(item, add) {
+  const k = selKey(item);
+  const at = sel.findIndex(s => selKey(s) === k);
+  if (add) {
+    // Shift-click is a toggle on the set: it never disturbs the rest of it, and never moves the view
+    // away from what you were looking at while you build one up.
+    if (at >= 0) sel.splice(at, 1); else sel.push(item);
+    renderSelection(at >= 0 ? null : k);
+    renderSearch();
+    return;
+  }
+  // A plain click on the only thing selected switches it off; otherwise it becomes the selection.
+  if (sel.length === 1 && at === 0) {
+    sel = [];
+    renderSelection(null);
+    renderSearch();
+    return;
+  }
+  sel = [item];
+  renderSelection(k);
+  panToSelection(item);
+  renderSearch();
   searchInput.blur();          // and with it the on-screen keyboard
   closeSheet();                // on a phone the map is behind the sheet; get out of the way
 }
-function flashHex(h) {
-  groups.find.innerHTML = '';
-  const [cx, cy] = hexCenter(h);
-  el('path', { d: hexPath(cx, cy), fill: 'none', stroke: '#ffd76e', 'stroke-width': 3,
-               'stroke-linejoin': 'round', 'pointer-events': 'none' }, groups.find);
-  clearTimeout(flashHex._t);
-  flashHex._t = setTimeout(() => { groups.find.innerHTML = ''; }, 1750); // matches the CSS animation
+function clearSelection() {
+  sel = [];
+  renderSelection(null);
 }
-searchInput.addEventListener('input', () => { searchSel = 0; renderSearch(); });
+// Named entry points, one thing at a time — what the search rows and anything else should call.
+const goToPlace = h => pick({ h }, false);
+const goToRegion = name => pick({ region: name }, false);
+
+/* Move the map to what was picked without touching how far in you are: a search is for finding
+   something, not for deciding how closely you wanted to look at it. */
+function panToSelection(item) {
+  let cx, cy;
+  if (item.region != null) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const id in S.hexes) {
+      if (S.hexes[id].g !== item.region) continue;
+      const [hx, hy] = hexCenter(+id);
+      x0 = Math.min(x0, hx); x1 = Math.max(x1, hx);
+      y0 = Math.min(y0, hy); y1 = Math.max(y1, hy);
+    }
+    if (x0 === Infinity) return;
+    cx = (x0 + x1) / 2; cy = (y0 + y1) / 2;   // the middle of the region, however much of it fits
+  } else {
+    const sh = S.features.strongholds[item.h];
+    [cx, cy] = (sh && sh.x != null) ? [sh.x, sh.y] : hexCenter(item.h);
+  }
+  S.vb = { ...S.vb, x: cx - S.vb.w / 2, y: cy - S.vb.h / 2 };
+  applyViewBox();
+}
+
+/* Paint the selection. Regions get a wash under the grid — they are ground, and the roads and names
+   on top of them must stay readable — while single hexes get an outline on the very top layer, where
+   one thin hexagon won't be lost among the roads.
+
+   A region is every hex the sheet gives it, whole. The sheet names a region per *hex*, and that claim
+   covers all of it: lighting only the piece that matched the hex's own terrain left holes, since hex
+   2495 is Flatlands in the Gulf of Arstis and a coastline had cut a bay out of it, leaving the bay —
+   as much Gulf as the open water beside it — dark. Whole hexagons also spare the wash the seams where
+   two flood-filled pieces of one hex don't quite meet. Off-map filler (N/A) is skipped: there is
+   nothing drawn there to light.
+
+   `just` marks the hex chosen a moment ago, which blinks a few times to catch the eye and then
+   settles into the steady outline — the view no longer zooms in, so it needs the help. */
+function regionPath(name) {
+  let d = '';
+  for (const id in S.hexes) {
+    const v = S.hexes[id];
+    if (v.g !== name || v.t === 'N/A') continue;
+    const [cx, cy] = hexCenter(+id);
+    d += hexPath(cx, cy);
+  }
+  return d;
+}
+function renderSelection(justKey) {
+  groups.selRegion.innerHTML = '';
+  groups.selHex.innerHTML = '';
+  sel.forEach((it, i) => {
+    if (it.region == null) return;
+    const d = regionPath(it.region);
+    if (!d) return;
+    el('path', { d, fill: 'rgba(255,215,110,.28)', 'fill-rule': 'evenodd',
+                 stroke: 'none', 'pointer-events': 'none' }, groups.selRegion);
+    // An edge round the outside makes the extent legible where the ground under the wash is already
+    // patchy. Rather than working out the union of a few hundred hexagons, the same shape is stroked
+    // and then masked by everything the shape *isn't*: the half of each line lying inside the region
+    // is hidden, and with it every line between two hexes of the region, since both its halves are
+    // inside. What survives is the outer half of the boundary — the region's silhouette. Each region
+    // keeps its own mask, so where two selected regions adjoin, the border between them still shows.
+    const id = 'selEdgeMask' + i;
+    const mask = el('mask', { id, maskUnits: 'userSpaceOnUse',
+                              x: 0, y: 0, width: S.G.image_width, height: S.G.image_height }, groups.selRegion);
+    el('rect', { x: 0, y: 0, width: S.G.image_width, height: S.G.image_height, fill: '#fff' }, mask);
+    el('path', { d, fill: '#000', 'fill-rule': 'evenodd' }, mask);
+    el('path', { d, fill: 'none', stroke: '#ffd76e', 'stroke-width': 5, 'stroke-linejoin': 'round',
+                 mask: `url(#${id})`, 'pointer-events': 'none' }, groups.selRegion);
+  });
+  for (const it of sel) {
+    if (it.region != null) continue;
+    const [cx, cy] = hexCenter(it.h);
+    const a = { d: hexPath(cx, cy), fill: 'rgba(255,215,110,.18)', stroke: '#ffd76e', 'stroke-width': 3,
+                'stroke-linejoin': 'round', 'pointer-events': 'none' };
+    if (selKey(it) === justKey) a.class = 'just';
+    el('path', a, groups.selHex);
+  }
+}
+
+searchInput.addEventListener('input', () => {
+  searchSel = 0;
+  renderSearch();     // emptying the box leaves the selection alone: its rows stay, to be clicked off
+});
 searchInput.addEventListener('keydown', e => {
   if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
     if (!searchHits.length) return;
@@ -2944,9 +3123,10 @@ searchInput.addEventListener('keydown', e => {
     searchSel = (searchSel + (e.key === 'ArrowDown' ? 1 : searchHits.length - 1)) % searchHits.length;
     renderSearch();
   } else if (e.key === 'Enter') {
-    if (searchHits[searchSel]) goToPlace(searchHits[searchSel].h);
+    const hit = searchHits[searchSel];
+    if (hit) pick(hit.region != null ? { region: hit.region } : { h: hit.h }, e.shiftKey);
   } else if (e.key === 'Escape') {
-    searchInput.value = ''; renderSearch(); searchInput.blur();
+    searchInput.value = ''; clearSelection(); renderSearch(); searchInput.blur();
   }
 });
 

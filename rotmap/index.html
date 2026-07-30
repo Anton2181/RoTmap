@@ -34,9 +34,13 @@ body { display: flex; background: #1c2128; color: #d6dce4; user-select: none; -w
 .sr .nm { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .sr .meta { color: #8b95a3; font-size: 11px; white-space: nowrap; }
 .srnone { color: #8b95a3; font-size: 12px; padding: 4px 2px; }
-/* Found hexes blink a few times and then stop drawing attention to themselves. */
+/* A selection stays lit until you click it off. The hex just picked blinks a few times first, to
+   catch the eye — the animation doesn't hold its last frame, so the outline is simply there again
+   when it finishes. */
 @keyframes findflash { 0%, 100% { opacity: 1 } 50% { opacity: .12 } }
-#lyr_find path { animation: findflash .55s ease-in-out 3; }
+#lyr_selHex > path.just { animation: findflash .55s ease-in-out 3; }
+.sr.on { background: #35404e; }
+.sr.on .nm::before { content: '✓ '; color: #ffd76e; }
 
 .seg { display: flex; border: 1px solid #3a424d; border-radius: 6px; overflow: hidden; }
 .seg button { flex: 1; background: transparent; color: #d6dce4; border: 0; padding: 6px 0; cursor: pointer; }
@@ -111,6 +115,7 @@ input[type=number], select {
   max-width: 220px; z-index: 5;
 }
 #tooltip .t { color: #fff; font-weight: 600; }
+#tooltip .rg { color: #9aa4b2; }
 
 /* ---------------- narrow screens ----------------
    Below 820px the sidebar stops being a column beside the map and becomes a sheet that slides up

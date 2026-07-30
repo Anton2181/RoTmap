@@ -36170,7 +36170,9 @@
  ],
  "labels": {
   "350": "Elea",
+  "380": "Anth",
   "433": "Selinunte",
+  "477": "Tara",
   "532": "Zancle",
   "618": "Himaera",
   "644": "Sam'al",
@@ -36228,8 +36230,12 @@
   "3087": "Caithi",
   "3094": "Arsakos",
   "3105": "Zahya",
+  "3112": "Bit-Kolanu",
   "3281": "Adera",
+  "3378": "Bit-Harraz",
   "3486": "Bahir Dar",
+  "3567": "Bit-Ghodr",
+  "3742": "Bit-Meghlom",
   "3761": "Arsi Negele"
  },
  "strongholds": {
