@@ -204,6 +204,7 @@ function buildScaffold() {
   groups.route = el('g', { id: 'lyr_route' });
   groups.edit = el('g', { id: 'lyr_edit' });
   groups.hover = el('g', { id: 'lyr_hover' });
+  groups.find = el('g', { id: 'lyr_find' });   // topmost: the blink that marks a searched-for hex
 }
 function applyViewBox() {
   svg.setAttribute('viewBox', `${S.vb.x} ${S.vb.y} ${S.vb.w} ${S.vb.h}`);
@@ -2652,6 +2653,8 @@ document.getElementById('modeSeg').addEventListener('click', e => {
   const b = e.target.closest('button'); if (b) setMode(b.dataset.mode);
 });
 if (!LOCAL) document.querySelector('#modeSeg button[data-mode="draw"]').hidden = true;
+// Refetching the sheet and resetting the drawing are for editing, like Draw: not on the published map.
+if (LOCAL) document.getElementById('dataSection').hidden = false;
 setMode('route'); // there is no separate View mode: routing pans and inspects like viewing did
 document.getElementById('toolBtns').addEventListener('click', e => {
   const b = e.target.closest('button'); if (!b) return;
@@ -2806,6 +2809,147 @@ async function boot() {
   document.getElementById('saveInfo').textContent =
     `${S.features.features.length} features loaded.`;
 }
+/* ---------------- place search ----------------
+   The names on this map are full of letters no one is going to type: Naŕes, Hā-aēšema, Zakuruiôi,
+   Sam'al. So nothing is compared as written. Both the query and every name are folded down to plain
+   letters first — accents dropped, case levelled, apostrophes and hyphens thrown away — and even
+   then the comparison allows a few letters to be wrong, so a name half-remembered still finds it. */
+const FOLD_EXTRA = { đ: 'd', ð: 'd', ł: 'l', ø: 'o', æ: 'ae', œ: 'oe', ß: 'ss', þ: 'th' };
+function fold(s) {
+  return (s || '')
+    .normalize('NFD').replace(/\p{M}+/gu, '')       // ŕ → r, ā → a, š → s
+    .toLowerCase()
+    .replace(/[đðłøæœßþ]/g, c => FOLD_EXTRA[c])     // the few that don't decompose
+    .replace(/[^a-z0-9 ]+/g, '')                    // Sam'al and Samal are the same word here
+    .replace(/\s+/g, ' ').trim();
+}
+// The fewest single-letter changes that turn the query into some run of letters inside the name —
+// zero when the name simply contains it. Deletions at either end of the name cost nothing (the first
+// row starts at zero, and any cell of the last row may be the answer), which is what makes this a
+// search for the query *somewhere* in the name rather than a comparison of the two whole strings.
+function subEdit(q, n) {
+  const m = q.length, L = n.length;
+  let pp = new Array(L + 1).fill(0);     // two rows back, for transpositions
+  let prev = new Array(L + 1).fill(0);   // one row back; the zeroes are the free start
+  let cur = new Array(L + 1);
+  for (let i = 1; i <= m; i++) {
+    cur[0] = i;
+    for (let j = 1; j <= L; j++) {
+      let v = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (q[i - 1] === n[j - 1] ? 0 : 1));
+      // Two letters typed the wrong way round is one mistake, not two — and it is the commonest one.
+      if (i > 1 && j > 1 && q[i - 1] === n[j - 2] && q[i - 2] === n[j - 1]) v = Math.min(v, pp[j - 2] + 1);
+      cur[j] = v;
+    }
+    const t = pp; pp = prev; prev = cur; cur = t;
+  }
+  let best = prev[0];
+  for (let j = 1; j <= L; j++) if (prev[j] < best) best = prev[j];
+  return best;
+}
+// Every name the map actually draws, by the same rules renderLabels uses — a hex named by hand wins
+// over its datasheet name, and a stronghold that has been erased is not a place any more.
+function placeList() {
+  const out = [], seen = new Set();
+  const add = (id, name) => {
+    if (seen.has(id)) return;
+    seen.add(id);
+    if (name) out.push({ h: +id, name });
+  };
+  for (const id in S.features.labels) if (!S.features.strongholds[id]?.removed) add(id, S.features.labels[id]);
+  for (const id in S.hexes) if (S.hexes[id].s && !S.features.strongholds[id]?.removed) add(id, S.names.hexes[id]);
+  for (const id in S.features.strongholds) if (!S.features.strongholds[id].removed) add(id, S.names.hexes[id]);
+  return out;
+}
+const SEARCH_MAX = 8;
+function searchPlaces(raw) {
+  const q = fold(raw);
+  if (!q) return [];
+  const hits = [];
+  const num = raw.trim();
+  // A bare number is a hex id. The step table is full of them, so looking one up is worth doing.
+  if (/^\d+$/.test(num) && S.hexes[num])
+    hits.push({ h: +num, name: S.features.labels[num] || S.names.hexes[num] || '', rank: -1 });
+  // How wrong the spelling may be, in letters. One or two letters have to be exact — at that length
+  // a single wrong letter would match half the map. Right spellings always rank above near ones, so
+  // being generous here only ever adds rows below the good answers.
+  const tol = q.length <= 2 ? 0 : q.length >= 9 ? 2 : 1;
+  for (const pl of placeList()) {
+    const n = fold(pl.name);
+    if (!n) continue;
+    const cost = subEdit(q, n);
+    if (cost > tol) continue;
+    const at = cost === 0 ? n.indexOf(q) : 99;
+    // Spelt right beats spelt nearly right; then the whole name, then a name that starts with what
+    // was typed, then one that has it later on. Ties go to the shorter name.
+    const place = n === q ? 0 : at === 0 ? 1 : at > 0 ? 2 + Math.min(at, 20) / 100 : 3;
+    hits.push({ h: pl.h, name: pl.name, rank: cost * 10 + place + n.length / 1000 });
+  }
+  hits.sort((a, b) => a.rank - b.rank || a.name.localeCompare(b.name));
+  const seen = new Set();
+  return hits.filter(x => !seen.has(x.h) && seen.add(x.h)).slice(0, SEARCH_MAX);
+}
+
+const searchInput = document.getElementById('search');
+const searchBox = document.getElementById('searchResults');
+let searchHits = [], searchSel = 0;
+
+function renderSearch() {
+  searchHits = searchPlaces(searchInput.value);
+  searchBox.innerHTML = '';
+  if (!searchInput.value.trim()) return;
+  if (!searchHits.length) {
+    searchBox.innerHTML = '<div class="srnone">Nothing close to that name.</div>';
+    return;
+  }
+  searchSel = Math.max(0, Math.min(searchSel, searchHits.length - 1));
+  searchHits.forEach((hit, i) => {
+    const d = document.createElement('div');
+    d.className = 'sr' + (i === searchSel ? ' sel' : '');
+    const nm = document.createElement('span'), meta = document.createElement('span');
+    nm.className = 'nm'; meta.className = 'meta';
+    nm.textContent = hit.name || 'hex ' + hit.h;          // textContent: names are data, not markup
+    const t = S.hexes[hit.h]?.t;
+    meta.textContent = hit.h + (t ? ' · ' + t : '');
+    d.append(nm, meta);
+    d.onclick = () => goToPlace(hit.h);
+    searchBox.appendChild(d);
+  });
+}
+const FIND_ZOOM = 520;   // world units across the view — about ten hexes, close enough to read names
+function goToPlace(h) {
+  const sh = S.features.strongholds[h];
+  const [cx, cy] = (sh && sh.x != null) ? [sh.x, sh.y] : hexCenter(h);
+  const r = svg.getBoundingClientRect();
+  const a = (r.width && r.height) ? r.width / r.height : S.vb.w / S.vb.h;
+  const w = Math.min(FIND_ZOOM, S.vb.w), hh = w / a;      // already closer in? then stay there
+  S.vb = { x: cx - w / 2, y: cy - hh / 2, w, h: hh };
+  applyViewBox();
+  flashHex(h);
+  searchInput.blur();          // and with it the on-screen keyboard
+  closeSheet();                // on a phone the map is behind the sheet; get out of the way
+}
+function flashHex(h) {
+  groups.find.innerHTML = '';
+  const [cx, cy] = hexCenter(h);
+  el('path', { d: hexPath(cx, cy), fill: 'none', stroke: '#ffd76e', 'stroke-width': 3,
+               'stroke-linejoin': 'round', 'pointer-events': 'none' }, groups.find);
+  clearTimeout(flashHex._t);
+  flashHex._t = setTimeout(() => { groups.find.innerHTML = ''; }, 1750); // matches the CSS animation
+}
+searchInput.addEventListener('input', () => { searchSel = 0; renderSearch(); });
+searchInput.addEventListener('keydown', e => {
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    if (!searchHits.length) return;
+    e.preventDefault();
+    searchSel = (searchSel + (e.key === 'ArrowDown' ? 1 : searchHits.length - 1)) % searchHits.length;
+    renderSearch();
+  } else if (e.key === 'Enter') {
+    if (searchHits[searchSel]) goToPlace(searchHits[searchSel].h);
+  } else if (e.key === 'Escape') {
+    searchInput.value = ''; renderSearch(); searchInput.blur();
+  }
+});
+
 /* ---------------- bottom sheet (narrow screens) ----------------
    The sidebar is the same element at every width; below 820px the stylesheet parks it off the bottom
    edge and these handlers slide it in. On desktop the button and grip are display:none, so none of
