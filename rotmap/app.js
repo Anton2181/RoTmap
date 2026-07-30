@@ -2220,23 +2220,37 @@ const tapSlop = e => (e.pointerType === 'mouse' ? 5 : 12);
 /* Hold a finger still on a hex to read it. A mouse has hover, and everything the tooltip says — the
    terrain, the stronghold, which subhex you are over, the region it belongs to — was reachable no
    other way on a touchscreen, since a tap there means "put a waypoint here". A press that stays put
-   for a moment means neither, so it can mean "tell me about this". */
+   for a moment means neither, so it can mean "tell me about this".
+
+   Once the press has been held, the finger becomes a cursor: keep holding and slide it, and the
+   readout follows from hex to hex instead of the map panning under it — which is how you compare a
+   row of strongholds without lifting off and holding again on each one. Panning is what a finger that
+   *hasn't* waited does, so nothing is lost. */
 const LONG_PRESS_MS = 450;
 let longPress = null, longPressed = false;
 
+function showReadout(pt) {
+  onHover(pt);
+  if (tooltip.hidden) return;
+  // Measure it from the left edge first. Left where onHover put it — up against the right edge of the
+  // map — there is no room, so the box wraps itself into a narrow column and reports that width; a
+  // reading taken then would be of the squeezed shape, not the one about to be positioned.
+  tooltip.style.left = '0px';
+  tooltip.style.top = '0px';
+  const w = tooltip.offsetWidth, h = tooltip.offsetHeight;
+  // Above the fingertip rather than under it, where a hand would cover it, and never off the edge.
+  const wr = svg.parentElement.getBoundingClientRect();
+  tooltip.style.left = Math.max(6, Math.min(wr.width - w - 6, pt.clientX - wr.left - w / 2)) + 'px';
+  tooltip.style.top = Math.max(6, pt.clientY - wr.top - h - 20) + 'px';
+}
 function startLongPress(e) {
   cancelLongPress();
   const pt = { clientX: e.clientX, clientY: e.clientY, altKey: false, shiftKey: false };
   longPress = setTimeout(() => {
     longPress = null;
-    longPressed = true;             // so lifting the finger doesn't also drop a waypoint
-    onHover(pt);
-    if (tooltip.hidden) return;
-    // Put it above the fingertip rather than under it, where a hand would cover it.
-    const wr = svg.parentElement.getBoundingClientRect();
-    tooltip.style.left = Math.max(6, Math.min(wr.width - tooltip.offsetWidth - 6,
-                                              pt.clientX - wr.left - tooltip.offsetWidth / 2)) + 'px';
-    tooltip.style.top = Math.max(6, pt.clientY - wr.top - tooltip.offsetHeight - 20) + 'px';
+    longPressed = true;   // lifting the finger now drops no waypoint, and moving it inspects
+    pan = null;           // whatever pan this press had optimistically started is off
+    showReadout(pt);
   }, LONG_PRESS_MS);
 }
 function cancelLongPress() {
@@ -2321,9 +2335,15 @@ svg.addEventListener('pointerdown', e => {
 svg.addEventListener('pointermove', e => {
   const prev = ptrs.get(e.pointerId);
   if (prev) ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY, touch: prev.touch });
-  // Sliding the finger is panning, not holding: the press has stopped being a long one.
+  // Sliding before the hold has registered is panning: the press has stopped being a long one.
   if (longPress && downPos && Math.hypot(e.clientX - downPos[0], e.clientY - downPos[1]) > tapSlop(e)) cancelLongPress();
   if (pinch) { if (ptrs.size >= 2) movePinch(); return; }
+  // Sliding *after* it has registered drags the readout across the map instead.
+  if (longPressed && ptrs.has(e.pointerId)) {
+    pan = null;
+    showReadout({ clientX: e.clientX, clientY: e.clientY, altKey: false, shiftKey: false });
+    return;
+  }
   if (pan) {
     const r = svg.getBoundingClientRect();
     const s = Math.min(r.width / S.vb.w, r.height / S.vb.h);
