@@ -33,6 +33,12 @@ body { display: flex; background: #1c2128; color: #d6dce4; user-select: none; -w
 .sr:hover, .sr.sel { background: #2d333c; }
 .sr .nm { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .sr .meta { color: #8b95a3; font-size: 11px; white-space: nowrap; }
+.sr .addsel {
+  flex: 0 0 22px; width: 22px; height: 22px; padding: 0; margin-left: 2px;
+  background: #2d333c; color: #aeb7c2; border: 1px solid #3a424d; border-radius: 5px;
+  font: 600 14px/1 system-ui, sans-serif; cursor: pointer;
+}
+.sr .addsel:hover { border-color: #5b6673; color: #fff; }
 .srnone { color: #8b95a3; font-size: 12px; padding: 4px 2px; }
 /* A selection stays lit until you click it off. The hex just picked blinks a few times first, to
    catch the eye — the animation doesn't hold its last frame, so the outline is simply there again
@@ -138,6 +144,9 @@ input[type=number], select {
     border-radius: 15px 15px 0 0;
     box-shadow: 0 -12px 34px #000a;
     overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+    /* manipulation: scrolling and pinching still work, but double-tap-to-zoom is off, so a
+       double-tap to rename a route reaches the handler instead of zooming the page. */
+    touch-action: manipulation;
     transform: translateY(calc(100% + 6px));
     transition: transform .26s cubic-bezier(.32, .72, 0, 1);
   }
@@ -188,6 +197,7 @@ input[type=number], select {
   .seg button, .tools button, .row button, .filebtn { padding: 11px 10px; font-size: 13px; }
   input[type=number], select, #search { font-size: 16px; padding: 9px 10px; }
   .sr { padding: 9px 8px; }
+  .sr .addsel { flex: 0 0 32px; width: 32px; height: 32px; font-size: 18px; }
   label { font-size: 13px; }
   .hint { font-size: 12px; }
   .chk { padding: 5px 0; }

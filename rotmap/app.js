@@ -2217,6 +2217,33 @@ let pinch = null;      // { d, vb, wx, wy } — finger distance and viewBox as t
 let tapDead = false;   // a pinch happened; ignore the taps as the fingers come off
 const tapSlop = e => (e.pointerType === 'mouse' ? 5 : 12);
 
+/* Hold a finger still on a hex to read it. A mouse has hover, and everything the tooltip says — the
+   terrain, the stronghold, which subhex you are over, the region it belongs to — was reachable no
+   other way on a touchscreen, since a tap there means "put a waypoint here". A press that stays put
+   for a moment means neither, so it can mean "tell me about this". */
+const LONG_PRESS_MS = 450;
+let longPress = null, longPressed = false;
+
+function startLongPress(e) {
+  cancelLongPress();
+  const pt = { clientX: e.clientX, clientY: e.clientY, altKey: false, shiftKey: false };
+  longPress = setTimeout(() => {
+    longPress = null;
+    longPressed = true;             // so lifting the finger doesn't also drop a waypoint
+    onHover(pt);
+    if (tooltip.hidden) return;
+    // Put it above the fingertip rather than under it, where a hand would cover it.
+    const wr = svg.parentElement.getBoundingClientRect();
+    tooltip.style.left = Math.max(6, Math.min(wr.width - tooltip.offsetWidth - 6,
+                                              pt.clientX - wr.left - tooltip.offsetWidth / 2)) + 'px';
+    tooltip.style.top = Math.max(6, pt.clientY - wr.top - tooltip.offsetHeight - 20) + 'px';
+  }, LONG_PRESS_MS);
+}
+function cancelLongPress() {
+  clearTimeout(longPress);
+  longPress = null;
+}
+
 function twoFingers() {
   const [a, b] = [...ptrs.values()];
   return { clientX: (a.x + b.x) / 2, clientY: (a.y + b.y) / 2, d: Math.hypot(a.x - b.x, a.y - b.y) };
@@ -2266,11 +2293,17 @@ svg.addEventListener('selectstart', e => e.preventDefault());
 svg.addEventListener('pointerdown', e => {
   const sel = window.getSelection?.();
   if (sel && !sel.isCollapsed) sel.removeAllRanges();
-  ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY, touch: e.pointerType !== 'mouse' });
+  cancelLongPress();
   if (ptrs.size === 2) { startPinch(); tapDead = true; return; }
   if (ptrs.size > 2) return;
   tapDead = false;
+  longPressed = false;
   downPos = [e.clientX, e.clientY];
+  if (e.pointerType !== 'mouse') {
+    tooltip.hidden = true; groups.hover.innerHTML = '';   // a new touch puts the last readout away
+    startLongPress(e);
+  }
   if (e.button === 0 && S.mode === 'draw' && S.tool === 'erase') {
     S.dragErase = { undoPushed: false };
     svg.setPointerCapture(e.pointerId);
@@ -2286,7 +2319,10 @@ svg.addEventListener('pointerdown', e => {
   }
 });
 svg.addEventListener('pointermove', e => {
-  if (ptrs.has(e.pointerId)) ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  const prev = ptrs.get(e.pointerId);
+  if (prev) ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY, touch: prev.touch });
+  // Sliding the finger is panning, not holding: the press has stopped being a long one.
+  if (longPress && downPos && Math.hypot(e.clientX - downPos[0], e.clientY - downPos[1]) > tapSlop(e)) cancelLongPress();
   if (pinch) { if (ptrs.size >= 2) movePinch(); return; }
   if (pan) {
     const r = svg.getBoundingClientRect();
@@ -2304,12 +2340,16 @@ svg.addEventListener('pointermove', e => {
   onHover(e);
 });
 svg.addEventListener('pointerup', e => {
-  // A pinch must not leave a tap behind as the fingers lift, one after the other.
-  const afterPinch = !!pinch || tapDead;
+  cancelLongPress();
+  // A pinch must not leave a tap behind as the fingers lift, one after the other; neither must a
+  // press held long enough to have been asking about the hex instead.
+  const afterPinch = !!pinch || tapDead || longPressed;
   dropPointer(e);
   if (afterPinch) {
     pan = null; S.dragErase = null; downPos = null;
     if (!ptrs.size) tapDead = false;
+    // longPressed deliberately stays set until the next press: a browser that fires its context menu
+    // *after* the finger lifts must still not have that menu taken for a right-click.
     return;
   }
   if (pan) {
@@ -2347,11 +2387,16 @@ svg.addEventListener('pointerup', e => {
 });
 // A cancelled pointer (the browser taking over the gesture, a call coming in) never sends pointerup.
 svg.addEventListener('pointercancel', e => {
+  cancelLongPress();
   dropPointer(e);
-  if (!ptrs.size) { pan = null; tapDead = false; S.dragErase = null; downPos = null; }
+  if (!ptrs.size) { pan = null; tapDead = false; longPressed = false; S.dragErase = null; downPos = null; }
 });
 svg.addEventListener('contextmenu', e => {
   e.preventDefault();
+  // Android fires this from a long press, which here means "tell me about this hex" — it must not
+  // also take a waypoint off the route. A real right-click has its own pointer down while this
+  // arrives, so the test is for a *finger* being down, or one having just been held.
+  if (longPressed || [...ptrs.values()].some(t => t.touch)) return;
   if (S.mode === 'route' && S.activeRoute >= 0 && S.routes[S.activeRoute].wps.length) {
     S.routes[S.activeRoute].wps.pop(); computeRoute();
   }
@@ -2654,7 +2699,13 @@ function onHover(e) {
   tooltip.style.left = (e.clientX - wr.left + 14) + 'px';
   tooltip.style.top = (e.clientY - wr.top + 10) + 'px';
 }
-svg.addEventListener('pointerleave', () => { tooltip.hidden = true; groups.hover.innerHTML = ''; });
+// A mouse leaving the map means you have stopped pointing at anything, so the readout goes away. A
+// *touch* pointer "leaves" the moment the finger lifts, which is exactly when the long-press readout
+// has just appeared and wants to stay — it is dismissed by the next touch instead.
+svg.addEventListener('pointerleave', e => {
+  if (e.pointerType !== 'mouse') return;
+  tooltip.hidden = true; groups.hover.innerHTML = '';
+});
 
 document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
@@ -2732,6 +2783,8 @@ document.getElementById('newRoute').onclick = () => newRoute();
 document.getElementById('isoPick').onclick = () => {
   S.isoPick = !S.isoPick;
   document.getElementById('isoPick').classList.toggle('on', S.isoPick);
+  // The next thing to do is tap the map, which on a phone is behind the sheet.
+  if (S.isoPick) closeSheet();
 };
 document.getElementById('isoClear').onclick = () => {
   S.iso.origin = null; S.iso.data = null; S.isoPick = false;
@@ -2992,10 +3045,19 @@ function renderSearch() {
       const t = S.hexes[hit.h]?.t;
       meta.textContent = hit.h + (t ? ' · ' + t : '');
     }
+    const item = hit.region != null ? { region: hit.region } : { h: hit.h };
     d.title = inSel(hit) ? 'Click to deselect · shift-click to remove from the selection'
                          : 'Click to select · shift-click to add to the selection';
-    d.onclick = e => pick(hit.region != null ? { region: hit.region } : { h: hit.h }, e.shiftKey);
-    d.append(nm, meta);
+    d.onclick = e => pick(item, e.shiftKey);
+    // Shift needs a keyboard, so the same add/remove sits on the row as a button — the only way to
+    // build a selection on a touchscreen, and no worse than the shortcut for anyone with a mouse.
+    const plus = document.createElement('button');
+    plus.type = 'button';
+    plus.className = 'addsel';
+    plus.textContent = inSel(hit) ? '−' : '+';
+    plus.title = inSel(hit) ? 'Remove from the selection' : 'Add to the selection';
+    plus.onclick = e => { e.stopPropagation(); pick(item, true); };
+    d.append(nm, meta, plus);
     searchBox.appendChild(d);
   });
 }
