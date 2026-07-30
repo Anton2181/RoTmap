@@ -218,8 +218,9 @@ input[type=number], select {
     <div id="searchResults"></div>
   </div>
 
-  <div class="section">
-    <!-- Draw is hidden unless the app is served locally: the published map is read-only. -->
+  <!-- The published map is read-only, so there is nothing to switch between: the whole toggle only
+       appears when the app is served locally. -->
+  <div class="section" id="modeSection" hidden>
     <div class="seg" id="modeSeg">
       <button data-mode="draw">Draw</button>
       <button data-mode="route">Route</button>

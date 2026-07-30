@@ -2652,9 +2652,9 @@ function setMode(m) {
 document.getElementById('modeSeg').addEventListener('click', e => {
   const b = e.target.closest('button'); if (b) setMode(b.dataset.mode);
 });
-if (!LOCAL) document.querySelector('#modeSeg button[data-mode="draw"]').hidden = true;
-// Refetching the sheet and resetting the drawing are for editing, like Draw: not on the published map.
-if (LOCAL) document.getElementById('dataSection').hidden = false;
+// Drawing, the mode toggle that offers it, and the data tools are all for editing: the published
+// map has only routes, so none of them appear there.
+if (LOCAL) for (const id of ['modeSection', 'dataSection']) document.getElementById(id).hidden = false;
 setMode('route'); // there is no separate View mode: routing pans and inspects like viewing did
 document.getElementById('toolBtns').addEventListener('click', e => {
   const b = e.target.closest('button'); if (!b) return;
