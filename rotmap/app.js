@@ -71,6 +71,9 @@ const LAYERS = [
   { id: 'roads',    name: 'Roads',          def: 1, types: ['road'] },
   { id: 'trade',    name: 'Trade routes',   def: 1, types: ['trade'] },
   { id: 'labels',   name: 'Strongholds',    def: 1 },
+  // Tokens are the topmost thing on the map: they are what you are currently moving about on it,
+  // and they must stay grabbable over everything drawn under them.
+  { id: 'tokens',   name: 'Tokens',         def: 1 },
 ];
 // Sidebar row order (ids only; slave layers have no row). Kept separate from the z-order above
 // because the coast fills are split around the rivers, so one array can't express both. Coast
@@ -80,7 +83,7 @@ const LAYERS = [
 const PANEL_ORDER = ['terrain', 'coast', 'coastLines', 'borders',
                      'refClassic', 'refRivers', 'refRoads', 'refNames', 'refCities', 'refBorders',
                      'sheetRivers', 'riverMajor', 'riverMinor',
-                     'iso', 'grid', 'hexIds', 'roads', 'trade', 'labels'];
+                     'iso', 'grid', 'hexIds', 'roads', 'trade', 'labels', 'tokens'];
 // The tracing scans are for drawing against, not for reading, so they exist only when the app is
 // served locally — dropped from the list rather than hidden, so the published site has no trace of
 // them at all. The Classic map is exempt (`keep`): it is the map, not an aid to redrawing it.
@@ -99,6 +102,7 @@ const S = {
   features: { version: 1, features: [], labels: {}, strongholds: {} },
   drawing: null, undoStack: [],
   routes: [], activeRoute: -1,
+  tokens: [], tokenPick: false,   // counters dropped on hexes; tokenPick = next tap places one
   iso: { origin: null, data: null }, isoPick: false,
   coastPickFor: null,
   dragErase: null, needRecompute: false,
@@ -225,6 +229,9 @@ function buildScaffold() {
   // The region wash goes under the grid, roads and names — it tints the ground, it doesn't bury it.
   groups.selRegion = el('g', { id: 'lyr_selRegion' });
   svg.insertBefore(groups.selRegion, groups.grid);
+  // Tokens keep their place in LAYERS (and so their sidebar row), but move above the route lines and
+  // the edit/hover scratch layers: a counter you are about to grab shouldn't hide under a route.
+  svg.insertBefore(groups.tokens, groups.selHex);
 }
 function applyViewBox() {
   svg.setAttribute('viewBox', `${S.vb.x} ${S.vb.y} ${S.vb.w} ${S.vb.h}`);
@@ -2121,12 +2128,13 @@ function computeRoute() {
       const [cx, cy] = endPoint(w.h, w.ri | 0); // every waypoint is a stop, and stops sit at the marker
       const sea = !!(region(w.h, w.ri | 0)?.sea && !region(w.h, w.ri | 0)?.river);
       el('circle', { cx, cy, r: act ? 6 : 5, fill: sea ? rt.color : 'none', stroke: rt.color,
-                     'stroke-width': act ? 2.4 : 1.8, opacity: act ? 1 : 0.7 }, groups.route);
+                     'stroke-width': act ? 2.4 : 1.8, opacity: act ? 1 : 0.7, 'data-rt': i }, groups.route);
     });
     const r = rt.wps.length > 1 ? routeLeg(rt, o) : null;
     if (r && r.pts.length > 1)
       el('path', { d: featPathD(r.pts), fill: 'none', stroke: rt.color, 'stroke-width': act ? 2.8 : 2,
-                   'stroke-dasharray': '7,5', 'stroke-linecap': 'round', opacity: act ? 0.95 : 0.55 }, groups.route);
+                   'stroke-dasharray': '7,5', 'stroke-linecap': 'round', opacity: act ? 0.95 : 0.55,
+                   'data-rt': i }, groups.route);
     results.push(r);
   });
   renderRouteList(results);
@@ -2177,13 +2185,13 @@ function renderRouteList(results) {
     div.className = 'rtitem' + (i === S.activeRoute ? ' on' : '');
     const r = results[i];
     const tm = r ? (r.fail ? '✗' : r.irl.toFixed(1) + 'd') : rt.wps.length + ' wp';
-    div.innerHTML = `<span class="sw" style="background:${rt.color}" title="Cycle color"></span>` +
+    div.innerHTML = `<span class="sw" style="background:${rt.color}" title="Change colour"></span>` +
       `<span class="nm" title="Click to activate, double-click to rename">${rt.name}</span>` +
       `<span class="tm">${tm}</span><span class="x" title="Delete route">×</span>`;
     div.querySelector('.sw').onclick = e => {
       e.stopPropagation();
-      rt.color = ROUTE_COLORS[(ROUTE_COLORS.indexOf(rt.color) + 1) % ROUTE_COLORS.length];
-      computeRoute();
+      openColorPanelAt(e.currentTarget, `<b>${escHtml(rt.name)}</b> — colour`,
+                       ROUTE_COLORS, () => rt.color, c => { rt.color = c; recolorRoute(i); });
     };
     div.querySelector('.x').onclick = e => {
       e.stopPropagation();
@@ -2202,12 +2210,35 @@ function renderRouteList(results) {
   updateDrawerBadge(results);
 }
 
+/* Recolouring is not recomputing. computeRoute() re-runs the pathfinding for every route, which is
+   far too much to do on each frame of a dragged colour picker — and the geometry hasn't changed
+   anyway. So the drawn line, the sidebar swatch and the readout heading are repainted in place. */
+function recolorRoute(i) {
+  const rt = S.routes[i];
+  if (!rt) return;
+  for (const e of groups.route.querySelectorAll(`[data-rt="${i}"]`)) {
+    e.setAttribute('stroke', rt.color);
+    if (e.getAttribute('fill') !== 'none') e.setAttribute('fill', rt.color);  // sea waypoints are filled
+  }
+  const sw = document.querySelectorAll('#routeList .rtitem')[i]?.querySelector('.sw');
+  if (sw) sw.style.background = rt.color;
+  if (i === S.activeRoute) {
+    const big = document.querySelector('#routeOut .big');
+    if (big) big.style.color = rt.color;
+  }
+  saveRoutes();
+}
+
 function saveRoutes() {
   try { localStorage.setItem('rotmap_routes_v1', JSON.stringify({ routes: S.routes, active: S.activeRoute })); } catch {}
 }
 
 /* ---------------- interactions ---------------- */
 let pan = null, downPos = null, spaceHeld = false, edgeSnap = false;
+let tokDrag = null;   // { t, g, p, dx, dy, moved, target } while a token is under the pointer
+// The click that puts an open context menu away does nothing else — it must not also drop a waypoint
+// on whatever hex happened to be under it.
+let ctxDismiss = false;
 
 // Touch: every live pointer is tracked so that a second finger can be recognised as a pinch. A
 // finger also needs more slack than a mouse before a press counts as a drag rather than a tap —
@@ -2250,6 +2281,8 @@ function startLongPress(e) {
     longPress = null;
     longPressed = true;   // lifting the finger now drops no waypoint, and moving it inspects
     pan = null;           // whatever pan this press had optimistically started is off
+    // Held on a token, the same gesture stands in for the right-click a touchscreen hasn't got.
+    if (tokDrag && !tokDrag.moved) { openCtx(pt.clientX, pt.clientY, tokenMenu(tokDrag.t)); return; }
     showReadout(pt);
   }, LONG_PRESS_MS);
 }
@@ -2318,6 +2351,19 @@ svg.addEventListener('pointerdown', e => {
     tooltip.hidden = true; groups.hover.innerHTML = '';   // a new touch puts the last readout away
     startLongPress(e);
   }
+  // A press that lands on a token belongs to the token: it never pans, never draws, never places a
+  // waypoint. What it turns into — a colour cycle or a move — is decided on the way up.
+  const grabbed = (e.button === 0 && !spaceHeld) ? e.target.closest?.('[data-tok]') : null;
+  if (grabbed) {
+    const t = tokenById(+grabbed.dataset.tok);
+    if (t) {
+      const [wx, wy] = toWorld(e);
+      const p = grabbed._p || { x: wx, y: wy };
+      tokDrag = { t, g: grabbed, p, dx: p.x - wx, dy: p.y - wy, moved: false, target: t.h };
+      svg.setPointerCapture(e.pointerId);
+      return;
+    }
+  }
   if (e.button === 0 && S.mode === 'draw' && S.tool === 'erase') {
     S.dragErase = { undoPushed: false };
     svg.setPointerCapture(e.pointerId);
@@ -2338,6 +2384,27 @@ svg.addEventListener('pointermove', e => {
   // Sliding before the hold has registered is panning: the press has stopped being a long one.
   if (longPress && downPos && Math.hypot(e.clientX - downPos[0], e.clientY - downPos[1]) > tapSlop(e)) cancelLongPress();
   if (pinch) { if (ptrs.size >= 2) movePinch(); return; }
+  if (tokDrag) {
+    if (longPressed) return;   // the hold became the token's menu; leave it where it is
+    if (!tokDrag.moved && downPos && Math.hypot(e.clientX - downPos[0], e.clientY - downPos[1]) <= tapSlop(e)) return;
+    tokDrag.moved = true;
+    cancelLongPress();
+    const [wx, wy] = toWorld(e);
+    const h = nearestHex(wx, wy);
+    tokDrag.target = (h && S.hexes[h].t !== 'N/A') ? h : null;
+    // The token follows the pointer directly, rather than jumping from hex centre to hex centre —
+    // then lands on whichever hex it was let go over, outlined here so there is no doubt which.
+    tokDrag.g.setAttribute('transform',
+      `translate(${(wx + tokDrag.dx - tokDrag.p.x).toFixed(2)} ${(wy + tokDrag.dy - tokDrag.p.y).toFixed(2)})`);
+    groups.hover.innerHTML = '';
+    tooltip.hidden = true;
+    if (tokDrag.target) {
+      const [cx, cy] = hexCenter(tokDrag.target);
+      el('path', { d: hexPath(cx, cy), fill: 'rgba(255,255,255,.10)', stroke: '#fff',
+                   'stroke-width': 1.8, 'pointer-events': 'none' }, groups.hover);
+    }
+    return;
+  }
   // Sliding *after* it has registered drags the readout across the map instead.
   if (longPressed && ptrs.has(e.pointerId)) {
     pan = null;
@@ -2365,6 +2432,22 @@ svg.addEventListener('pointerup', e => {
   // press held long enough to have been asking about the hex instead.
   const afterPinch = !!pinch || tapDead || longPressed;
   dropPointer(e);
+  if (tokDrag) {
+    const d = tokDrag;
+    tokDrag = null;
+    pan = null; downPos = null;
+    groups.hover.innerHTML = '';
+    // renderTokens() either way: it clears the transform the drag was following the pointer with,
+    // which is also how a token let go off the edge of the map finds its way back.
+    if (afterPinch) { renderTokens(); return; }
+    if (!d.moved) {
+      const i = TOKEN_COLORS.indexOf(d.t.color);
+      d.t.color = TOKEN_COLORS[(i + 1) % TOKEN_COLORS.length];   // a custom colour rejoins at the start
+    } else if (d.target) d.t.h = d.target;
+    commitTokens();
+    return;
+  }
+  if (ctxDismiss) { ctxDismiss = false; pan = null; S.dragErase = null; downPos = null; return; }
   if (afterPinch) {
     pan = null; S.dragErase = null; downPos = null;
     if (!ptrs.size) tapDead = false;
@@ -2388,6 +2471,14 @@ svg.addEventListener('pointerup', e => {
   if (!downPos || Math.hypot(e.clientX - downPos[0], e.clientY - downPos[1]) > tapSlop(e)) return;
   if (e.button !== 0) return;
   const [wx, wy, s] = toWorld(e);
+  // Armed from the sidebar. It is how a touchscreen — which has no right button — gets at the
+  // Mark-as list, so it takes precedence over whatever the current mode would do with the tap.
+  if (S.tokenPick) {
+    setTokenPick(false);
+    const th = nearestHex(wx, wy);
+    if (th && S.hexes[th].t !== 'N/A') openCtx(e.clientX, e.clientY, markMenu(th));
+    return;
+  }
   if (S.mode === 'draw') drawClick(wx, wy, s, e);
   else if (S.mode === 'route') {
     const h = nearestHex(wx, wy);
@@ -2409,7 +2500,10 @@ svg.addEventListener('pointerup', e => {
 svg.addEventListener('pointercancel', e => {
   cancelLongPress();
   dropPointer(e);
-  if (!ptrs.size) { pan = null; tapDead = false; longPressed = false; S.dragErase = null; downPos = null; }
+  if (!ptrs.size) {
+    pan = null; tapDead = false; longPressed = false; S.dragErase = null; downPos = null;
+    if (tokDrag) { tokDrag = null; renderTokens(); groups.hover.innerHTML = ''; }
+  }
 });
 svg.addEventListener('contextmenu', e => {
   e.preventDefault();
@@ -2417,10 +2511,16 @@ svg.addEventListener('contextmenu', e => {
   // also take a waypoint off the route. A real right-click has its own pointer down while this
   // arrives, so the test is for a *finger* being down, or one having just been held.
   if (longPressed || [...ptrs.values()].some(t => t.touch)) return;
-  if (S.mode === 'route' && S.activeRoute >= 0 && S.routes[S.activeRoute].wps.length) {
-    S.routes[S.activeRoute].wps.pop(); computeRoute();
-  }
-  else if (S.mode === 'draw' && S.drawing) finishDrawing();
+  // Right-clicking a token asks about that token; right-clicking the ground asks about the hex.
+  // Popping the last waypoint and finishing a line, which this used to do outright, are the first
+  // entries of the hex menu.
+  const onTok = e.target.closest?.('[data-tok]');
+  const t = onTok && tokenById(+onTok.dataset.tok);
+  if (t) return openCtx(e.clientX, e.clientY, tokenMenu(t));
+  const [wx, wy] = toWorld(e);
+  const h = nearestHex(wx, wy);
+  if (!h || S.hexes[h].t === 'N/A') return;
+  openCtx(e.clientX, e.clientY, hexMenu(h));
 });
 svg.addEventListener('dblclick', e => {
   if (S.mode === 'draw' && S.drawing) {
@@ -2732,7 +2832,11 @@ document.addEventListener('keydown', e => {
   if (e.code === 'Space') { spaceHeld = true; e.preventDefault(); }
   else if (e.key === 'e' || e.key === 'E') edgeSnap = true;
   else if (e.key === 'Enter' && S.drawing) finishDrawing();
-  else if (e.key === 'Escape') { S.drawing = null; groups.edit.innerHTML = ''; clearSelection(); }
+  else if (e.key === 'Escape') {
+    if (!ctxEl.hidden) return closeCtx();          // first Escape dismisses the menu, next clears
+    if (S.tokenPick) return setTokenPick(false);
+    S.drawing = null; groups.edit.innerHTML = ''; clearSelection();
+  }
   else if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
     e.preventDefault();
     if (S.drawing && S.drawing.pts.length) { S.drawing.pts.pop(); renderDrawing(); }
@@ -2752,6 +2856,9 @@ function setMode(m) {
   document.getElementById('drawSection').hidden = m !== 'draw';
   document.getElementById('routeSection').hidden = m !== 'route';
   svg.classList.toggle('drawing', m === 'draw');
+  // Drawing wants every point on the map clickable, and a counter sitting on the hex you are tracing
+  // would swallow the click. In Draw mode tokens are scenery; everywhere else they are handles.
+  if (groups.tokens) groups.tokens.style.pointerEvents = m === 'draw' ? 'none' : '';
   svg.classList.toggle('routing', m === 'route');
   if (m !== 'draw' && S.drawing) finishDrawing();
 }
@@ -2882,6 +2989,341 @@ function buildLayerUI() {
   }
 }
 
+/* ---------------- tokens ----------------
+   A token is a counter you drop on a hex to stand for something that moves: an army, a fleet, a
+   courier. It is deliberately not part of the drawing — roads and rivers are the map, tokens are
+   what is happening on it this week — so they live in their own storage, they work on the published
+   map as well as locally, and they are exported separately when a board state is worth keeping.
+
+   Right-click a hex to mark it (I–XIV, or your own text). After that the token itself answers to
+   the mouse: click cycles its colour, drag carries it to another hex, right-click renames,
+   recolours or removes it. */
+const TOKEN_COLORS = ['#ffdf5e', '#ff6b6b', '#7ab8ff', '#6ef3a5', '#ff9d5c',
+                      '#c99bff', '#5ce8e8', '#ff7ad0', '#e8e3d3', '#9aa4b2'];
+const ROMAN = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 'XI', 'XII', 'XIII', 'XIV'];
+const TOK_LS = 'rotmap_tokens_v1';
+const TOK_MAXLEN = 24;
+
+const escHtml = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const tokenById = id => S.tokens.find(t => t.id === id);
+
+function saveTokens() {
+  try { localStorage.setItem(TOK_LS, JSON.stringify({ version: 1, tokens: S.tokens })); } catch {}
+}
+function commitTokens() { renderTokens(); renderTokenList(); saveTokens(); }
+
+// Two armies arriving in the same colour would defeat the point, so a new token takes the first
+// colour nobody is using before it starts repeating.
+function nextTokenColor() {
+  const used = new Set(S.tokens.map(t => t.color));
+  return TOKEN_COLORS.find(c => !used.has(c)) || TOKEN_COLORS[S.tokens.length % TOKEN_COLORS.length];
+}
+function addToken(h, label, color) {
+  const id = S.tokens.reduce((m, t) => Math.max(m, t.id || 0), 0) + 1;
+  S.tokens.push({ id, h, label: String(label).slice(0, TOK_MAXLEN), color: color || nextTokenColor() });
+  commitTokens();
+}
+function deleteToken(t) { S.tokens = S.tokens.filter(x => x !== t); commitTokens(); }
+
+// Dark ink on a pale counter, pale on a dark one — the colour is the user's to choose, including
+// from the full picker, so neither can be assumed.
+function inkOn(hex) {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex || '');
+  if (!m) return '#14181e';
+  const n = parseInt(m[1], 16);
+  return (0.299 * (n >> 16 & 255) + 0.587 * (n >> 8 & 255) + 0.114 * (n & 255)) > 150 ? '#14181e' : '#fff';
+}
+
+/* Where each token sits. One in a hex takes the centre; several fan out around it on a ring and
+   shrink, so a stack of armies in one place stays countable instead of hiding behind each other. */
+function tokenLayout() {
+  const byHex = new Map();
+  for (const t of S.tokens) {
+    if (!byHex.has(t.h)) byHex.set(t.h, []);
+    byHex.get(t.h).push(t);
+  }
+  const out = new Map();
+  for (const [h, list] of byHex) {
+    const [cx, cy] = hexCenter(h);
+    if (list.length === 1) { out.set(list[0].id, { x: cx, y: cy, r: 11 }); continue; }
+    const ring = Math.min(14, 5 + list.length * 1.6);
+    const r = Math.max(5, 10.5 - list.length * 0.7);
+    list.forEach((t, i) => {
+      const a = -Math.PI / 2 + i * 2 * Math.PI / list.length;
+      out.set(t.id, { x: cx + ring * Math.cos(a), y: cy + ring * Math.sin(a), r });
+    });
+  }
+  return out;
+}
+function renderTokens() {
+  groups.tokens.innerHTML = '';
+  const lay = tokenLayout();
+  for (const t of S.tokens) {
+    const p = lay.get(t.id);
+    if (!p) continue;
+    const g = el('g', { 'data-tok': t.id, style: 'cursor:grab' }, groups.tokens);
+    g._p = p;
+    el('circle', { cx: p.x, cy: p.y, r: p.r, fill: t.color, stroke: '#14181e', 'stroke-width': 1.6 }, g);
+    const lab = t.label || '';
+    if (!lab) continue;
+    // A numeral goes inside the counter, shrinking to stay off the rim. Anything long enough that
+    // shrinking would make it unreadable — a name rather than a number — is written under it
+    // instead, in the same white-on-dark as the stronghold labels. Below, not above, so it doesn't
+    // collide with the stronghold name already sitting over the hex.
+    const fit = 2.6 * p.r / lab.length;
+    if (fit >= p.r * 0.45) {
+      const fs = Math.min(p.r * 1.05, fit);
+      el('text', { x: p.x, y: p.y + fs * 0.35, 'text-anchor': 'middle', 'font-size': fs.toFixed(2),
+                   fill: inkOn(t.color), 'font-weight': 700, 'font-family': 'system-ui,sans-serif' },
+         g).textContent = lab;
+    } else {
+      el('text', { x: p.x, y: p.y + p.r + 9, 'text-anchor': 'middle', 'font-size': 10.5, fill: '#fff',
+                   stroke: '#14181e', 'stroke-width': 2.4, 'paint-order': 'stroke', 'font-weight': 600,
+                   'font-family': 'system-ui,sans-serif' }, g).textContent = lab;
+    }
+  }
+}
+function renderTokenList() {
+  const list = document.getElementById('tokenList');
+  if (!list) return;
+  list.innerHTML = '';
+  if (!S.tokens.length) {
+    list.innerHTML = '<p class="hint" style="margin:2px 0 0">Nothing marked yet.</p>';
+    return;
+  }
+  for (const t of S.tokens) {
+    const div = document.createElement('div');
+    div.className = 'tokitem';
+    div.innerHTML = `<span class="sw" style="background:${escHtml(t.color)}"></span>` +
+      `<span class="nm">${escHtml(t.label)}</span><span class="hx">hex ${t.h}</span>` +
+      `<span class="x" title="Remove">×</span>`;
+    div.querySelector('.sw').title = 'Change colour';
+    div.title = 'Click to centre the map on it';
+    div.onclick = () => { panToSelection({ h: t.h }); closeSheet(); };
+    div.querySelector('.sw').onclick = e => {
+      e.stopPropagation();
+      openColorPanelAt(e.currentTarget, `<b>${escHtml(t.label)}</b> — colour`,
+                       TOKEN_COLORS, () => t.color, c => { t.color = c; commitTokens(); });
+    };
+    div.querySelector('.x').onclick = e => { e.stopPropagation(); deleteToken(t); };
+    list.appendChild(div);
+  }
+}
+
+/* ---------------- context menu ----------------
+   One popup, rebuilt each time it opens. Right-click used to pop a waypoint off the route or finish
+   a line; those are now the first entries in the menu, so nothing that was a reflex has been taken
+   away — it just costs a second click. */
+const ctxEl = document.getElementById('ctxMenu');
+let ctxSub = null;
+
+function fitPopup(box, x, y) {
+  box.style.left = '0px'; box.style.top = '0px';       // measure unconstrained, then place
+  const w = box.offsetWidth, h = box.offsetHeight;
+  box.style.left = Math.max(4, Math.min(innerWidth - w - 4, x)) + 'px';
+  box.style.top = Math.max(4, Math.min(innerHeight - h - 4, y)) + 'px';
+}
+function closeCtxSub() { if (ctxSub) { ctxSub.remove(); ctxSub = null; } }
+function closeCtx() {
+  closeCtxSub();
+  ctxEl.hidden = true;
+  ctxEl.innerHTML = '';
+}
+function openCtx(x, y, build) {
+  closeCtx();
+  ctxEl.hidden = false;
+  build(ctxEl);
+  fitPopup(ctxEl, x, y);
+}
+function ctxHead(box, html) {
+  const d = document.createElement('div');
+  d.className = 'ctxhd';
+  d.innerHTML = html;
+  box.appendChild(d);
+}
+function ctxSep(box) {
+  const d = document.createElement('div');
+  d.className = 'ctxsep';
+  box.appendChild(d);
+}
+function ctxItem(box, html, fn, cls) {
+  const d = document.createElement('div');
+  d.className = 'ctxit' + (cls ? ' ' + cls : '');
+  d.innerHTML = html;
+  // Moving onto any other row puts an open flyout away, the way a menu should behave.
+  d.addEventListener('mouseenter', () => { if (ctxSub && ctxSub._owner !== d) closeCtxSub(); });
+  if (fn) d.addEventListener('click', e => { e.stopPropagation(); fn(e); });
+  box.appendChild(d);
+  return d;
+}
+// A row that opens a panel beside itself: on hover for a mouse, on tap for a finger.
+function ctxFlyout(anchor, build) {
+  const open = () => {
+    if (ctxSub && ctxSub._owner === anchor) return;
+    closeCtxSub();
+    const s = document.createElement('div');
+    s.className = 'ctxsub';
+    s._owner = anchor;
+    document.body.appendChild(s);
+    build(s);
+    ctxSub = s;
+    const r = anchor.getBoundingClientRect();
+    fitPopup(s, r.right + 3, r.top - 5);
+  };
+  anchor.addEventListener('mouseenter', open);
+  anchor.addEventListener('click', e => { e.stopPropagation(); open(); });
+}
+
+/* The colour panel: the palette as swatches, and the system picker for anything not on it. Tokens
+   and routes both use it, so a colour chosen in one place is chosen the same way in the other.
+   `get` is read each time the panel is built (the colour may have moved on since), and `set` is
+   called live as the picker is dragged — so it must be cheap. */
+function buildColorPanel(box, palette, get, set) {
+  const grid = document.createElement('div');
+  grid.className = 'swgrid';
+  for (const c of palette) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.style.background = c;
+    if (c.toLowerCase() === (get() || '').toLowerCase()) b.classList.add('on');
+    b.addEventListener('click', e => { e.stopPropagation(); set(c); closeCtx(); });
+    grid.appendChild(b);
+  }
+  box.appendChild(grid);
+  // Clicking into the picker must not be taken for clicking the menu away, or the dialog would open
+  // onto a panel that had already closed behind it.
+  const row = document.createElement('label');
+  row.className = 'ctxit';
+  row.style.marginTop = '5px';
+  row.textContent = 'Custom…';
+  const inp = document.createElement('input');
+  inp.type = 'color';
+  inp.value = /^#[0-9a-f]{6}$/i.test(get() || '') ? get() : palette[0];
+  inp.oninput = () => set(inp.value);
+  row.appendChild(inp);
+  row.addEventListener('click', e => e.stopPropagation());
+  box.appendChild(row);
+}
+// Anchored under a swatch rather than beside a menu row: for the sidebar lists, where the swatch is
+// the whole control.
+function openColorPanelAt(anchor, title, palette, get, set) {
+  const r = anchor.getBoundingClientRect();
+  openCtx(r.left - 6, r.bottom + 6, box => {
+    ctxHead(box, title);
+    buildColorPanel(box, palette, get, set);
+  });
+}
+
+function hexTitle(h) {
+  const name = S.features.labels[h] ?? S.names.hexes[h];
+  return (name ? `<b>${escHtml(name)}</b> — ` : '') + `hex ${h}`;
+}
+// The numerals, plus a way out to free text. A numeral already on the map is still offered — two
+// armies can share a name across a campaign — but it wears the colour of the one that has it, so
+// you can see the clash before you make it.
+function buildMarkGrid(box, h) {
+  const grid = document.createElement('div');
+  grid.className = 'numgrid';
+  const used = new Map();
+  for (const t of S.tokens) if (!used.has(t.label)) used.set(t.label, t);
+  for (const n of ROMAN) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = n;
+    const u = used.get(n);
+    if (u) { b.classList.add('used'); b.style.borderColor = u.color; b.title = `${n} is already on hex ${u.h}`; }
+    b.addEventListener('click', e => { e.stopPropagation(); addToken(h, n); closeCtx(); });
+    grid.appendChild(b);
+  }
+  box.appendChild(grid);
+  const custom = ctxItem(box, 'Custom text…', () => {
+    const v = prompt('Token text:', '');
+    closeCtx();
+    if (v && v.trim()) addToken(h, v.trim());
+  });
+  custom.style.marginTop = '5px';
+}
+function markMenu(h) {
+  return box => { ctxHead(box, 'Mark ' + hexTitle(h)); buildMarkGrid(box, h); };
+}
+function hexMenu(h) {
+  return box => {
+    ctxHead(box, hexTitle(h));
+    // What right-click used to do on its own, kept within one click of where it was.
+    if (S.mode === 'route' && S.activeRoute >= 0 && S.routes[S.activeRoute].wps.length) {
+      ctxItem(box, 'Remove last waypoint', () => {
+        S.routes[S.activeRoute].wps.pop(); computeRoute(); closeCtx();
+      });
+      ctxSep(box);
+    } else if (S.mode === 'draw' && S.drawing) {
+      ctxItem(box, 'Finish line', () => { finishDrawing(); closeCtx(); });
+      ctxSep(box);
+    }
+    ctxFlyout(ctxItem(box, 'Mark as<span class="arw">▸</span>'), s => buildMarkGrid(s, h));
+  };
+}
+function tokenMenu(t) {
+  return box => {
+    ctxHead(box, `<b>${escHtml(t.label)}</b> — hex ${t.h}`);
+    ctxItem(box, 'Rename…', () => {
+      const v = prompt('Token text:', t.label);
+      closeCtx();
+      if (v != null && v.trim()) { t.label = v.trim().slice(0, TOK_MAXLEN); commitTokens(); }
+    });
+    ctxFlyout(ctxItem(box, `<span class="sw" style="background:${escHtml(t.color)}"></span>Colour<span class="arw">▸</span>`),
+              s => buildColorPanel(s, TOKEN_COLORS, () => t.color, c => { t.color = c; commitTokens(); }));
+    ctxSep(box);
+    ctxItem(box, 'Delete', () => { deleteToken(t); closeCtx(); }, 'danger');
+  };
+}
+
+// Anything that moves the map or the page out from under the menu closes it.
+document.addEventListener('pointerdown', e => {
+  if (ctxEl.hidden) return;
+  if (e.target.closest?.('#ctxMenu, .ctxsub')) return;
+  // Grabbing a token is a real action even with the menu up, so only a press on the bare map is
+  // spent on dismissing. Panning still works either way: this only cancels the click, not the drag.
+  if (svg.contains(e.target) && !e.target.closest?.('[data-tok]')) ctxDismiss = true;
+  closeCtx();
+}, true);
+addEventListener('resize', closeCtx);
+svg.addEventListener('wheel', closeCtx, { passive: true });
+
+/* ---------------- tokens: sidebar ---------------- */
+function setTokenPick(on) {
+  S.tokenPick = on;
+  document.getElementById('tokPlace').classList.toggle('on', on);
+}
+document.getElementById('tokPlace').onclick = () => setTokenPick(!S.tokenPick);
+document.getElementById('tokClear').onclick = () => {
+  if (!S.tokens.length) return;
+  if (confirm(`Remove all ${S.tokens.length} tokens?`)) { S.tokens = []; commitTokens(); }
+};
+document.getElementById('tokExport').onclick = () => {
+  const blob = new Blob([JSON.stringify({ version: 1, tokens: S.tokens }, null, 1)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = 'tokens.json'; a.click();
+  URL.revokeObjectURL(a.href);
+};
+document.getElementById('tokImport').onchange = async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  try {
+    const j = JSON.parse(await f.text());
+    const arr = Array.isArray(j) ? j : j.tokens;
+    if (!Array.isArray(arr)) throw 0;
+    // Rebuilt rather than trusted: ids are reissued and colours validated, so a hand-edited or
+    // half-corrupt file can't leave two tokens sharing an id or a colour the renderer can't use.
+    S.tokens = arr.filter(t => t && S.hexes[+t.h]).map((t, i) => ({
+      id: i + 1, h: +t.h,
+      label: String(t.label ?? '').slice(0, TOK_MAXLEN),
+      color: /^#[0-9a-f]{6}$/i.test(t.color || '') ? t.color : TOKEN_COLORS[i % TOKEN_COLORS.length],
+    }));
+    commitTokens();
+  } catch { alert('Not a valid tokens.json'); }
+  e.target.value = '';
+};
+
 /* ---------------- boot ---------------- */
 async function fetchFeaturesFile() {
   try {
@@ -2908,6 +3350,11 @@ async function boot() {
   renderFeatures(); renderLabels();
   buildLayerUI();
   for (const L of LAYERS) L._apply?.();
+  try {
+    const tj = JSON.parse(localStorage.getItem(TOK_LS));
+    if (tj && Array.isArray(tj.tokens)) S.tokens = tj.tokens.filter(t => t && S.hexes[+t.h]);
+  } catch {}
+  renderTokens(); renderTokenList();
   try {
     const rr = JSON.parse(localStorage.getItem('rotmap_routes_v1'));
     if (rr && Array.isArray(rr.routes)) {

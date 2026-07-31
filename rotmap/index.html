@@ -123,6 +123,58 @@ input[type=number], select {
 #tooltip .t { color: #fff; font-weight: 600; }
 #tooltip .rg { color: #9aa4b2; }
 
+/* ---------------- tokens & context menu ----------------
+   The menu is a fixed-position overlay rather than anything inside the SVG, so it is laid out and
+   read like the rest of the chrome and is never scaled by the map's zoom. */
+#ctxMenu, .ctxsub {
+  position: fixed; z-index: 40; padding: 4px;
+  background: #262c34; border: 1px solid #4a5563; border-radius: 8px;
+  box-shadow: 0 12px 34px #000b; font-size: 12.5px; color: #d6dce4;
+}
+#ctxMenu[hidden] { display: none; }
+#ctxMenu { min-width: 172px; }
+.ctxhd {
+  padding: 5px 9px 7px; margin-bottom: 4px;
+  color: #9aa4b2; font-size: 11.5px; white-space: nowrap;
+  border-bottom: 1px solid #333b45;
+}
+.ctxhd b { color: #fff; }
+.ctxit {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 9px; border-radius: 5px; cursor: pointer; white-space: nowrap;
+}
+.ctxit:hover { background: #35404e; color: #fff; }
+.ctxit.danger:hover { background: #5c332f; color: #ffd9d5; }
+.ctxit .arw { margin-left: auto; padding-left: 10px; color: #8b95a3; }
+.ctxit .sw { width: 12px; height: 12px; border-radius: 3px; border: 1px solid #0008; flex: 0 0 12px; }
+.ctxit input[type=color] {
+  width: 30px; height: 20px; margin-left: auto; padding: 0;
+  background: none; border: 1px solid #4a5563; border-radius: 4px; cursor: pointer;
+}
+.ctxsep { height: 1px; background: #333b45; margin: 4px 2px; }
+
+/* Fourteen numerals read best as a block you can aim at, five to a row. A numeral already in play
+   wears the colour of the token holding it. */
+.numgrid { display: grid; grid-template-columns: repeat(5, 34px); gap: 4px; padding: 2px; }
+.numgrid button {
+  background: #2d333c; color: #d6dce4; border: 1px solid #3a424d; border-radius: 5px;
+  padding: 7px 0; cursor: pointer; font: 700 12px/1 system-ui, sans-serif;
+}
+.numgrid button:hover { background: #3b6ea5; border-color: #3b6ea5; color: #fff; }
+.numgrid button.used { border-width: 2px; }
+
+.swgrid { display: grid; grid-template-columns: repeat(5, 26px); gap: 5px; padding: 2px; }
+.swgrid button { height: 24px; padding: 0; border: 1px solid #0008; border-radius: 5px; cursor: pointer; }
+.swgrid button.on { box-shadow: 0 0 0 2px #fff; }
+
+.tokitem { display: flex; align-items: center; gap: 7px; margin: 3px 0; padding: 4px 5px; border-radius: 5px; cursor: pointer; }
+.tokitem:hover { background: #2d333c; }
+.tokitem .sw { width: 16px; height: 16px; flex: 0 0 16px; border-radius: 50%; border: 1px solid #0008; }
+.tokitem .nm { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.tokitem .hx { color: #8b95a3; font-size: 11px; }
+.tokitem .x { color: #8b95a3; padding: 0 3px; }
+.tokitem .x:hover { color: #e5695e; }
+
 /* ---------------- narrow screens ----------------
    Below 820px the sidebar stops being a column beside the map and becomes a sheet that slides up
    from the bottom edge, so the map gets the whole viewport. The three pieces of chrome that only
@@ -207,6 +259,12 @@ input[type=number], select {
   .layer input[type=range] { height: 24px; }
   .layer .inv { flex: 0 0 28px; height: 28px; font-size: 12px; }
   .rtitem { padding: 8px 6px; }
+  .tokitem { padding: 8px 6px; }
+  .ctxit { padding: 11px 10px; font-size: 13.5px; }
+  .numgrid { grid-template-columns: repeat(4, 44px); gap: 6px; }
+  .numgrid button { padding: 11px 0; font-size: 13px; }
+  .swgrid { grid-template-columns: repeat(4, 34px); gap: 6px; }
+  .swgrid button { height: 32px; }
   .rtitem .sw, .rtitem .x { min-width: 20px; }
   .routeout .steps { max-height: 44dvh; }
   .stepstbl td { padding: 4px 5px; }
@@ -312,6 +370,22 @@ input[type=number], select {
     <div id="isoLegend"></div>
   </div>
 
+  <div class="section" id="tokenSection">
+    <h2>Tokens</h2>
+    <p class="hint"><b>Right-click</b> a hex and choose <b>Mark as</b> to drop a counter on it — I to XIV,
+    or text of your own. After that: <b>click</b> it to cycle its colour, <b>drag</b> it to another hex,
+    <b>right-click</b> it to rename, recolour or remove. Tokens are yours alone — saved in this browser,
+    never part of the map's own data — so use <b>Export</b> to keep or share a position.
+    On a touchscreen, press <b>Place token</b> then tap a hex, and hold a token for its menu.</p>
+    <div class="row">
+      <button id="tokPlace" title="Then tap the hex to mark">Place token</button>
+      <button id="tokClear">Clear all</button>
+      <button id="tokExport">Export</button>
+      <label class="filebtn">Import<input type="file" id="tokImport" accept=".json"></label>
+    </div>
+    <div id="tokenList"></div>
+  </div>
+
   <div class="section">
     <h2>Layers</h2>
     <div id="layerList"></div>
@@ -339,6 +413,10 @@ input[type=number], select {
   Controls<span class="badge"></span>
 </button>
 <button id="undoWpFloat" class="nowp" type="button">Remove last</button>
+
+<!-- Right-click menu. Lives at the end of the body, outside #mapWrap, so nothing clips it when it
+     opens near an edge of the map. -->
+<div id="ctxMenu" hidden></div>
 
 <script src="rules.js"></script>
 <script src="app.js"></script>
