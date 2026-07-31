@@ -2520,7 +2520,7 @@ svg.addEventListener('contextmenu', e => {
   const [wx, wy] = toWorld(e);
   const h = nearestHex(wx, wy);
   if (!h || S.hexes[h].t === 'N/A') return;
-  openCtx(e.clientX, e.clientY, hexMenu(h));
+  openCtx(e.clientX, e.clientY, hexMenu(h, [wx, wy]));
 });
 svg.addEventListener('dblclick', e => {
   if (S.mode === 'draw' && S.drawing) {
@@ -3299,19 +3299,30 @@ function buildMarkGrid(box, h) {
 function markMenu(h) {
   return box => { ctxHead(box, 'Mark ' + hexTitle(h)); buildMarkGrid(box, h); };
 }
-function hexMenu(h) {
+function hexMenu(h, pt) {
   return box => {
     ctxHead(box, hexTitle(h));
-    // What right-click used to do on its own, kept within one click of where it was.
+    // What right-click used to do on its own, kept within one click of where it was — and first,
+    // since it was a reflex before this menu existed.
     if (S.mode === 'route' && S.activeRoute >= 0 && S.routes[S.activeRoute].wps.length) {
       ctxItem(box, 'Remove last waypoint', () => {
         S.routes[S.activeRoute].wps.pop(); computeRoute(); closeCtx();
       });
-      ctxSep(box);
     } else if (S.mode === 'draw' && S.drawing) {
       ctxItem(box, 'Finish line', () => { finishDrawing(); closeCtx(); });
-      ctxSep(box);
     }
+    // Routing from a hex you are already looking at, without first switching mode and hunting for
+    // the New route button. The waypoint lands on the subhex region under the cursor, exactly as a
+    // left-click would place it, so starting on the sea side of a split hex still means the sea.
+    ctxItem(box, `Start a route here<span class="arw">Route ${S.routes.length + 1}</span>`, () => {
+      closeCtx();
+      if (S.mode !== 'route') setMode('route');
+      if (!S.adj) deriveAdj();
+      newRoute();
+      S.routes[S.activeRoute].wps.push({ h, ri: pt ? regionAt(h, pt) : 0 });
+      computeRoute();
+    });
+    ctxSep(box);
     ctxFlyout(ctxItem(box, 'Mark as<span class="arw">▸</span>'), s => buildMarkGrid(s, h));
   };
 }
