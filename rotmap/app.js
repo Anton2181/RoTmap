@@ -2998,8 +2998,13 @@ function buildLayerUI() {
    Right-click a hex to mark it (I–XIV, or your own text). After that the token itself answers to
    the mouse: click cycles its colour, drag carries it to another hex, right-click renames,
    recolours or removes it. */
-const TOKEN_COLORS = ['#ffdf5e', '#ff6b6b', '#7ab8ff', '#6ef3a5', '#ff9d5c',
-                      '#c99bff', '#5ce8e8', '#ff7ad0', '#e8e3d3', '#9aa4b2'];
+/* Fourteen counters, fourteen colours — one per numeral, so a token is identifiable by colour alone
+   at a zoom where the label has become a smudge. The hues are spaced right round the wheel and kept
+   clear of the terrain beneath them: no mid-green (Flatlands), no tan (Hills), no grey-brown
+   (Mountains), no soft mid-blue (Sea and Lake). The last is dark on purpose and takes white ink. */
+const TOKEN_COLORS = ['#ffd93d', '#ffa23d', '#ff6b5e', '#ff5e9c', '#ef7bff',
+                      '#b18cff', '#8c9bff', '#4fc3ff', '#3fe0d0', '#4fe08a',
+                      '#b8e838', '#eceff3', '#98a3b3', '#6b4fd0'];
 const ROMAN = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 'XI', 'XII', 'XIII', 'XIV'];
 const TOK_LS = 'rotmap_tokens_v1';
 const TOK_MAXLEN = 24;
@@ -3148,6 +3153,12 @@ function renderTokenList() {
                        TOKEN_COLORS, () => t.color, c => { t.color = c; commitTokens(); });
     };
     div.querySelector('.x').onclick = e => { e.stopPropagation(); deleteToken(t); };
+    // The row stands for the counter, so it answers the right button the same way — no hunting for
+    // the token on the map to rename or split it.
+    div.oncontextmenu = e => {
+      e.preventDefault(); e.stopPropagation();
+      openCtx(e.clientX, e.clientY, tokenMenu(t));
+    };
     list.appendChild(div);
   }
 }
