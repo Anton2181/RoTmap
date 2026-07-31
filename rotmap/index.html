@@ -374,11 +374,14 @@ input[type=number], select {
     <h2>Tokens</h2>
     <p class="hint"><b>Right-click</b> a hex and choose <b>Mark as</b> to drop a counter on it — I to XIV,
     or text of your own. After that: <b>click</b> it to cycle its colour, <b>drag</b> it to another hex,
-    <b>right-click</b> it to rename, recolour or remove. Tokens are yours alone — saved in this browser,
+    <b>right-click</b> it to rename, recolour, <b>split off</b> a detachment (V → V'a → V'b) or remove.
+    Tokens are yours alone — saved in this browser,
     never part of the map's own data — so use <b>Export</b> to keep or share a position.
-    On a touchscreen, press <b>Place token</b> then tap a hex, and hold a token for its menu.</p>
+    On a touchscreen, press <b>Place token</b> then tap a hex, and hold a token for its menu.
+    A fresh browser starts from the legion positions shipped with the map; <b>Starting positions</b> gets them back.</p>
     <div class="row">
       <button id="tokPlace" title="Then tap the hex to mark">Place token</button>
+      <button id="tokStart" title="Reload the positions shipped with the map (data/tokens.json)">Starting positions</button>
       <button id="tokClear">Clear all</button>
       <button id="tokExport">Export</button>
       <label class="filebtn">Import<input type="file" id="tokImport" accept=".json"></label>

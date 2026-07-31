@@ -3007,6 +3007,27 @@ const TOK_MAXLEN = 24;
 const escHtml = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const tokenById = id => S.tokens.find(t => t.id === id);
 
+/* Rebuilt rather than trusted, wherever tokens come in from outside: ids are reissued and colours
+   validated, so a hand-edited file can't leave two tokens sharing an id or a colour the renderer
+   can't use, and a hex that isn't on the map is dropped rather than drawn nowhere. */
+function normalizeTokens(arr) {
+  if (!Array.isArray(arr)) return null;
+  return arr.filter(t => t && S.hexes[+t.h]).map((t, i) => ({
+    id: i + 1, h: +t.h,
+    label: String(t.label ?? '').slice(0, TOK_MAXLEN),
+    color: /^#[0-9a-f]{6}$/i.test(t.color || '') ? t.color : TOKEN_COLORS[i % TOKEN_COLORS.length],
+  }));
+}
+// The board as the news last left it, shipped with the map. It seeds an empty browser and can be
+// asked for again at any time — it is a starting position, not a save.
+async function fetchStartingTokens() {
+  try {
+    const r = await fetch('data/tokens.json');
+    if (!r.ok) return null;
+    return normalizeTokens((await r.json()).tokens);
+  } catch { return null; }
+}
+
 function saveTokens() {
   try { localStorage.setItem(TOK_LS, JSON.stringify({ version: 1, tokens: S.tokens })); } catch {}
 }
@@ -3024,6 +3045,21 @@ function addToken(h, label, color) {
   commitTokens();
 }
 function deleteToken(t) { S.tokens = S.tokens.filter(x => x !== t); commitTokens(); }
+
+/* Detachments are named off the parent: the 5th's first is V'a, the next V'b. So a token's "base"
+   is whatever stands before the apostrophe, and every token sharing a base belongs to one command —
+   which is also how the next free letter is found. */
+const tokenBase = lab => String(lab || '').split("'")[0];
+function nextDetachLabel(t) {
+  const base = tokenBase(t.label);
+  const used = new Set(S.tokens.filter(x => tokenBase(x.label) === base)
+                               .map(x => (String(x.label).split("'")[1] || '').toLowerCase()));
+  for (let i = 0; i < 26; i++) {
+    const c = String.fromCharCode(97 + i);
+    if (!used.has(c)) return base + "'" + c;
+  }
+  return null;
+}
 
 // Dark ink on a pale counter, pale on a dark one — the colour is the user's to choose, including
 // from the full picker, so neither can be assumed.
@@ -3070,12 +3106,18 @@ function renderTokens() {
     // shrinking would make it unreadable — a name rather than a number — is written under it
     // instead, in the same white-on-dark as the stronghold labels. Below, not above, so it doesn't
     // collide with the stronghold name already sitting over the hex.
-    const fit = 2.6 * p.r / lab.length;
-    if (fit >= p.r * 0.45) {
-      const fs = Math.min(p.r * 1.05, fit);
-      el('text', { x: p.x, y: p.y + fs * 0.35, 'text-anchor': 'middle', 'font-size': fs.toFixed(2),
-                   fill: inkOn(t.color), 'font-weight': 700, 'font-family': 'system-ui,sans-serif' },
-         g).textContent = lab;
+    if (lab.length <= 8) {
+      // Height is what makes a designation readable at a glance, so a longer one loses far less of
+      // it than its length would suggest: it is squeezed sideways instead. textLength hands the
+      // exact fit to the renderer, which beats guessing a width from the character count — I, V, X
+      // and the apostrophe are all much narrower than an average glyph.
+      const n = lab.length;
+      const fs = p.r * (n <= 2 ? 1.05 : n <= 4 ? 0.86 : n <= 6 ? 0.74 : 0.64);
+      const a = { x: p.x, y: p.y + fs * 0.35, 'text-anchor': 'middle', 'font-size': fs.toFixed(2),
+                  fill: inkOn(t.color), 'font-weight': 700, 'font-family': 'system-ui,sans-serif' };
+      const maxW = p.r * 1.62;
+      if (0.6 * fs * n > maxW) { a.textLength = maxW.toFixed(2); a.lengthAdjust = 'spacingAndGlyphs'; }
+      el('text', a, g).textContent = lab;
     } else {
       el('text', { x: p.x, y: p.y + p.r + 9, 'text-anchor': 'middle', 'font-size': 10.5, fill: '#fff',
                    stroke: '#14181e', 'stroke-width': 2.4, 'paint-order': 'stroke', 'font-weight': 600,
@@ -3272,6 +3314,11 @@ function tokenMenu(t) {
     });
     ctxFlyout(ctxItem(box, `<span class="sw" style="background:${escHtml(t.color)}"></span>Colour<span class="arw">▸</span>`),
               s => buildColorPanel(s, TOKEN_COLORS, () => t.color, c => { t.color = c; commitTokens(); }));
+    const det = nextDetachLabel(t);
+    if (det) ctxItem(box, `Split off <b style="color:#fff">${escHtml(det)}</b>`, () => {
+      addToken(t.h, det, t.color);   // same hex and colour: drag it off, it stays visibly the same command
+      closeCtx();
+    });
     ctxSep(box);
     ctxItem(box, 'Delete', () => { deleteToken(t); closeCtx(); }, 'danger');
   };
@@ -3295,6 +3342,13 @@ function setTokenPick(on) {
   document.getElementById('tokPlace').classList.toggle('on', on);
 }
 document.getElementById('tokPlace').onclick = () => setTokenPick(!S.tokenPick);
+document.getElementById('tokStart').onclick = async () => {
+  const arr = await fetchStartingTokens();
+  if (!arr) return alert('No data/tokens.json to load.');
+  if (S.tokens.length && !confirm(`Replace the ${S.tokens.length} tokens on the map with the ${arr.length} starting positions?`)) return;
+  S.tokens = arr;
+  commitTokens();
+};
 document.getElementById('tokClear').onclick = () => {
   if (!S.tokens.length) return;
   if (confirm(`Remove all ${S.tokens.length} tokens?`)) { S.tokens = []; commitTokens(); }
@@ -3310,15 +3364,9 @@ document.getElementById('tokImport').onchange = async e => {
   if (!f) return;
   try {
     const j = JSON.parse(await f.text());
-    const arr = Array.isArray(j) ? j : j.tokens;
-    if (!Array.isArray(arr)) throw 0;
-    // Rebuilt rather than trusted: ids are reissued and colours validated, so a hand-edited or
-    // half-corrupt file can't leave two tokens sharing an id or a colour the renderer can't use.
-    S.tokens = arr.filter(t => t && S.hexes[+t.h]).map((t, i) => ({
-      id: i + 1, h: +t.h,
-      label: String(t.label ?? '').slice(0, TOK_MAXLEN),
-      color: /^#[0-9a-f]{6}$/i.test(t.color || '') ? t.color : TOKEN_COLORS[i % TOKEN_COLORS.length],
-    }));
+    const arr = normalizeTokens(Array.isArray(j) ? j : j.tokens);
+    if (!arr) throw 0;
+    S.tokens = arr;
     commitTokens();
   } catch { alert('Not a valid tokens.json'); }
   e.target.value = '';
@@ -3350,11 +3398,18 @@ async function boot() {
   renderFeatures(); renderLabels();
   buildLayerUI();
   for (const L of LAYERS) L._apply?.();
-  try {
-    const tj = JSON.parse(localStorage.getItem(TOK_LS));
-    if (tj && Array.isArray(tj.tokens)) S.tokens = tj.tokens.filter(t => t && S.hexes[+t.h]);
-  } catch {}
-  renderTokens(); renderTokenList();
+  // A browser that has moved tokens before keeps its own board, exactly as it left it. One that
+  // never has starts from the positions shipped with the map rather than from nothing.
+  const tls = localStorage.getItem(TOK_LS);
+  if (tls) {
+    try { S.tokens = normalizeTokens(JSON.parse(tls).tokens) || []; } catch {}
+    renderTokens(); renderTokenList();
+  } else {
+    // Saved as soon as it is seeded, so the shipped board becomes *this* browser's board: clearing
+    // it and reloading then leaves it clear, rather than quietly putting every legion back.
+    S.tokens = await fetchStartingTokens() || [];
+    commitTokens();
+  }
   try {
     const rr = JSON.parse(localStorage.getItem('rotmap_routes_v1'));
     if (rr && Array.isArray(rr.routes)) {
