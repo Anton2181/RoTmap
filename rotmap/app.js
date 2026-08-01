@@ -3232,7 +3232,7 @@ document.getElementById('isoClear').onclick = () => {
   computeRoute();
 };
 for (const id of ['isoBand', 'isoMax', 'isoMode'])
-  document.getElementById(id).addEventListener('change', computeRoute);
+  document.getElementById(id).addEventListener('change', () => { updateIsoSettingsShown(); computeRoute(); });
 // No confirmation. It is one Ctrl+Z away from being back, and a modal that stops the work to ask
 // about something already undoable is friction pretending to be safety.
 function clearAllRoutes() {
@@ -4222,6 +4222,7 @@ function showPane(name, opts) {
   for (const el of document.querySelectorAll('#panelBody .pane')) el.classList.toggle('on', el.dataset.pane === name);
   for (const b of railEl.querySelectorAll('.railbtn[data-pane]')) b.classList.toggle('on', b.dataset.pane === name);
   panelTitleEl.textContent = PANE_TITLES[name];
+  placeSettings(name);
   setMode(name === 'draw' ? 'draw' : 'route');
   // Says out loud what the map is about to do with a click, since it is no longer the same
   // everywhere: on this panel the button is redundant, and looking pressed is the honest signal.
@@ -4300,6 +4301,32 @@ function clampFloat(el, pos) {
   const y = Math.max(8, Math.min(Math.max(8, innerHeight - h - 8), pos.y));
   el.style.left = x + 'px'; el.style.top = y + 'px';
   el.style.right = 'auto'; el.style.bottom = 'auto';
+}
+
+/* The column and the conditions are wanted on two panels: on Routes, where the march is planned,
+   and on Isochrone, where the same army's reach is being shaded. Rather than two sets of boxes that
+   would have to be kept in step — and would eventually disagree — there is one set, carried between
+   a slot on each panel. Moving a node keeps its listeners, so nothing has to be rewired. */
+function placeSettings(pane) {
+  const slot = document.getElementById(pane === 'iso' ? 'isoSettingsSlot'
+             : pane === 'route' ? 'routeSettingsSlot' : 'settingsPark');
+  const park = document.getElementById('settingsPark');
+  if (!slot || !park) return;
+  for (const id of ['colGroup', 'condGroup']) {
+    const g = document.getElementById(id);
+    if (g && g.parentElement !== slot) slot.appendChild(g);
+  }
+  updateIsoSettingsShown();
+}
+// Straight-line spreads ignore terrain and the column entirely, so on those the controls would be
+// answering a question nobody asked.
+function updateIsoSettingsShown() {
+  const iso = UI.pane === 'iso';
+  const army = (document.getElementById('isoMode')?.value || 'army') === 'army';
+  const slot = document.getElementById('isoSettingsSlot');
+  const note = document.getElementById('isoNotArmy');
+  if (slot) slot.hidden = iso && !army;
+  if (note) note.hidden = !(iso && !army);
 }
 
 /* ---------------- layers, as a panel over the map ---------------- */

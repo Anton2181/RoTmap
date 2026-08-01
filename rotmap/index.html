@@ -108,34 +108,9 @@
         </details>
       </div>
 
-      <div class="group">
-        <h2>Column <span class="forwhom" id="settingsFor"></span></h2>
-        <div class="fields">
-          <label class="field" title="At a third of the fighting strength they set the pace: road speed off-road, and no mountain penalty."><span>Light infantry</span><input type="number" id="li" value="0" step="500"></label>
-          <label class="field"><span>Cavalry</span><input type="number" id="cav" value="2000" step="500"></label>
-          <label class="field" title="Peasant, regular and heavy infantry — everything on foot that isn't light infantry."><span>Other infantry</span><input type="number" id="inf" value="8000" step="500"></label>
-          <label class="field"><span>Wagons</span><input type="number" id="wag" value="80" step="10"></label>
-          <label class="field"><span>Noncombatants</span><input type="number" id="non" value="2500" step="100"></label>
-        </div>
-      </div>
-
-      <div class="group">
-        <h2>Conditions</h2>
-        <!-- The detail lives in the tooltips; the labels stay short enough to scan. -->
-        <label class="chk" title="Double pace, at a cost — see the rules. Right-click a step in the readout to force only part of the march instead."><input type="checkbox" id="forced"> Forced march (whole route)</label>
-        <label class="chk" title="Marines tradition: put the army ashore anywhere, not only at a port. Taking ship still needs one."><input type="checkbox" id="marines"> Marines — land anywhere</label>
-        <label class="chk" title="Take ship at coastal/river ports. +7 IRL days to secure a fleet if you have none, +1 to get back aboard after a landing; going ashore is free."><input type="checkbox" id="embark" checked> Allow embarking</label>
-        <label class="chk" title="Begin the route already aboard ship."><input type="checkbox" id="fleet"> Start as fleet</label>
-        <label class="chk" title="Trade routes are used by default. They run end to end only, with no stops in between."><input type="checkbox" id="noTrade"> Avoid trade routes</label>
-        <label class="field" style="margin-top:var(--s3)"><span>Weather</span><select id="weather">
-          <option value="clear">Clear / light rain / hot</option>
-          <option value="heavy_rain">Heavy rain (bad)</option>
-          <option value="storm">Storm (very bad)</option>
-          <option value="snow">Snow (bad)</option>
-          <option value="blizzard">Blizzard (very bad)</option>
-          <option value="heatwave">Heatwave</option>
-        </select></label>
-      </div>
+      <!-- The column and the conditions are one set of controls shown on two panels; script
+           carries them between these slots so the two can never disagree. -->
+      <div id="routeSettingsSlot"></div>
 
     </section>
 
@@ -160,6 +135,13 @@
         <div id="isoLegend"></div>
         <p class="hint">While this panel is open, <b>clicking the map moves the origin</b> — no
         waypoints are placed. Elsewhere, <b>Shift</b>+click does the same.</p>
+      </div>
+
+      <div id="isoSettingsSlot"></div>
+
+      <div class="group" id="isoNotArmy" hidden>
+        <p class="hint">A message and a rumour travel as the crow flies, so the column and the
+        conditions make no difference to them.</p>
         <p class="hint">Travel-time shading from one hex. <b>Army</b> marches under the column and conditions of the
         <b>active route</b>, set over on the Routes panel — change route and the shading changes with
         it; <b>message</b> and <b>rumour</b> travel as the crow flies, ignoring terrain.
@@ -312,6 +294,39 @@
     <button class="iconbtn" type="button" id="routeCardClose" aria-label="Close"><svg viewBox="0 0 22 22"><use href="#i-close"/></svg></button>
   </div>
   <div id="routeOut" class="routeout"></div>
+</div>
+
+
+<!-- Parked here at load; showPane() moves these into whichever panel is open. -->
+<div id="settingsPark" hidden>
+      <div class="group" id="colGroup">
+        <h2>Column <span class="forwhom" id="settingsFor"></span></h2>
+        <div class="fields">
+          <label class="field" title="At a third of the fighting strength they set the pace: road speed off-road, and no mountain penalty."><span>Light infantry</span><input type="number" id="li" value="0" step="500"></label>
+          <label class="field"><span>Cavalry</span><input type="number" id="cav" value="2000" step="500"></label>
+          <label class="field" title="Peasant, regular and heavy infantry — everything on foot that isn't light infantry."><span>Other infantry</span><input type="number" id="inf" value="8000" step="500"></label>
+          <label class="field"><span>Wagons</span><input type="number" id="wag" value="80" step="10"></label>
+          <label class="field"><span>Noncombatants</span><input type="number" id="non" value="2500" step="100"></label>
+        </div>
+      </div>
+
+      <div class="group" id="condGroup">
+        <h2>Conditions</h2>
+        <!-- The detail lives in the tooltips; the labels stay short enough to scan. -->
+        <label class="chk" title="Double pace, at a cost — see the rules. Right-click a step in the readout to force only part of the march instead."><input type="checkbox" id="forced"> Forced march (whole route)</label>
+        <label class="chk" title="Marines tradition: put the army ashore anywhere, not only at a port. Taking ship still needs one."><input type="checkbox" id="marines"> Marines — land anywhere</label>
+        <label class="chk" title="Take ship at coastal/river ports. +7 IRL days to secure a fleet if you have none, +1 to get back aboard after a landing; going ashore is free."><input type="checkbox" id="embark" checked> Allow embarking</label>
+        <label class="chk" title="Begin the route already aboard ship."><input type="checkbox" id="fleet"> Start as fleet</label>
+        <label class="chk" title="Trade routes are used by default. They run end to end only, with no stops in between."><input type="checkbox" id="noTrade"> Avoid trade routes</label>
+        <label class="field" style="margin-top:var(--s3)"><span>Weather</span><select id="weather">
+          <option value="clear">Clear / light rain / hot</option>
+          <option value="heavy_rain">Heavy rain (bad)</option>
+          <option value="storm">Storm (very bad)</option>
+          <option value="snow">Snow (bad)</option>
+          <option value="blizzard">Blizzard (very bad)</option>
+          <option value="heatwave">Heatwave</option>
+        </select></label>
+      </div>
 </div>
 
 <div id="ctxMenu" hidden></div>
