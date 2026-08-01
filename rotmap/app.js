@@ -2177,6 +2177,31 @@ function computeRoute() {
     rows + `</table></div>`;
 }
 
+/* Which waypoint, if any, a click means. Not the marker — hitting a 6-unit circle is fussy work, and
+   a waypoint belongs to a place, not to the few pixels its dot covers. So the whole hex counts, with
+   the subhex you clicked preferred: on a split hex the sea waypoint and the land one are different
+   waypoints, and you should be able to say which. Ties break to the active route, then to the later
+   waypoint — the one drawn on top, hence the one you were looking at. */
+function waypointAt(h, ri) {
+  let best = null, bs = Infinity;
+  S.routes.forEach((rt, i) => {
+    rt.wps.forEach((w, wi) => {
+      if (w.h !== h) return;
+      const score = (i === S.activeRoute ? 0 : 2) + ((w.ri | 0) === (ri | 0) ? 0 : 1);
+      if (score <= bs) { bs = score; best = { ri: i, wi }; }
+    });
+  });
+  return best;
+}
+// An empty route is left standing, exactly as removing the last waypoint by button leaves it: the
+// route is still yours to add to, and deleting it is the × in the list.
+function removeWaypoint(ri, wi) {
+  const rt = S.routes[ri];
+  if (!rt || wi < 0 || wi >= rt.wps.length) return;
+  rt.wps.splice(wi, 1);
+  computeRoute();
+}
+
 function renderRouteList(results) {
   const list = document.getElementById('routeList');
   list.innerHTML = '';
@@ -2520,7 +2545,9 @@ svg.addEventListener('contextmenu', e => {
   const [wx, wy] = toWorld(e);
   const h = nearestHex(wx, wy);
   if (!h || S.hexes[h].t === 'N/A') return;
-  openCtx(e.clientX, e.clientY, hexMenu(h, [wx, wy]));
+  // Right-clicking anywhere in a hex a route stops in offers to take that waypoint off, wherever it
+  // sits in the route.
+  openCtx(e.clientX, e.clientY, hexMenu(h, [wx, wy], waypointAt(h, regionAt(h, [wx, wy]))));
 });
 svg.addEventListener('dblclick', e => {
   if (S.mode === 'draw' && S.drawing) {
@@ -3299,18 +3326,29 @@ function buildMarkGrid(box, h) {
 function markMenu(h) {
   return box => { ctxHead(box, 'Mark ' + hexTitle(h)); buildMarkGrid(box, h); };
 }
-function hexMenu(h, pt) {
+function hexMenu(h, pt, wp) {
   return box => {
     ctxHead(box, hexTitle(h));
-    // What right-click used to do on its own, kept within one click of where it was — and first,
-    // since it was a reflex before this menu existed.
-    if (S.mode === 'route' && S.activeRoute >= 0 && S.routes[S.activeRoute].wps.length) {
-      ctxItem(box, 'Remove last waypoint', () => {
-        S.routes[S.activeRoute].wps.pop(); computeRoute(); closeCtx();
-      });
-    } else if (S.mode === 'draw' && S.drawing) {
-      ctxItem(box, 'Finish line', () => { finishDrawing(); closeCtx(); });
+    // A hex a route stops in means that waypoint, not the end of the route: offer to take that one
+    // off, and say which it is, since a middle waypoint disappearing is otherwise a surprise.
+    const act = S.routes[S.activeRoute];
+    if (wp) {
+      const rt = S.routes[wp.ri];
+      const which = rt.wps.length < 2 ? 'waypoint'
+                  : wp.wi === rt.wps.length - 1 ? 'last waypoint'
+                  : `waypoint ${wp.wi + 1} of ${rt.wps.length}`;
+      const name = wp.ri === S.activeRoute ? '' : `<span class="arw">${escHtml(rt.name)}</span>`;
+      ctxItem(box, `Remove ${which}${name}`, () => { removeWaypoint(wp.ri, wp.wi); closeCtx(); });
     }
+    // What right-click used to do on its own, kept within one click of where it was — and first,
+    // since it was a reflex before this menu existed. It stays on offer when the hex belongs to some
+    // *other* route, so a stray waypoint elsewhere never costs you the reflex on the one you're building.
+    if (S.mode === 'route' && act?.wps.length && wp?.ri !== S.activeRoute) {
+      ctxItem(box, 'Remove last waypoint' + (wp ? `<span class="arw">${escHtml(act.name)}</span>` : ''), () => {
+        act.wps.pop(); computeRoute(); closeCtx();
+      });
+    }
+    if (S.mode === 'draw' && S.drawing) ctxItem(box, 'Finish line', () => { finishDrawing(); closeCtx(); });
     // Routing from a hex you are already looking at, without first switching mode and hunting for
     // the New route button. The waypoint lands on the subhex region under the cursor, exactly as a
     // left-click would place it, so starting on the sea side of a split hex still means the sea.
