@@ -326,7 +326,7 @@ input[type=number], select {
     <p class="hint">Click hexes to add waypoints to the active route. <b>Right-click</b> a hex to start a
     fresh route there, or to remove the last waypoint from this one; right-click a hex the route stops
     in to remove that waypoint, wherever it sits in the route. <b>Remove last</b> does the same for
-    touchscreens, where there is no right button.</p>
+    touchscreens, where there is no right button. <b>Ctrl+Z</b> undoes.</p>
     <div class="row">
       <button id="newRoute">New route</button>
       <button id="undoWp">Remove last</button>
@@ -380,6 +380,8 @@ input[type=number], select {
     <b>right-click</b> it to rename, recolour, <b>split off</b> a detachment (V → V'a → V'b) or remove.
     Tokens are yours alone — saved in this browser,
     never part of the map's own data — so use <b>Export</b> to keep or share a position.
+<b>Ctrl+Z</b> takes back a placement, a move, a colour or a deletion —
+    the same stack the routes and the drawing use, so it always undoes whatever you did last.
     The rows below answer the right button too. On a touchscreen, press <b>Place token</b> then tap a hex, and hold a token for its menu.
     A fresh browser starts from the legion positions shipped with the map; <b>Starting positions</b> gets them back.</p>
     <div class="row">

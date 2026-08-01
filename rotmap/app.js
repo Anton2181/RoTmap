@@ -921,9 +921,45 @@ function renderFeatures() {
   }
   S.adj = null; // invalidate derived movement data
 }
-function pushUndo() {
-  S.undoStack.push(JSON.stringify(S.features));
-  if (S.undoStack.length > 60) S.undoStack.shift();
+/* ---------------- undo ----------------
+   One stack, three kinds of thing on it: the drawing, the routes, the tokens. Ctrl+Z walks it in
+   the order the changes were made, whatever they were — a token dropped after a waypoint is the
+   first thing taken back, because that is what "undo" means to the hand that pressed it.
+
+   Each entry holds the state *before* its change, so undoing is restoring it. `c` coalesces: a
+   colour dragged around a picker fires a change per frame and they must add up to a single press of
+   Ctrl+Z, so a push whose key matches the top of the stack is dropped rather than stacked. */
+const UNDO_MAX = 80;
+function pushUndoEntry(k, d, c) {
+  const top = S.undoStack[S.undoStack.length - 1];
+  if (c && top && top.c === c) return;
+  S.undoStack.push({ k, d, c });
+  if (S.undoStack.length > UNDO_MAX) S.undoStack.shift();
+}
+function pushUndo() { pushUndoEntry('features', JSON.stringify(S.features)); }
+// Routes and tokens each keep the state as of their last commit, so the "before" snapshot is always
+// already to hand and no call site has to remember to take one at the right moment.
+let routesSnap = null, tokensSnap = null;
+const snapRoutes = () => JSON.stringify({ routes: S.routes, active: S.activeRoute });
+function pushUndoRoutes(c) {
+  pushUndoEntry('routes', routesSnap ?? snapRoutes(), c);
+  routesSnap = null;                    // retaken by the next saveRoutes()
+}
+function undoLast() {
+  const u = S.undoStack.pop();
+  if (!u) return false;
+  if (u.k === 'features') { S.features = JSON.parse(u.d); commitFeatures(); }
+  else if (u.k === 'tokens') {
+    S.tokens = JSON.parse(u.d); tokensSnap = u.d;
+    renderTokens(); renderTokenList(); saveTokens();
+  } else if (u.k === 'routes') {
+    const r = JSON.parse(u.d);
+    S.routes = r.routes;
+    S.activeRoute = Math.min(r.active ?? -1, S.routes.length - 1);
+    routesSnap = u.d;
+    computeRoute();
+  }
+  return true;
 }
 function saveLocal() {
   localStorage.setItem(LS_KEY, JSON.stringify(S.features));
@@ -1855,12 +1891,15 @@ function startState(h, ri, o) {
 
 const ROUTE_COLORS = ['#ffdf5e', '#ff7ad0', '#6ef3a5', '#7ab8ff', '#ff9d5c', '#c99bff', '#5ce8e8', '#ff6b6b'];
 
-function newRoute() {
+// The quiet form is for callers that have already taken their own undo snapshot and mean the new
+// route to be part of that same step — clicking bare map places a waypoint *and* the route to hold
+// it, and one Ctrl+Z should take back both.
+function newRouteQuiet() {
   S.routes.push({ name: 'Route ' + (S.routes.length + 1),
                   color: ROUTE_COLORS[S.routes.length % ROUTE_COLORS.length], wps: [] });
   S.activeRoute = S.routes.length - 1;
-  computeRoute();
 }
+function newRoute() { pushUndoRoutes(); newRouteQuiet(); computeRoute(); }
 
 // A drawn route joins points that can sit well off-centre in their hexes: a stronghold marker up
 // against the rim of one, the end of a road inside the next. Straight between two such points the
@@ -2198,6 +2237,7 @@ function waypointAt(h, ri) {
 function removeWaypoint(ri, wi) {
   const rt = S.routes[ri];
   if (!rt || wi < 0 || wi >= rt.wps.length) return;
+  pushUndoRoutes();
   rt.wps.splice(wi, 1);
   computeRoute();
 }
@@ -2216,10 +2256,12 @@ function renderRouteList(results) {
     div.querySelector('.sw').onclick = e => {
       e.stopPropagation();
       openColorPanelAt(e.currentTarget, `<b>${escHtml(rt.name)}</b> — colour`,
-                       ROUTE_COLORS, () => rt.color, c => { rt.color = c; recolorRoute(i); });
+                       ROUTE_COLORS, () => rt.color,
+                       c => { pushUndoRoutes('rtcolor' + i); rt.color = c; recolorRoute(i); });
     };
     div.querySelector('.x').onclick = e => {
       e.stopPropagation();
+      pushUndoRoutes();
       S.routes.splice(i, 1);
       if (S.activeRoute >= S.routes.length) S.activeRoute = S.routes.length - 1;
       computeRoute();
@@ -2227,7 +2269,7 @@ function renderRouteList(results) {
     div.querySelector('.nm').ondblclick = e => {
       e.stopPropagation();
       const n = prompt('Route name:', rt.name);
-      if (n) { rt.name = n; computeRoute(); }
+      if (n) { pushUndoRoutes(); rt.name = n; computeRoute(); }
     };
     div.onclick = () => { S.activeRoute = i; computeRoute(); };
     list.appendChild(div);
@@ -2255,7 +2297,9 @@ function recolorRoute(i) {
 }
 
 function saveRoutes() {
-  try { localStorage.setItem('rotmap_routes_v1', JSON.stringify({ routes: S.routes, active: S.activeRoute })); } catch {}
+  const j = snapRoutes();
+  routesSnap = j;              // what undo restores to, should the next change be to a route
+  try { localStorage.setItem('rotmap_routes_v1', j); } catch {}
 }
 
 /* ---------------- interactions ---------------- */
@@ -2516,7 +2560,8 @@ svg.addEventListener('pointerup', e => {
       computeRoute();
       return;
     }
-    if (S.activeRoute < 0) newRoute();
+    pushUndoRoutes();
+    if (S.activeRoute < 0) newRouteQuiet();
     S.routes[S.activeRoute].wps.push({ h, ri });
     computeRoute();
   }
@@ -2866,8 +2911,9 @@ document.addEventListener('keydown', e => {
   }
   else if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
     e.preventDefault();
+    // A line being drawn gives up its last point first: that is the change closest to hand.
     if (S.drawing && S.drawing.pts.length) { S.drawing.pts.pop(); renderDrawing(); }
-    else if (S.undoStack.length) { S.features = JSON.parse(S.undoStack.pop()); commitFeatures(); }
+    else undoLast();
   }
 });
 document.addEventListener('keyup', e => {
@@ -2907,7 +2953,7 @@ document.querySelector('#toolBtns button').classList.add('on');
 
 document.getElementById('undoBtn').onclick = () => {
   if (S.drawing && S.drawing.pts.length) { S.drawing.pts.pop(); renderDrawing(); }
-  else if (S.undoStack.length) { S.features = JSON.parse(S.undoStack.pop()); commitFeatures(); }
+  else undoLast();
 };
 document.getElementById('exportBtn').onclick = () => {
   const blob = new Blob([JSON.stringify(S.features, null, 1)], { type: 'application/json' });
@@ -2947,12 +2993,15 @@ document.getElementById('isoClear').onclick = () => {
 };
 for (const id of ['isoBand', 'isoMax', 'isoMode'])
   document.getElementById(id).addEventListener('change', computeRoute);
-document.getElementById('clearRoute').onclick = () => { S.routes = []; S.activeRoute = -1; computeRoute(); };
+document.getElementById('clearRoute').onclick = () => {
+  if (!S.routes.length) return;
+  pushUndoRoutes(); S.routes = []; S.activeRoute = -1; computeRoute();
+};
 // Same as right-clicking the map, for touchscreens, which have no second button. Two buttons do it:
 // one in the sheet beside its siblings, one floating on the map for when the sheet is shut.
 function removeLastWaypoint() {
   const rt = S.routes[S.activeRoute];
-  if (rt?.wps.length) { rt.wps.pop(); computeRoute(); }
+  if (rt?.wps.length) { pushUndoRoutes(); rt.wps.pop(); computeRoute(); }
 }
 document.getElementById('undoWp').onclick = removeLastWaypoint;
 document.getElementById('undoWpFloat').onclick = removeLastWaypoint;
@@ -3063,7 +3112,13 @@ async function fetchStartingTokens() {
 function saveTokens() {
   try { localStorage.setItem(TOK_LS, JSON.stringify({ version: 1, tokens: S.tokens })); } catch {}
 }
-function commitTokens() { renderTokens(); renderTokenList(); saveTokens(); }
+/* `quiet` is for the one commit that isn't a change the user made — seeding the board at boot.
+   `coalesce` folds a run of live changes (a colour picker being dragged) into one undo step. */
+function commitTokens(opts) {
+  if (!opts?.quiet) pushUndoEntry('tokens', tokensSnap ?? JSON.stringify(S.tokens), opts?.coalesce);
+  tokensSnap = JSON.stringify(S.tokens);
+  renderTokens(); renderTokenList(); saveTokens();
+}
 
 // Two armies arriving in the same colour would defeat the point, so a new token takes the first
 // colour nobody is using before it starts repeating.
@@ -3177,7 +3232,8 @@ function renderTokenList() {
     div.querySelector('.sw').onclick = e => {
       e.stopPropagation();
       openColorPanelAt(e.currentTarget, `<b>${escHtml(t.label)}</b> — colour`,
-                       TOKEN_COLORS, () => t.color, c => { t.color = c; commitTokens(); });
+                       TOKEN_COLORS, () => t.color,
+                       c => { t.color = c; commitTokens({ coalesce: 'tkcolor' + t.id }); });
     };
     div.querySelector('.x').onclick = e => { e.stopPropagation(); deleteToken(t); };
     // The row stands for the counter, so it answers the right button the same way — no hunting for
@@ -3345,6 +3401,7 @@ function hexMenu(h, pt, wp) {
     // *other* route, so a stray waypoint elsewhere never costs you the reflex on the one you're building.
     if (S.mode === 'route' && act?.wps.length && wp?.ri !== S.activeRoute) {
       ctxItem(box, 'Remove last waypoint' + (wp ? `<span class="arw">${escHtml(act.name)}</span>` : ''), () => {
+        pushUndoRoutes();
         act.wps.pop(); computeRoute(); closeCtx();
       });
     }
@@ -3356,7 +3413,8 @@ function hexMenu(h, pt, wp) {
       closeCtx();
       if (S.mode !== 'route') setMode('route');
       if (!S.adj) deriveAdj();
-      newRoute();
+      pushUndoRoutes();
+      newRouteQuiet();
       S.routes[S.activeRoute].wps.push({ h, ri: pt ? regionAt(h, pt) : 0 });
       computeRoute();
     });
@@ -3373,7 +3431,8 @@ function tokenMenu(t) {
       if (v != null && v.trim()) { t.label = v.trim().slice(0, TOK_MAXLEN); commitTokens(); }
     });
     ctxFlyout(ctxItem(box, `<span class="sw" style="background:${escHtml(t.color)}"></span>Colour<span class="arw">▸</span>`),
-              s => buildColorPanel(s, TOKEN_COLORS, () => t.color, c => { t.color = c; commitTokens(); }));
+              s => buildColorPanel(s, TOKEN_COLORS, () => t.color,
+                                   c => { t.color = c; commitTokens({ coalesce: 'tkcolor' + t.id }); }));
     const det = nextDetachLabel(t);
     if (det) ctxItem(box, `Split off <b style="color:#fff">${escHtml(det)}</b>`, () => {
       addToken(t.h, det, t.color);   // same hex and colour: drag it off, it stays visibly the same command
@@ -3463,12 +3522,15 @@ async function boot() {
   const tls = localStorage.getItem(TOK_LS);
   if (tls) {
     try { S.tokens = normalizeTokens(JSON.parse(tls).tokens) || []; } catch {}
+    // The board as loaded is what the first Ctrl+Z should restore to, so record it as the snapshot
+    // rather than leaving the first change to take one of itself, after the fact.
+    tokensSnap = JSON.stringify(S.tokens);
     renderTokens(); renderTokenList();
   } else {
     // Saved as soon as it is seeded, so the shipped board becomes *this* browser's board: clearing
     // it and reloading then leaves it clear, rather than quietly putting every legion back.
     S.tokens = await fetchStartingTokens() || [];
-    commitTokens();
+    commitTokens({ quiet: true });   // the board as it arrives is not a change to take back
   }
   try {
     const rr = JSON.parse(localStorage.getItem('rotmap_routes_v1'));
