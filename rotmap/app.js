@@ -13,6 +13,18 @@ const TERRAIN_COLORS = {
   Flatlands: '#7fae5a', Hills: '#ac9159', Mountains: '#8d8177',
   Ocean: '#5d8fc4', Sea: '#74a5d4', Lake: '#7fb7de', 'N/A': '#181d24',
 };
+/* One palette, used by everything on the map that needs telling apart — the fourteen legions, their
+   detachments, and the routes. Two palettes meant a route and a token could be "the same colour"
+   without matching, and meant learning the swatch grid twice.
+
+   Fifteen, so the grid is three even rows of five. The hues are spaced right round the wheel and
+   kept clear of the terrain beneath them: no mid-green (Flatlands), no tan (Hills), no grey-brown
+   (Mountains), no soft mid-blue (Sea and Lake). The last two are dark on purpose and take white ink,
+   which inkOn() works out rather than being told. */
+const PALETTE = ['#ffd93d', '#ffa23d', '#ff6b5e', '#ff5e9c', '#ef7bff',
+                 '#b18cff', '#8c9bff', '#4fc3ff', '#3fe0d0', '#4fe08a',
+                 '#b8e838', '#eceff3', '#98a3b3', '#6b4fd0', '#b3283c'];
+
 // The hex grid's own line. A drawn coast wears exactly this, because a coast at subhex resolution is
 // the same kind of thing as a hex boundary — the edge of a piece of ground — and should read as one.
 const GRID = { stroke: '#0e1216', width: 0.7 };
@@ -476,6 +488,37 @@ function refineBoundary(ox, oy, ix, iy, h) { // point on hex boundary between ou
   }
   return [(ox + ix) / 2, (oy + iy) / 2];
 }
+/* ---------------- terrain, per subhex ----------------
+   The datasheet gives one terrain to a whole hex, which is right until a coastline cuts the hex in
+   two and the halves are plainly not the same ground — a hill shoulder on one side of an inlet, flat
+   pasture on the other. An override says what a *region* is; everything that asks about terrain asks
+   here, so the fill, the tooltip, the readout and the march cost all agree.
+
+   Keyed hex -> region index -> terrain name, and stored with the drawing, because it is a statement
+   about the map rather than about your session. */
+function regionTerrain(h, ri) {
+  return S.features.subTerrain?.[h]?.[ri | 0] || S.hexes[h]?.t;
+}
+function setRegionTerrain(h, ri, t) {
+  pushUndo();
+  const st = S.features.subTerrain || (S.features.subTerrain = {});
+  const byRi = st[h] || (st[h] = {});
+  if (!t || t === S.hexes[h].t) {          // back to what the sheet says: drop the override entirely
+    delete byRi[ri | 0];
+    if (!Object.keys(byRi).length) delete st[h];
+  } else byRi[ri | 0] = t;
+  S.adj = null;                             // march costs derive from terrain
+  commitFeatures();
+}
+const hasSubTerrain = h => !!S.features.subTerrain?.[h];
+// What to call a region in a readout: its own terrain, or the fact that it is the other kind of
+// ground from the hex it sits in.
+function terrainLabel(h, ri, sea) {
+  const t = regionTerrain(h, ri);
+  if (sea) return RULES.WATER.has(t) ? t : 'Sea subhex';
+  return RULES.WATER.has(t) ? 'Land subhex' : t;
+}
+
 function coastColors(h) {
   const tSelf = S.hexes[h].t;
   let seaC = RULES.WATER.has(tSelf) ? TERRAIN_COLORS[tSelf] : null;
@@ -533,10 +576,13 @@ function renderCoasts() {
     // open water the sea fill covers it. Because sea now always paints last, it is always the half
     // that bleeds ~½px to swallow the anti-aliasing seam — that's the safe direction anyway, since
     // bleeding land outward would smear green over blue.
-    for (const r of cells.regions) {
-      if (r.sea) paint(r, seaC, true, groups.coastSea);
-      else paint(r, landC, false, groups.coast);
-    }
+    cells.regions.forEach((r, ri) => {
+      // A region told what it is paints as that; the rest fall back to the hex's own two colours.
+      const own = S.features.subTerrain?.[h]?.[ri];
+      const c = own ? TERRAIN_COLORS[own] : null;
+      if (r.sea) paint(r, c || seaC, true, groups.coastSea);
+      else paint(r, c || landC, false, groups.coast);
+    });
   }
 }
 function pointInPoly(pt, poly) {
@@ -1539,9 +1585,32 @@ function minorCross(a, b) {
 // is a question about the banks, answered by the subhex regions — see regionsMeet and riverEdge.)
 
 /* ---------------- travel calculator ---------------- */
-function armyOpts() {
-  const v = id => +document.getElementById(id).value || 0;
-  const c = id => document.getElementById(id).checked;
+/* The column and the conditions belong to a route, not to the window. Two routes on the map are
+   usually two different armies — a legion of foot in a blizzard and a courier on a summer road —
+   and a single set of boxes could only ever describe one of them. The panel edits whichever route
+   is active; SETTINGS is what it edits when there is no route at all, which is the case the
+   isochrone still has to work in.
+
+   Legacy routes carry no settings, so they inherit whatever was last in the boxes. */
+const ROUTE_SETTINGS = {
+  li: 0, cav: 2000, inf: 8000, wag: 80, non: 2500,
+  forced: false, marines: false, embark: true, fleet: false, noTrade: false, weather: 'clear',
+};
+const SETTINGS_LS = 'rotmap_settings_v1';
+let SETTINGS = { ...ROUTE_SETTINGS };
+try { Object.assign(SETTINGS, JSON.parse(localStorage.getItem(SETTINGS_LS)) || {}); } catch {}
+
+// The settings in force: the active route's own, or the loose ones when nothing is selected.
+function activeSettings() {
+  const rt = S.routes[S.activeRoute];
+  if (!rt) return SETTINGS;
+  if (!rt.set) rt.set = { ...SETTINGS };      // a route from before settings existed
+  return rt.set;
+}
+function armyOpts(set) {
+  const st = set || activeSettings();
+  const v = id => +st[id] || 0;
+  const c = id => !!st[id];
   // The two infantry boxes are separate kinds, so `inf` is the whole of the foot: everything that
   // counts infantry — column length, fording, whether this is a cavalry-only army — wants the total,
   // and gets it without having to know the army was entered in two parts.
@@ -1560,8 +1629,41 @@ function armyOpts() {
     colMiles: columnMiles(army),
     forced: c('forced'), fleet: c('fleet'),
     embark: c('embark'), tradeRoad: !c('noTrade'), // the box is the opt-out; trade routes are on by default
-    weather: document.getElementById('weather').value,
+    weather: st.weather || 'clear',
   };
+}
+
+/* The panel is a view of one settings object. Writing a box writes through to whichever object is
+   active and recomputes; changing the active route rereads the boxes from it. */
+const SETTING_NUMS = ['li', 'cav', 'inf', 'wag', 'non'];
+const SETTING_CHKS = ['forced', 'marines', 'embark', 'fleet', 'noTrade'];
+let syncingForm = false;
+function syncRouteForm() {
+  const st = activeSettings();
+  syncingForm = true;
+  for (const id of SETTING_NUMS) document.getElementById(id).value = st[id] ?? 0;
+  for (const id of SETTING_CHKS) document.getElementById(id).checked = !!st[id];
+  document.getElementById('weather').value = st.weather || 'clear';
+  const rt = S.routes[S.activeRoute];
+  // Two panels want to know whose column they are describing: the one that sets it, and the
+  // isochrone, which is off on its own tab and marches under the same numbers.
+  const whose = rt ? rt.name : 'no route — defaults';
+  for (const id of ['settingsFor', 'isoFor']) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = whose;
+  }
+  syncingForm = false;
+}
+function readRouteForm(changedId) {
+  if (syncingForm) return;
+  const st = activeSettings();
+  // One undo step per field rather than per keystroke: typing 8000 is one change, not four.
+  if (S.routes[S.activeRoute]) pushUndoRoutes('set' + S.activeRoute + changedId);
+  for (const id of SETTING_NUMS) st[id] = +document.getElementById(id).value || 0;
+  for (const id of SETTING_CHKS) st[id] = document.getElementById(id).checked;
+  st.weather = document.getElementById('weather').value;
+  if (!S.routes[S.activeRoute]) { try { localStorage.setItem(SETTINGS_LS, JSON.stringify(SETTINGS)); } catch {} }
+  computeRoute();
 }
 // Does hex h have a stronghold? Datasheet strongholds (S.hexes[h].s) and custom-placed ones both
 // count, unless a `removed` override hides it (this is how a datasheet stronghold gets deleted).
@@ -1624,8 +1726,10 @@ const DISEMBARK_NOTE = DISEMBARK ? 'disembark +' + DISEMBARK + 'd' : 'disembark'
 // centres: a river bending between two hexes can leave their centres on opposite sides while the
 // regions being marched between are both on the near side, and asking the centres said "ferry" for
 // a march that never approached the water.
-function landStep(a, b, o, road, crossMajor) {
-  const key = pairKey(a, b), tb = S.hexes[b].t;
+function landStep(a, b, o, road, crossMajor, bRi) {
+  // Terrain is a property of the ground being marched onto, which is the destination *region* — a
+  // hex split between hill and flat charges whichever half the column actually enters.
+  const key = pairKey(a, b), tb = regionTerrain(b, bRi);
   const mpi = landMilesPerIRL({ road, terrain: tb, forced: o.forced, liThird: o.liThird, cavOnly: o.cavOnly, weather: o.weather, colMiles: o.colMiles });
   if (mpi <= 0) return null;
   let irl = RULES.HEX_MILES / mpi, note = road ? 'road' : 'off-road';
@@ -1751,7 +1855,7 @@ function expand(h, ri, af, ships, g, o) {
       const crossMajor = !meet;
       if (crossMajor && !(ferried && regionOnEdge(n, rj, e))) continue;
       // off-road step is always available (slower, no road bonus), and drops us off any road (g:0)
-      const off = landStep(h, n, o, false, crossMajor);
+      const off = landStep(h, n, o, false, crossMajor, rj);
       // A ferry step bends through the crossing itself, so the drawn line meets the water where the
       // road does and nowhere else. Just the one vertex, then on to the destination as usual —
       // splicing in the ferry's road instead let the line wander off the step and, at the end of a
@@ -1769,7 +1873,7 @@ function expand(h, ri, af, ships, g, o) {
       }
       // road steps: one per usable road, tracing that road's drawn geometry, arriving on its group
       for (const fi of usable) {
-        const rs2 = landStep(h, n, o, true, crossMajor);
+        const rs2 = landStep(h, n, o, true, crossMajor, rj);
         if (!rs2) continue;
         const ge = S.adj.roadGeomFi.get(pairKey(h, n) + '#' + fi);
         const geom = ge ? (ge.a === h ? ge.pts : [...ge.pts].reverse()) : null;
@@ -1889,17 +1993,34 @@ function startState(h, ri, o) {
   return [af, (af || o.fleet) ? 1 : 0];
 }
 
-const ROUTE_COLORS = ['#ffdf5e', '#ff7ad0', '#6ef3a5', '#7ab8ff', '#ff9d5c', '#c99bff', '#5ce8e8', '#ff6b6b'];
+const ROUTE_COLORS = PALETTE;
 
 // The quiet form is for callers that have already taken their own undo snapshot and mean the new
 // route to be part of that same step — clicking bare map places a waypoint *and* the route to hold
 // it, and one Ctrl+Z should take back both.
 function newRouteQuiet() {
   S.routes.push({ name: 'Route ' + (S.routes.length + 1),
-                  color: ROUTE_COLORS[S.routes.length % ROUTE_COLORS.length], wps: [] });
+                  color: ROUTE_COLORS[S.routes.length % ROUTE_COLORS.length], wps: [],
+                  // Copied, not shared: a second route for the same army starts already described,
+                  // and then goes its own way the moment you change a box.
+                  set: { ...activeSettings() } });
   S.activeRoute = S.routes.length - 1;
 }
 function newRoute() { pushUndoRoutes(); newRouteQuiet(); computeRoute(); }
+
+/* A route that sets out from a hex a counter is standing on is that counter's march, so it wears
+   its colour — legion V's road is V's colour on the map without anyone choosing it. Only the first
+   waypoint counts: it is where the army starts, and later waypoints are merely places it passes.
+
+   Where a legion and one of its detachments share a hex the legion wins, since a route drawn from
+   a stack is much likelier to be the main body's. */
+function adoptTokenColor(rt) {
+  const w = rt?.wps?.[0];
+  if (!w) return;
+  const here = S.tokens.filter(t => t.h === w.h);
+  if (!here.length) return;
+  rt.color = (here.find(t => !String(t.label).includes("'")) || here[0]).color;
+}
 
 // A drawn route joins points that can sit well off-centre in their hexes: a stronghold marker up
 // against the rim of one, the end of a road inside the next. Straight between two such points the
@@ -1959,7 +2080,10 @@ function routeLeg(rt, o) {
   for (let i = 0; i + 1 < wps.length; i++) {
     const next = new Map();
     for (const [state, cur] of dp) {
-      const legs = dijkstraLeg(wps[i].h, wps[i].ri | 0, state >> 1, state & 1, wps[i + 1].h, wps[i + 1].ri | 0, o);
+      // A leg the column is pushing gets solved at the forced pace, not merely rescaled afterwards:
+      // a faster march can be worth a different road, and only re-solving finds it.
+      const lo = wps[i].f && !o.forced ? { ...o, forced: true } : o;
+      const legs = dijkstraLeg(wps[i].h, wps[i].ri | 0, state >> 1, state & 1, wps[i + 1].h, wps[i + 1].ri | 0, lo);
       for (const [stEnd, r] of legs) {
         const nc = cur.cost + r.irl, ex = next.get(stEnd);
         if (!ex || nc < ex.cost) next.set(stEnd, { cost: nc, legs: [...cur.legs, r.steps] });
@@ -1991,13 +2115,16 @@ function routeLeg(rt, o) {
       if (i > 0 && j === 0) { prevH = st.h; continue; }
       // The last step of a leg is a waypoint you placed — a stop, not somewhere the line merely
       // passes through — so it gets anchored like the route's two ends do.
-      flat.push({ st, prevH, first: i === 0 && j === 0, wp: j === legSteps.length - 1 });
+      flat.push({ st, prevH, first: i === 0 && j === 0, wp: j === legSteps.length - 1, leg: i });
       prevH = st.h;
     }
   });
   let totHex = 0, totMiles = 0; const steps = [], allPts = [];
   for (let idx = 0; idx < flat.length; idx++) {
-    const { st, prevH: ph, first, wp } = flat[idx];
+    const { st, prevH: ph, first, wp, leg } = flat[idx];
+    // Which leg this step belongs to, and whether it *is* a waypoint. The readout needs both to
+    // turn "do something at this step" into "do something at this waypoint".
+    st.leg = leg ?? 0; st.wp = !!wp;
     // A waypoint is a place the column actually stops, so the line goes to its stronghold marker if
     // it has one — the same anchoring the route's start and end have always had.
     const anchor = wp ? endPoint(st.h, st.ri) : nodePoint(st.h, st.ri);
@@ -2151,7 +2278,7 @@ function computeRoute() {
   });
   if (S.iso.origin && S.iso.origin.ri === undefined)
     S.iso.origin = { h: S.iso.origin.h, ri: Math.max(0, regionsOf(S.iso.origin.h).findIndex(r => !!r.sea === !!S.iso.origin.sea)) };
-  const o = armyOpts();
+  const o = armyOpts();          // the active route's — what the readout and the isochrone describe
   const isoMode = document.getElementById('isoMode')?.value || 'army';
   const isoMax = +document.getElementById('isoMax').value || 14;
   if (S.iso.origin) {
@@ -2169,14 +2296,16 @@ function computeRoute() {
       el('circle', { cx, cy, r: act ? 6 : 5, fill: sea ? rt.color : 'none', stroke: rt.color,
                      'stroke-width': act ? 2.4 : 1.8, opacity: act ? 1 : 0.7, 'data-rt': i }, groups.route);
     });
-    const r = rt.wps.length > 1 ? routeLeg(rt, o) : null;
+    const r = rt.wps.length > 1 ? routeLeg(rt, armyOpts(rt.set)) : null;
     if (r && r.pts.length > 1)
       el('path', { d: featPathD(r.pts), fill: 'none', stroke: rt.color, 'stroke-width': act ? 2.8 : 2,
                    'stroke-dasharray': '7,5', 'stroke-linecap': 'round', opacity: act ? 0.95 : 0.55,
                    'data-rt': i }, groups.route);
     results.push(r);
   });
+  lastResults = results;
   renderRouteList(results);
+  syncRouteForm();
   const rt = S.routes[S.activeRoute], r = results[S.activeRoute];
   if (!rt) { out.innerHTML = ''; return; }
   if (rt.wps.length < 2) { out.innerHTML = '<div class="hint">Add a destination hex.</div>'; return; }
@@ -2192,13 +2321,24 @@ function computeRoute() {
     cum += st.irl;
     const name = S.features.labels[st.h] ?? S.names.hexes[st.h];
     const hexLbl = (name ? name + ' ' : '') + st.h;
-    const base = S.hexes[st.h].t;
-    const terr = (st.sea ? (RULES.WATER.has(base) ? base : 'Sea subhex') : (RULES.WATER.has(base) ? 'Land subhex' : base)) +
-                 (hasStronghold(st.h) ? ' ⌂' : '');
+    const terr = terrainLabel(st.h, st.ri, st.sea) + (hasStronghold(st.h) ? ' ⌂' : '');
     const sameHex = st.h === prevH; prevH = st.h;
-    if (j === 0) return `<tr><td>${hexLbl}</td><td class="dim">${terr}</td><td class="dim">start</td><td></td><td></td></tr>`;
-    return `<tr><td>${sameHex ? '' : hexLbl}</td><td class="dim">${terr}</td><td>${st.note || ''}</td>` +
-           `<td>+${st.irl.toFixed(2)}</td><td>${cum.toFixed(1)}</td></tr>`;
+    // Shuffling about inside one hex — embarking into its own water, crossing its own bridge — is
+    // bookkeeping the solver needs and the reader does not. It only earns a row if it costs
+    // something; the free ones would otherwise double every port and every bridge in the list.
+    if (j > 0 && sameHex && st.irl < 0.005) return '';
+    const forced = j > 0 && rt.wps[st.leg]?.f;
+    const cls = `class="strow${forced ? ' forced' : ''}"`;
+    const attrs = `${cls} data-step="${j}"`;
+    if (j === 0) return `<tr ${attrs}><td>${hexLbl}</td><td class="dim">${terr}</td><td class="dim">start</td><td></td><td></td><td></td></tr>`;
+    // Miles for this step: a trade hop covers several hexes in one go and knows its own length.
+    const nh = sameHex ? 0 : (st.hexes ?? (st.chain ? st.chain.length - 1 : 1));
+    const mi = sameHex ? 0 : Math.round(st.miles ?? nh * RULES.HEX_MILES);
+    const note = st.note || '';
+    const via = note + (forced ? ' <span class="fm">forced</span>' : '');
+    return `<tr ${attrs}><td title="${escHtml(hexLbl)}">${sameHex ? '' : hexLbl}</td>` +
+           `<td class="dim" title="${escHtml(terr)}">${terr}</td><td title="${escHtml(note)}">${via}</td>` +
+           `<td class="dim">${mi || ''}</td><td>${st.irl.toFixed(2)}</td><td>${cum.toFixed(1)}</td></tr>`;
   }).join('');
   // Cavalry-only forced-march ×2: show whether it's active, or why not (baggage present).
   const wForced = (RULES.WEATHER[o.weather] || RULES.WEATHER.clear).forced;
@@ -2209,11 +2349,31 @@ function computeRoute() {
     paceRow = `<tr><td>Pace</td><td><span class="warn">not cavalry-only (wagons) — no ×2. Zero them for the bonus.</span></td></tr>`;
   out.innerHTML =
     `<div class="big" style="color:${rt.color}">${rt.name}: ${r.irl.toFixed(1)} IRL days <span style="color:#9aa4b2">(${game.toFixed(0)} in-game)</span></div>` +
+    (() => {
+      const legs = rt.wps.filter(w => w.f).length;
+      if (!legs) return '';
+      // Sections, not just legs: a route can be pushed in several separate bursts.
+      let runs = 0;
+      rt.wps.forEach((w, i) => { if (w.f && !rt.wps[i - 1]?.f) runs++; });
+      return `<div class="fmnote">Forced march: ${runs} section${runs > 1 ? 's' : ''}, ` +
+             `${legs} of ${Math.max(1, rt.wps.length - 1)} legs — right-click a step to change where.</div>`;
+    })() +
     `<table><tr><td>Distance</td><td>${r.hexes} hexes ≈ ${Math.round(r.miles ?? r.hexes * RULES.HEX_MILES)} mi</td></tr>` +
     `<tr><td>Column</td><td>${o.colMiles.toFixed(1)} mi${o.colMiles > RULES.LONG_COLUMN.limit ? ' <span class="warn">(over 6 mi — slowed)</span>' : ''}</td></tr>${paceRow}</table>` +
-    `<div class="steps"><table class="stepstbl">` +
-    `<tr class="hd"><td>Hex</td><td>Terrain</td><td>Via</td><td>+IRL d</td><td>Σ</td></tr>` +
-    rows + `</table></div>`;
+    `<div class="steps"><table class="stepstbl" id="stepsTbl">` +
+    `<colgroup><col class="c-hex"><col class="c-terr"><col class="c-via">` +
+    `<col class="c-num"><col class="c-num"><col class="c-num"></colgroup>` +
+    `<tr class="hd">` +
+    ['Hex', 'Terrain', 'Via', 'mi', 'Cost', 'Σ'].map((h, i) =>
+      `<td${['', '', '', ' title="Miles covered by this step"',
+            ' title="What this step costs, in IRL days"', ' title="Running total, IRL days"'][i]}>${h}` +
+      (i < 5 ? `<span class="colgrip" data-col="${i}" title="Drag to resize · double-click to reset"></span>` : '') +
+      `</td>`).join('') +
+    `</tr>` +
+    rows + `</table></div>` +
+    `<p class="hint">Right-click a step to force the march from there, or to split the route.
+     Drag a column edge to resize it.</p>`;
+  applyColWidths();
 }
 
 /* Which waypoint, if any, a click means. Not the marker — hitting a 6-unit circle is fussy work, and
@@ -2234,6 +2394,90 @@ function waypointAt(h, ri) {
 }
 // An empty route is left standing, exactly as removing the last waypoint by button leaves it: the
 // route is still yours to add to, and deleting it is the × in the list.
+/* ---------------- acting on a step of the readout ----------------
+   A step is a hex the column passes through, and the two things worth doing there — pushing the pace
+   from here, cutting the route in two here — are both really about *waypoints*: the solver works leg
+   by leg between them, so a leg is the smallest thing that can have a pace of its own. Rather than
+   make you place a waypoint first and then find it again, marking a step puts one there.
+
+   `lastResults` is what the readout was last drawn from, so a click can look up the step it names. */
+let lastResults = [];
+let fmPending = null;   // {ri, wi} — a forced march started but not yet ended
+
+// The waypoint index this step sits at, planting one if the step is merely passed through.
+function waypointAtStep(ri, j) {
+  const rt = S.routes[ri], st = lastResults[ri]?.steps?.[j];
+  if (!rt || !st) return -1;
+  if (j === 0) return 0;
+  if (st.wp) return st.leg + 1;            // the step *is* the waypoint that ends its leg
+  const at = st.leg + 1;
+  rt.wps.splice(at, 0, { h: st.h, ri: st.ri | 0, f: rt.wps[st.leg]?.f });
+  return at;
+}
+/* Every leg from `a` up to (not including) `b` marches at the forced pace. A route can hold as many
+   of these as you like — a dash to the river, an ordinary march along it, another dash at the end —
+   so marking one never disturbs the others.
+
+   `f === 2` is a provisional run: named a start but not yet an end, so it reaches the finish for
+   now. Ending the push converts the part before the end and drops the rest, leaving any committed
+   sections elsewhere in the route exactly as they were. */
+function setForcedSpan(ri, a, b, mark) {
+  const rt = S.routes[ri];
+  const lo = Math.min(a, b), hi = Math.max(a, b);
+  rt.wps.forEach((w, i) => { if (i >= lo && i < hi) w.f = mark || true; });
+}
+function clearForced(ri) {
+  pushUndoRoutes();
+  for (const w of S.routes[ri].wps) delete w.f;
+  fmPending = null;
+  computeRoute();
+}
+function startForcedAt(ri, j) {
+  pushUndoRoutes();
+  const wi = waypointAtStep(ri, j);
+  if (wi < 0) return;
+  fmPending = { ri, wi };
+  // Until an end is named, the push runs to the finish — the common case, and one click is enough
+  // when the army simply keeps going. Marked provisionally so ending it can trim the tail back
+  // without touching a section marked earlier in the route.
+  setForcedSpan(ri, wi, S.routes[ri].wps.length - 1, 2);
+  computeRoute();
+}
+function endForcedAt(ri, j) {
+  pushUndoRoutes();
+  const wi = waypointAtStep(ri, j);
+  if (wi < 0) return;
+  const wps = S.routes[ri].wps;
+  // Which push is being ended: the one just started, or failing that the last one begun before here.
+  let from = (fmPending && fmPending.ri === ri) ? fmPending.wi : -1;
+  if (from < 0) for (let i = wi - 1; i >= 0; i--) { if (!wps[i].f) break; from = i; }
+  // Only the provisional tail is given up. Sections settled earlier keep their marks.
+  wps.forEach(w => { if (w.f === 2) delete w.f; });
+  if (from >= 0 && from < wi) setForcedSpan(ri, from, wi);
+  fmPending = null;
+  computeRoute();
+}
+// Cut the route in two at this step. Both halves keep the hex, so the second picks up exactly where
+// the first stops, and the new one inherits the column and conditions it was flying under.
+function splitRouteAt(ri, j) {
+  const rt = S.routes[ri];
+  pushUndoRoutes();
+  const wi = waypointAtStep(ri, j);
+  if (wi <= 0 || wi >= rt.wps.length - 1) return;   // nothing on one side of the cut
+  const tail = rt.wps.slice(wi).map(w => ({ ...w }));
+  rt.wps = rt.wps.slice(0, wi + 1);
+  const used = new Set(S.routes.map(r => r.color));
+  const half = {
+    name: 'Route ' + (S.routes.length + 1),
+    color: PALETTE.find(c => !used.has(c)) || PALETTE[S.routes.length % PALETTE.length],
+    wps: tail, set: { ...(rt.set || SETTINGS) },
+  };
+  adoptTokenColor(half);      // a counter waiting at the cut names the second half too
+  S.routes.splice(ri + 1, 0, half);
+  S.activeRoute = ri + 1;
+  computeRoute();
+}
+
 function removeWaypoint(ri, wi) {
   const rt = S.routes[ri];
   if (!rt || wi < 0 || wi >= rt.wps.length) return;
@@ -2244,7 +2488,7 @@ function removeWaypoint(ri, wi) {
 
 function renderRouteList(results) {
   const list = document.getElementById('routeList');
-  list.innerHTML = '';
+  list.innerHTML = S.routes.length ? '' : '<div class="emptynote">No routes yet — click a hex, or right-click one and Start a route here.</div>';
   S.routes.forEach((rt, i) => {
     const div = document.createElement('div');
     div.className = 'rtitem' + (i === S.activeRoute ? ' on' : '');
@@ -2554,7 +2798,10 @@ svg.addEventListener('pointerup', e => {
     if (!h) return;
     if (!S.adj) deriveAdj();
     const ri = regionAt(h, [wx, wy]); // pick the subhex region where the click landed
-    if (S.isoPick || e.shiftKey) {
+    // With the Isochrone panel open, moving the origin *is* the work — so that is what a click does,
+    // and no waypoints get scattered across the map while you drag the shading about. Shift+click
+    // and the armed Set origin button do the same from anywhere else.
+    if (S.isoPick || e.shiftKey || UI.pane === 'iso') {
       S.iso.origin = { h, ri }; S.isoPick = false;
       document.getElementById('isoPick').classList.remove('on');
       computeRoute();
@@ -2562,7 +2809,9 @@ svg.addEventListener('pointerup', e => {
     }
     pushUndoRoutes();
     if (S.activeRoute < 0) newRouteQuiet();
-    S.routes[S.activeRoute].wps.push({ h, ri });
+    const rt = S.routes[S.activeRoute];
+    rt.wps.push({ h, ri });
+    if (rt.wps.length === 1) adoptTokenColor(rt);
     computeRoute();
   }
 });
@@ -2581,18 +2830,18 @@ svg.addEventListener('contextmenu', e => {
   // also take a waypoint off the route. A real right-click has its own pointer down while this
   // arrives, so the test is for a *finger* being down, or one having just been held.
   if (longPressed || [...ptrs.values()].some(t => t.touch)) return;
-  // Right-clicking a token asks about that token; right-clicking the ground asks about the hex.
-  // Popping the last waypoint and finishing a line, which this used to do outright, are the first
-  // entries of the hex menu.
-  const onTok = e.target.closest?.('[data-tok]');
-  const t = onTok && tokenById(+onTok.dataset.tok);
-  if (t) return openCtx(e.clientX, e.clientY, tokenMenu(t));
   const [wx, wy] = toWorld(e);
   const h = nearestHex(wx, wy);
   if (!h || S.hexes[h].t === 'N/A') return;
   // Right-clicking anywhere in a hex a route stops in offers to take that waypoint off, wherever it
   // sits in the route.
-  openCtx(e.clientX, e.clientY, hexMenu(h, [wx, wy], waypointAt(h, regionAt(h, [wx, wy]))));
+  const hex = hexMenu(h, [wx, wy], waypointAt(h, regionAt(h, [wx, wy])));
+  // A counter does not stop the hex underneath it being a hex. Landing on one used to replace the
+  // hex menu outright, which meant a token sitting on the place you wanted to march from had to be
+  // dragged aside first. Both menus now show, the token's first, since that is what you aimed at.
+  const onTok = e.target.closest?.('[data-tok]');
+  const t = onTok && tokenById(+onTok.dataset.tok);
+  openCtx(e.clientX, e.clientY, t ? box => { tokenMenu(t)(box); ctxSep(box); hex(box); } : hex);
 });
 svg.addEventListener('dblclick', e => {
   if (S.mode === 'draw' && S.drawing) {
@@ -2872,7 +3121,8 @@ function onHover(e) {
     if (hl) {
       el('path', { d: hl.map((q, i) => (i ? 'L' : 'M') + q[0].toFixed(1) + ' ' + q[1].toFixed(1)).join('') + 'Z',
                    fill: sea ? 'rgba(93,143,196,.35)' : 'rgba(127,174,90,.35)', stroke: '#fff', 'stroke-width': 1.4, opacity: 0.95 }, groups.hover);
-      subLabel = sea ? ' · sea subhex' : ' · land subhex';
+      subLabel = ' · ' + (sea ? 'sea' : 'land') + ' subhex';
+      if (!sea && S.features.subTerrain?.[h]?.[ri]) subLabel += ` (${S.features.subTerrain[h][ri]})`;
     } else { const [cx, cy] = hexCenter(h); el('path', { d: hexPath(cx, cy), fill: 'none', stroke: '#fff', 'stroke-width': 1, opacity: 0.8 }, groups.hover); }
   } else {
     const [cx, cy] = hexCenter(h);
@@ -2925,9 +3175,6 @@ document.addEventListener('keyup', e => {
 function setMode(m) {
   if (m === 'draw' && !LOCAL) m = 'route'; // no drawing on the published map
   S.mode = m;
-  document.querySelectorAll('#modeSeg button').forEach(x => x.classList.toggle('on', x.dataset.mode === m));
-  document.getElementById('drawSection').hidden = m !== 'draw';
-  document.getElementById('routeSection').hidden = m !== 'route';
   svg.classList.toggle('drawing', m === 'draw');
   // Drawing wants every point on the map clickable, and a counter sitting on the hex you are tracing
   // would swallow the click. In Draw mode tokens are scenery; everywhere else they are handles.
@@ -2935,13 +3182,6 @@ function setMode(m) {
   svg.classList.toggle('routing', m === 'route');
   if (m !== 'draw' && S.drawing) finishDrawing();
 }
-document.getElementById('modeSeg').addEventListener('click', e => {
-  const b = e.target.closest('button'); if (b) setMode(b.dataset.mode);
-});
-// Drawing, the mode toggle that offers it, and the data tools are all for editing: the published
-// map has only routes, so none of them appear there.
-if (LOCAL) for (const id of ['modeSection', 'dataSection']) document.getElementById(id).hidden = false;
-setMode('route'); // there is no separate View mode: routing pans and inspects like viewing did
 document.getElementById('toolBtns').addEventListener('click', e => {
   const b = e.target.closest('button'); if (!b) return;
   if (S.drawing) finishDrawing();
@@ -2993,10 +3233,13 @@ document.getElementById('isoClear').onclick = () => {
 };
 for (const id of ['isoBand', 'isoMax', 'isoMode'])
   document.getElementById(id).addEventListener('change', computeRoute);
-document.getElementById('clearRoute').onclick = () => {
+// No confirmation. It is one Ctrl+Z away from being back, and a modal that stops the work to ask
+// about something already undoable is friction pretending to be safety.
+function clearAllRoutes() {
   if (!S.routes.length) return;
   pushUndoRoutes(); S.routes = []; S.activeRoute = -1; computeRoute();
-};
+}
+document.getElementById('clearRoute').onclick = clearAllRoutes;
 // Same as right-clicking the map, for touchscreens, which have no second button. Two buttons do it:
 // one in the sheet beside its siblings, one floating on the map for when the sheet is shut.
 function removeLastWaypoint() {
@@ -3006,7 +3249,7 @@ function removeLastWaypoint() {
 document.getElementById('undoWp').onclick = removeLastWaypoint;
 document.getElementById('undoWpFloat').onclick = removeLastWaypoint;
 for (const id of ['inf', 'cav', 'wag', 'non', 'li', 'forced', 'marines', 'fleet', 'embark', 'noTrade', 'weather'])
-  document.getElementById(id).addEventListener('change', computeRoute);
+  document.getElementById(id).addEventListener('change', () => readRouteForm(id));
 
 document.getElementById('refetchBtn').onclick = async () => {
   const info = document.getElementById('dataInfo');
@@ -3074,13 +3317,7 @@ function buildLayerUI() {
    Right-click a hex to mark it (I–XIV, or your own text). After that the token itself answers to
    the mouse: click cycles its colour, drag carries it to another hex, right-click renames,
    recolours or removes it. */
-/* Fourteen counters, fourteen colours — one per numeral, so a token is identifiable by colour alone
-   at a zoom where the label has become a smudge. The hues are spaced right round the wheel and kept
-   clear of the terrain beneath them: no mid-green (Flatlands), no tan (Hills), no grey-brown
-   (Mountains), no soft mid-blue (Sea and Lake). The last is dark on purpose and takes white ink. */
-const TOKEN_COLORS = ['#ffd93d', '#ffa23d', '#ff6b5e', '#ff5e9c', '#ef7bff',
-                      '#b18cff', '#8c9bff', '#4fc3ff', '#3fe0d0', '#4fe08a',
-                      '#b8e838', '#eceff3', '#98a3b3', '#6b4fd0'];
+const TOKEN_COLORS = PALETTE;   // named for the tokens, shared with the routes
 const ROMAN = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 'XI', 'XII', 'XIII', 'XIV'];
 const TOK_LS = 'rotmap_tokens_v1';
 const TOK_MAXLEN = 24;
@@ -3217,7 +3454,7 @@ function renderTokenList() {
   if (!list) return;
   list.innerHTML = '';
   if (!S.tokens.length) {
-    list.innerHTML = '<p class="hint" style="margin:2px 0 0">Nothing marked yet.</p>';
+    list.innerHTML = '<div class="emptynote">Nothing marked yet.</div>';
     return;
   }
   for (const t of S.tokens) {
@@ -3415,16 +3652,127 @@ function hexMenu(h, pt, wp) {
       if (!S.adj) deriveAdj();
       pushUndoRoutes();
       newRouteQuiet();
-      S.routes[S.activeRoute].wps.push({ h, ri: pt ? regionAt(h, pt) : 0 });
+      const rt = S.routes[S.activeRoute];
+      rt.wps.push({ h, ri: pt ? regionAt(h, pt) : 0 });
+      adoptTokenColor(rt);
       computeRoute();
     });
+    if (S.mode === 'route' && S.routes.length)
+      ctxItem(box, `Clear all routes<span class="arw">${S.routes.length}</span>`,
+              () => { closeCtx(); clearAllRoutes(); }, 'danger');
     ctxSep(box);
     ctxFlyout(ctxItem(box, 'Mark as<span class="arw">▸</span>'), s => buildMarkGrid(s, h));
+    // Terrain is only worth arguing with on ground you march over, so the entry is offered on land
+    // regions and not on water. It names the region under the cursor, which on a split hex is how
+    // the two halves get told apart.
+    if (LOCAL) {
+      const ri = pt ? regionAt(h, pt) : 0;
+      const reg = region(h, ri);
+      if (!(reg?.sea && !reg?.river)) {
+        const cur = regionTerrain(h, ri), sheet = S.hexes[h].t;
+        const split = regionsOf(h).length > 1;
+        ctxFlyout(ctxItem(box, `Terrain<span class="arw">${escHtml(cur)}${split ? ' · this subhex' : ''}▸</span>`), sm => {
+          for (const t of ['Flatlands', 'Hills', 'Mountains']) {
+            const it = ctxItem(sm, `<span class="sw" style="background:${TERRAIN_COLORS[t]}"></span>${t}`,
+                               () => { setRegionTerrain(h, ri, t); closeCtx(); });
+            if (t === cur) it.style.color = '#fff';
+          }
+          if (cur !== sheet) {
+            ctxSep(sm);
+            ctxItem(sm, `Back to the sheet<span class="arw">${escHtml(sheet)}</span>`,
+                    () => { setRegionTerrain(h, ri, null); closeCtx(); });
+          }
+        });
+      }
+    }
   };
 }
+/* ---------------- the step table's columns ----------------
+   The readout is rebuilt from scratch on every recompute, so column widths have to live outside it.
+   Once any column has been dragged, all six are pinned in pixels and the table is sized to their
+   sum — which is what makes dragging predictable, and lets the table grow wider than the card and
+   scroll rather than squeezing the columns you did not touch. */
+function applyColWidths() {
+  const tbl = document.getElementById('stepsTbl');
+  if (!tbl) return;
+  const cols = tbl.querySelectorAll('col');
+  if (!UI.cols || UI.cols.length !== cols.length) { tbl.style.width = ''; return; }
+  cols.forEach((c, i) => { c.style.width = UI.cols[i] + 'px'; });
+  tbl.style.width = UI.cols.reduce((a, b) => a + b, 0) + 'px';
+}
+function captureColWidths() {
+  const tbl = document.getElementById('stepsTbl');
+  const cells = tbl?.querySelectorAll('tr.hd td');
+  if (!cells?.length) return null;
+  return [...cells].map(td => Math.max(28, Math.round(td.getBoundingClientRect().width)));
+}
+document.getElementById('routeOut').addEventListener('pointerdown', e => {
+  const g = e.target.closest('.colgrip');
+  if (!g) return;
+  e.preventDefault(); e.stopPropagation();
+  if (!UI.cols) UI.cols = captureColWidths();
+  if (!UI.cols) return;
+  const i = +g.dataset.col, x0 = e.clientX, w0 = UI.cols[i];
+  g.classList.add('dragging');
+  document.body.classList.add('colsizing');
+  const move = ev => { UI.cols[i] = Math.max(28, w0 + ev.clientX - x0); applyColWidths(); };
+  const up = () => {
+    removeEventListener('pointermove', move);
+    removeEventListener('pointerup', up);
+    g.classList.remove('dragging');
+    document.body.classList.remove('colsizing');
+    saveUI();
+  };
+  addEventListener('pointermove', move);
+  addEventListener('pointerup', up);
+});
+// Double-click a grip to hand the table back its own proportions.
+document.getElementById('routeOut').addEventListener('dblclick', e => {
+  if (!e.target.closest('.colgrip')) return;
+  e.preventDefault(); e.stopPropagation();
+  UI.cols = null;
+  saveUI();
+  computeRoute();
+});
+
+/* Right-click a row of the readout. Left-click centres the map on that hex, which is how you find
+   out where a step actually is without reading the number. */
+function stepMenu(ri, j) {
+  const rt = S.routes[ri], st = lastResults[ri]?.steps?.[j];
+  return box => {
+    const name = S.features.labels[st.h] ?? S.names.hexes[st.h];
+    ctxHead(box, (name ? `<b>${escHtml(name)}</b> — ` : '') + `hex ${st.h} · step ${j}`);
+    const anyForced = rt.wps.some(w => w.f);
+    const pending = !!(fmPending && fmPending.ri === ri);
+    ctxItem(box, anyForced ? 'Force the march from here too' : 'Force the march from here',
+            () => { closeCtx(); startForcedAt(ri, j); });
+    if (pending || anyForced)
+      ctxItem(box, 'End the push here', () => { closeCtx(); endForcedAt(ri, j); });
+    if (anyForced)
+      ctxItem(box, `Back to normal pace<span class="arw">all</span>`, () => { closeCtx(); clearForced(ri); });
+    ctxSep(box);
+    ctxItem(box, 'Split the route here', () => { closeCtx(); splitRouteAt(ri, j); });
+    ctxItem(box, 'Centre the map here', () => { closeCtx(); panToSelection({ h: st.h }); });
+  };
+}
+document.getElementById('routeOut').addEventListener('contextmenu', e => {
+  const tr = e.target.closest('tr.strow');
+  if (!tr) return;
+  e.preventDefault();
+  const j = +tr.dataset.step;
+  if (S.activeRoute < 0 || !lastResults[S.activeRoute]?.steps?.[j]) return;
+  openCtx(e.clientX, e.clientY, stepMenu(S.activeRoute, j));
+});
+document.getElementById('routeOut').addEventListener('click', e => {
+  const tr = e.target.closest('tr.strow');
+  if (!tr) return;
+  const st = lastResults[S.activeRoute]?.steps?.[+tr.dataset.step];
+  if (st) panToSelection({ h: st.h });
+});
+
 function tokenMenu(t) {
   return box => {
-    ctxHead(box, `<b>${escHtml(t.label)}</b> — hex ${t.h}`);
+    ctxHead(box, `<b>${escHtml(t.label)}</b> — token`);
     ctxItem(box, 'Rename…', () => {
       const v = prompt('Token text:', t.label);
       closeCtx();
@@ -3440,6 +3788,9 @@ function tokenMenu(t) {
     });
     ctxSep(box);
     ctxItem(box, 'Delete', () => { deleteToken(t); closeCtx(); }, 'danger');
+    if (S.tokens.length > 1)
+      ctxItem(box, `Clear all tokens<span class="arw">${S.tokens.length}</span>`,
+              () => { closeCtx(); clearAllTokens(); }, 'danger');
   };
 }
 
@@ -3468,10 +3819,13 @@ document.getElementById('tokStart').onclick = async () => {
   S.tokens = arr;
   commitTokens();
 };
-document.getElementById('tokClear').onclick = () => {
+function clearAllTokens() {
   if (!S.tokens.length) return;
-  if (confirm(`Remove all ${S.tokens.length} tokens?`)) { S.tokens = []; commitTokens(); }
-};
+  if (!confirm(`Remove all ${S.tokens.length} tokens from the map?`)) return;
+  S.tokens = [];
+  commitTokens();
+}
+document.getElementById('tokClear').onclick = clearAllTokens;
 document.getElementById('tokExport').onclick = () => {
   const blob = new Blob([JSON.stringify({ version: 1, tokens: S.tokens }, null, 1)], { type: 'application/json' });
   const a = document.createElement('a');
@@ -3836,61 +4190,301 @@ searchInput.addEventListener('keydown', e => {
   }
 });
 
-/* ---------------- bottom sheet (narrow screens) ----------------
-   The sidebar is the same element at every width; below 820px the stylesheet parks it off the bottom
-   edge and these handlers slide it in. On desktop the button and grip are display:none, so none of
-   this ever fires. */
-const sheetEl = document.getElementById('sidebar');
-const sheetBtn = document.getElementById('drawerToggle');
-const sheetGrip = document.getElementById('drawerGrip');
+/* ==========================================================================
+   The shell
+   --------------------------------------------------------------------------
+   A rail of icons, one panel at a time, and the map. The same two elements
+   serve both layouts: on a wide screen the rail is a column and the panel sits
+   beside it; below 820px the stylesheet turns the rail into a bottom bar and
+   the panel into a sheet that slides up. Only the transform differs, so there
+   is one set of handlers rather than two.
+   ========================================================================== */
+const UI_LS = 'rotmap_ui_v1';
+const panelEl = document.getElementById('panel');
+const panelTitleEl = document.getElementById('panelTitle');
+const railEl = document.getElementById('rail');
 const undoFloat = document.getElementById('undoWpFloat');
+const narrow = () => matchMedia('(max-width: 820px)').matches;
 
-function openSheet() {
-  sheetEl.classList.add('open');
-  sheetBtn.setAttribute('aria-expanded', 'true');
-}
-function closeSheet() {
-  sheetEl.classList.remove('open');
-  sheetEl.style.transform = '';
-  sheetBtn.setAttribute('aria-expanded', 'false');
-}
-sheetBtn.onclick = openSheet;
-document.getElementById('drawerClose').onclick = closeSheet;
+const UI = { pane: 'route', shut: false, card: null, cardOff: false };
+function saveUI() { try { localStorage.setItem(UI_LS, JSON.stringify(UI)); } catch {} }
+try { Object.assign(UI, JSON.parse(localStorage.getItem(UI_LS)) || {}); } catch {}
 
-// Carrying the active route's travel time on the opener means the headline number is readable with
-// the sheet shut, which is the state you want while tapping waypoints onto the map.
-function updateDrawerBadge(results) {
-  const b = sheetBtn.querySelector('.badge');
+/* Which panel is showing. Draw is a mode as well as a panel — the map behaves differently while it
+   is open — so opening it switches the map into drawing and leaving it switches back. That is the
+   whole of the old Draw/Route toggle, minus the toggle. */
+const PANE_TITLES = { find: 'Find', route: 'Routes', iso: 'Isochrone', tokens: 'Tokens',
+                      draw: 'Draw', data: 'Data' };
+function showPane(name, opts) {
+  if (!PANE_TITLES[name]) name = 'route';
+  if (!LOCAL && (name === 'draw' || name === 'data')) name = 'route';
+  UI.pane = name;
+  for (const el of document.querySelectorAll('#panelBody .pane')) el.classList.toggle('on', el.dataset.pane === name);
+  for (const b of railEl.querySelectorAll('.railbtn[data-pane]')) b.classList.toggle('on', b.dataset.pane === name);
+  panelTitleEl.textContent = PANE_TITLES[name];
+  setMode(name === 'draw' ? 'draw' : 'route');
+  // Says out loud what the map is about to do with a click, since it is no longer the same
+  // everywhere: on this panel the button is redundant, and looking pressed is the honest signal.
+  const ip = document.getElementById('isoPick');
+  if (ip) {
+    ip.classList.toggle('on', name === 'iso');
+    ip.title = name === 'iso' ? 'Clicking the map already sets the origin while this panel is open'
+                              : 'Then click the hex the shading should spread from';
+  }
+  if (!opts?.keepShut) openPanel();
+  saveUI();
+}
+function openPanel() {
+  UI.shut = false;
+  document.body.classList.remove('panel-shut');
+  panelEl.classList.add('open');
+  document.body.classList.add('sheet-open');
+  saveUI();
+}
+// On a wide screen this takes the panel out of the layout and gives the width to the map; on a
+// narrow one it slides the sheet back down. Same call either way.
+function closePanel() {
+  UI.shut = true;
+  document.body.classList.add('panel-shut');
+  panelEl.classList.remove('open');
+  panelEl.style.transform = '';
+  document.body.classList.remove('sheet-open');
+  for (const b of railEl.querySelectorAll('.railbtn[data-pane]')) b.classList.remove('on');
+  saveUI();
+}
+const closeSheet = () => { if (narrow()) closePanel(); };
+
+railEl.addEventListener('click', e => {
+  const b = e.target.closest('.railbtn[data-pane]');
   if (!b) return;
-  const r = results?.[S.activeRoute];
-  b.textContent = !r ? '' : r.fail ? ' · no route' : ' · ' + r.irl.toFixed(1) + 'd';
-  // The floating Remove last only appears once there is a waypoint it could take back.
-  undoFloat.classList.toggle('nowp', !S.routes[S.activeRoute]?.wps.length);
+  // Pressing the panel you are already on puts it away — the quickest route to a full-width map.
+  if (b.dataset.pane === UI.pane && !UI.shut) closePanel();
+  else showPane(b.dataset.pane);
+});
+document.getElementById('railShut').onclick = () => (UI.shut ? showPane(UI.pane) : closePanel());
+document.getElementById('panelClose').onclick = closePanel;
+
+// The published map has no Draw or Data panel at all — the buttons are dropped rather than hidden.
+if (LOCAL) for (const p of ['draw', 'data']) railEl.querySelector(`.railbtn[data-pane="${p}"]`).hidden = false;
+else for (const p of ['draw', 'data']) railEl.querySelector(`.railbtn[data-pane="${p}"]`).remove();
+
+/* Anything that floats over the map can be picked up by its header and put where it suits. One
+   implementation, so the layer list and the route readout behave identically — and both remember
+   where they were left, per surface. */
+function makeDraggable(el, handle, onDrop) {
+  let drag = null;
+  handle.addEventListener('pointerdown', e => {
+    if (e.target.closest('button')) return;    // the close button is not a handle
+    const r = el.getBoundingClientRect();
+    drag = { dx: e.clientX - r.left, dy: e.clientY - r.top };
+    el.classList.add('dragging');
+    handle.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  handle.addEventListener('pointermove', e => {
+    if (!drag) return;
+    // Held inside the window, and never so far down that the header itself is off the bottom.
+    const w = el.offsetWidth, h = el.offsetHeight;
+    el.style.right = 'auto'; el.style.bottom = 'auto';
+    el.style.left = Math.max(8, Math.min(innerWidth - w - 8, e.clientX - drag.dx)) + 'px';
+    el.style.top = Math.max(8, Math.min(innerHeight - 40, e.clientY - drag.dy)) + 'px';
+  });
+  const end = () => { if (drag) { drag = null; el.classList.remove('dragging'); onDrop?.(); } };
+  handle.addEventListener('pointerup', end);
+  handle.addEventListener('pointercancel', end);
+}
+// Keeps a floating surface on screen after the window has changed shape under it.
+function clampFloat(el, pos) {
+  const w = el.offsetWidth || 300, h = el.offsetHeight || 200;
+  const x = Math.max(8, Math.min(innerWidth - w - 8, pos.x));
+  const y = Math.max(8, Math.min(Math.max(8, innerHeight - h - 8), pos.y));
+  el.style.left = x + 'px'; el.style.top = y + 'px';
+  el.style.right = 'auto'; el.style.bottom = 'auto';
 }
 
-// Drag the grip down to dismiss; a tap on it closes too, since that is what a handle looks like it
-// should do. Anything shorter than 70px springs back.
-let gripDrag = null;
-sheetGrip.addEventListener('pointerdown', e => {
-  gripDrag = { y: e.clientY, dy: 0 };
-  sheetEl.classList.add('dragging');
-  sheetGrip.setPointerCapture(e.pointerId);
+/* ---------------- layers, as a panel over the map ---------------- */
+const layersPop = document.getElementById('layersPop');
+const layersBtn = document.getElementById('layersBtn');
+function closeLayers() {
+  layersPop.hidden = true;
+  layersBtn.classList.remove('on');
+  layersBtn.setAttribute('aria-expanded', 'false');
+}
+function openLayers() {
+  layersPop.hidden = false;
+  layersBtn.classList.add('on');
+  layersBtn.setAttribute('aria-expanded', 'true');
+  // Under its own button the first time; wherever you dragged it every time after.
+  const r = layersBtn.getBoundingClientRect();
+  // A size you chose wins over the default cap; without one, it is simply not taller than the window.
+  if (UI.layersSize) {
+    layersPop.style.width = UI.layersSize.w + 'px';
+    layersPop.style.height = UI.layersSize.h + 'px';
+    layersPop.style.maxHeight = '';
+  } else layersPop.style.maxHeight = (innerHeight - 40) + 'px';
+  clampFloat(layersPop, UI.layers || { x: innerWidth - layersPop.offsetWidth - 16, y: r.bottom + 8 });
+}
+// The corner drag reports through no event of its own; an observer is how you hear about it.
+if (window.ResizeObserver) {
+  let seen = false;
+  new ResizeObserver(() => {
+    if (seen && !layersPop.hidden) {
+      const b = layersPop.getBoundingClientRect();
+      if (b.width > 40 && b.height > 40) {
+        UI.layersSize = { w: Math.round(b.width), h: Math.round(b.height) };
+        saveUI();
+      }
+    }
+    seen = true;
+  }).observe(layersPop);
+}
+makeDraggable(layersPop, layersPop.querySelector('.floathead'), () => {
+  if (layersPop.hidden) return;
+  const r = layersPop.getBoundingClientRect();
+  UI.layers = { x: Math.round(r.left), y: Math.round(r.top) };
+  saveUI();
 });
-sheetGrip.addEventListener('pointermove', e => {
+layersBtn.onclick = () => (layersPop.hidden ? openLayers() : closeLayers());
+document.getElementById('layersClose').onclick = closeLayers;
+document.addEventListener('pointerdown', e => {
+  if (layersPop.hidden) return;
+  if (e.target.closest('#layersPop, #layersBtn')) return;
+  // The press that puts it away does nothing else — the same bargain the context menu strikes, so
+  // dismissing a floating surface never costs you a waypoint.
+  if (svg.contains(e.target)) ctxDismiss = true;
+  closeLayers();
+}, true);
+
+/* ---------------- the route readout, as a card over the map ----------------
+   It was the tallest thing in the sidebar by far, and the step table is the one part of this app
+   that genuinely wants room. Out here it can be dragged somewhere useful, sized to the route, and
+   put away when the map matters more than the numbers. */
+const routeCard = document.getElementById('routeCard');
+const routeBtns = document.getElementById('routeBtns');
+const CARD_MIN_W = 260, CARD_MIN_H = 150;
+function placeCard() {
+  // A size measured while the card was display:none comes back as zero. Anything under the minimum
+  // the stylesheet allows is such a reading, not a size someone chose, so it is thrown away.
+  const c = UI.card && UI.card.w >= CARD_MIN_W && UI.card.h >= CARD_MIN_H ? UI.card : null;
+  if (c) {
+    routeCard.style.width = c.w + 'px';
+    routeCard.style.height = c.h + 'px';
+  }
+  const w = c?.w || routeCard.offsetWidth || 340;
+  const h = c?.h || routeCard.offsetHeight || 380;
+  // Its own corner, not the layer list's. Two surfaces that both opened top-right landed on top of
+  // one another and looked like one broken panel; the readout is the taller of the two, so it takes
+  // the bottom of the screen and leaves the top for the list that drops out of the Layers button.
+  clampFloat(routeCard, { x: c?.x ?? innerWidth - w - 16, y: c?.y ?? innerHeight - h - 16 });
+}
+function showCard() {
+  UI.cardOff = false;
+  routeCard.hidden = false;
+  placeCard();
+  saveUI();
+  renderRouteButtons(lastResults);
+}
+function hideCard() {
+  UI.cardOff = true;
+  routeCard.hidden = true;
+  saveUI();
+  renderRouteButtons(lastResults);
+}
+document.getElementById('routeCardClose').onclick = hideCard;
+
+/* A button per route, sitting on the map. It is three things at once: a legend saying which colour
+   is which, a switcher — the active route is the one the readout and the settings panel describe —
+   and the way a dismissed readout is called back. Pressing the one already showing puts it away. */
+function renderRouteButtons(results) {
+  routeBtns.innerHTML = '';
+  S.routes.forEach((rt, i) => {
+    const act = i === S.activeRoute && !routeCard.hidden;
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'maptool rtbtn' + (act ? ' on' : '');
+    const r = results?.[i];
+    const tm = r ? (r.fail ? '✗' : r.irl.toFixed(1) + 'd') : rt.wps.length + ' wp';
+    b.innerHTML = `<span class="sw" style="background:${escHtml(rt.color)}"></span>` +
+                  `<span class="nm">${escHtml(rt.name)}</span><span class="tm">${tm}</span>`;
+    b.title = `Show ${rt.name} — its column, conditions and step list`;
+    b.onclick = () => {
+      if (act) return hideCard();
+      S.activeRoute = i;
+      UI.cardOff = false;
+      computeRoute();          // the panel and the readout both follow the active route
+      showCard();
+    };
+    routeBtns.appendChild(b);
+  });
+}
+
+makeDraggable(routeCard, document.getElementById('routeCardHead'), () => rememberCard());
+function rememberCard() {
+  if (routeCard.hidden) return;          // a hidden element measures zero; never save that
+  const r = routeCard.getBoundingClientRect();
+  UI.card = { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) };
+  saveUI();
+}
+// The CSS resize handle reports through no event of its own; an observer is how you hear about it.
+if (window.ResizeObserver) {
+  let seen = false;
+  new ResizeObserver(() => { if (seen && !routeCard.hidden) rememberCard(); seen = true; }).observe(routeCard);
+}
+
+/* The card follows the routes: it appears when there is something to say and goes away when there
+   is not, unless it was dismissed by hand — in which case the Readout button brings it back. */
+function updateRouteCard(results) {
+  const rt = S.routes[S.activeRoute];
+  const has = !!rt;
+  if (!has) { routeCard.hidden = true; undoFloat.hidden = true; renderRouteButtons(results); return; }
+  if (UI.cardOff) { routeCard.hidden = true; renderRouteButtons(results); return; }
+  const first = routeCard.hidden;
+  routeCard.hidden = false;
+  if (first) placeCard();
+  const r = results?.[S.activeRoute];
+  routeCard.querySelector('.floathead h3').textContent =
+    rt.name + (r ? (r.fail ? ' · no route' : ' · ' + r.irl.toFixed(1) + 'd') : '');
+  // The floating Remove last only appears once there is a waypoint it could take back.
+  undoFloat.hidden = !narrow() || !rt.wps.length;
+  renderRouteButtons(results);
+}
+const updateDrawerBadge = updateRouteCard;   // the name computeRoute() calls it by
+
+// A window that has changed shape can leave a floating surface half off the screen.
+addEventListener('resize', () => {
+  if (!routeCard.hidden) placeCard();
+  if (!layersPop.hidden) clampFloat(layersPop, UI.layers || { x: innerWidth - layersPop.offsetWidth - 16, y: 60 });
+});
+
+/* Narrow screens: drag the grip down to dismiss the sheet; a tap on it closes too, since that is
+   what a handle looks like it should do. Anything shorter than 70px springs back. */
+let gripDrag = null;
+const panelGrip = document.getElementById('panelGrip');
+panelGrip.addEventListener('pointerdown', e => {
+  gripDrag = { y: e.clientY, dy: 0 };
+  panelEl.classList.add('dragging');
+  panelGrip.setPointerCapture(e.pointerId);
+});
+panelGrip.addEventListener('pointermove', e => {
   if (!gripDrag) return;
   gripDrag.dy = Math.max(0, e.clientY - gripDrag.y);
-  sheetEl.style.transform = `translateY(${gripDrag.dy}px)`;
+  panelEl.style.transform = `translateY(${gripDrag.dy}px)`;
 });
 function endGrip() {
   if (!gripDrag) return;
   const dy = gripDrag.dy;
   gripDrag = null;
-  sheetEl.classList.remove('dragging');
-  sheetEl.style.transform = '';
-  if (dy > 70 || dy < 4) closeSheet();
+  panelEl.classList.remove('dragging');
+  panelEl.style.transform = '';
+  if (dy > 70 || dy < 4) closePanel();
 }
-sheetGrip.addEventListener('pointerup', endGrip);
-sheetGrip.addEventListener('pointercancel', endGrip);
+panelGrip.addEventListener('pointerup', endGrip);
+panelGrip.addEventListener('pointercancel', endGrip);
+
+// Opening state. A phone starts with the map clear and the sheet down, whatever was last open on a
+// desktop; a desktop restores the panel it was left on.
+showPane(UI.pane, { keepShut: true });
+if (UI.shut || narrow()) closePanel(); else openPanel();
 
 boot().catch(err => {
   document.body.innerHTML = `<div style="padding:2em;font-family:sans-serif">Failed to load data: ${err}.<br>
