@@ -2254,13 +2254,28 @@ function isoColor(b, n) {
    stop a little sooner. */
 const OPT_BUCKETS = 5;             // 0.2-day steps: fine enough to read, coarse enough to batch paths
 
-// The slack this cost throws away when billed in whole days. An exact whole number wastes nothing,
-// so the epsilon keeps 3.0 from being read as an order of 4 through float dust.
+/* Why this tolerance is a thousandth of a day and not float dust.
+
+   Moves that the rules call free but that must still lose a tie — crossing a bridge inside a hex,
+   taking a ferry — are priced at NUDGE, a millionth of a day. That is invisible in every total the
+   map shows, and it was invisible here too until `ceil` got hold of it. A march the rules price at
+   exactly 5 days, begun on the far bank of a bridge, costs 5.000001; `ceil` reads that as a 6-day
+   order throwing away almost a whole day. Moving the origin one subhex across a bridge would repaint
+   every hex sitting on a whole-day boundary from green to red, while both routes still read 5.0 days.
+
+   So the optimizer prices the order the rules meant rather than the cost the solver bookkept:
+   anything within OPT_TOL of a whole day *is* that whole day. A thousandth of a day is a minute and
+   a half against steps priced in tenths, so nothing the rules could intend falls inside it, and it
+   leaves room for several hundred stacked nudges along one path. It must stay well clear of NUDGE
+   above — if that ever grows, this has to grow with it. */
+const OPT_TOL = 1e-3;
+
+// The slack this cost throws away when billed in whole days; a whole number wastes nothing.
 function optWaste(d) {
-  const w = Math.ceil(d - 1e-9) - d;
+  const w = optDays(d) - d;
   return w > 0 ? w : 0;
 }
-function optDays(d) { return Math.max(0, Math.ceil(d - 1e-9)); }   // whole days actually paid for
+function optDays(d) { return Math.max(0, Math.ceil(d - OPT_TOL)); }   // whole days actually paid for
 // Little waste green, nearly a whole day wasted red. Same ramp as the bands, darkened slightly along
 // the way so the two ends stay apart for a red-green eye as well as by hue.
 function optColor(b, n) {
