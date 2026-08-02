@@ -1810,7 +1810,11 @@ function armyOpts(set) {
     cavOnly: army.cav > 0 && army.inf === 0 && army.wag === 0,
     colMiles: columnMiles(army),
     forced: c('forced'), fleet: c('fleet'),
-    embark: c('embark'), tradeRoad: !c('noTrade'), // the box is the opt-out; trade routes are on by default
+    // Two independent permissions, not one. `secureFleet` licenses only the month spent getting
+    // ships you don't have; boarding ships you *do* have is licensed by having them, which is what
+    // `fleet` says. The saved key stays `embark` — every column in every saved route and every
+    // clipboard string is written with it — but what it now means is narrower than the name.
+    secureFleet: c('embark'), tradeRoad: !c('noTrade'), // the trade box is the opt-out; trade routes are on by default
     weather: st.weather || 'clear',
   };
 }
@@ -2216,22 +2220,25 @@ function expand(h, ri, af, ships, g, o) {
   // so it is already covered by the road steps above.)
   // Taking ship is the port's own doing, so it is the subhex the column is standing in that must have
   // one. A keep on the far bank of a river no longer lends its harbour to this side.
-  if (o.embark && isPort(h, ri)) {
-    // Two different things, never both: with no fleet you spend a month securing one (and the
-    // boarding is folded into that month), while an army that already has ships is simply
-    // getting back aboard after a landing, which is the day that gets charged.
-    const secure = ships ? 0 : SECURE, board = ships ? EMBARK : 0;
-    const pre = secure ? 'secure ships +' + secure + 'd' : 're-embark +' + board + 'd';
-    if (regSail(reg)) out.push({ toH: h, toRi: ri, af: 1, ships: 1, g: 0, irl: secure + board, note: pre }); // board a river in place
+  /* Two different things, never both, and each with its own permission. An army that already has
+     ships is simply getting back aboard, which is the 1-day re-embark, and the licence for it is
+     having the ships — the column said so, or it secured them earlier. An army with none must spend
+     the month getting them, boarding folded into that month, and *that* is what the securing box
+     allows or forbids. So a column with a fleet and no leave to secure one can sail, land, and sail
+     again from the same dock, but once it marches inland it has left its ships behind for good. */
+  if (isPort(h, ri) && (ships || o.secureFleet)) {
+    const cost = ships ? EMBARK : SECURE;
+    const pre = ships ? 're-embark +' + cost + 'd' : 'secure ships +' + cost + 'd';
+    if (regSail(reg)) out.push({ toH: h, toRi: ri, af: 1, ships: 1, g: 0, irl: cost, note: pre }); // board a river in place
     for (const [a, b] of regionAdj(h)) { // board an adjacent sea region of this hex
-      if (a === ri && regSail(region(h, b))) out.push({ toH: h, toRi: b, af: 1, ships: 1, g: 0, irl: secure + board, note: pre });
-      if (b === ri && regSail(region(h, a))) out.push({ toH: h, toRi: a, af: 1, ships: 1, g: 0, irl: secure + board, note: pre });
+      if (a === ri && regSail(region(h, b))) out.push({ toH: h, toRi: b, af: 1, ships: 1, g: 0, irl: cost, note: pre });
+      if (b === ri && regSail(region(h, a))) out.push({ toH: h, toRi: a, af: 1, ships: 1, g: 0, irl: cost, note: pre });
     }
     for (const { n, e } of N) { // launching from a port: the ship starts in that water, no mouth needed
       if (!regionOnEdge(h, ri, e)) continue;
       const rs = regionsOf(n);
       for (let rj = 0; rj < rs.length; rj++) if (regSail(rs[rj]) && regionOnEdge(n, rj, e))
-        out.push({ toH: n, toRi: rj, af: 1, ships: 1, g: 0, irl: secure + board + SHIP_IRL, note: pre + ', sail' });
+        out.push({ toH: n, toRi: rj, af: 1, ships: 1, g: 0, irl: cost + SHIP_IRL, note: pre + ', sail' });
     }
   }
   if (o.tradeRoad) for (const link of (S.adj.tradeByHex.get(h) || [])) {
@@ -2319,7 +2326,20 @@ function dijkstraLeg(fromH, fromRi, af0, sh0, toH, toRi, o) {
   }
   return out;
 }
-// Starting (afloat, ships) for a waypoint region given the fleet toggle.
+/* Starting (afloat, ships) for a waypoint region, given the fleet toggle — which settles two quite
+   different questions and is worth keeping apart in the reading.
+
+   *Afloat* is about position, and it is almost never a choice: a sea subhex can only be occupied
+   afloat and a land subhex can only be occupied ashore, so `forcedAf` answers for both. The toggle
+   decides it only where standing on the water is genuinely one of the options, which is a major-river
+   subhex — a bank you can sit on or sail down.
+
+   *Ships* is about possession, and it matters everywhere. The rules charge a month for securing a
+   fleet "only if you don't already have one", so a force that has ships boards for the 1-day
+   re-embark instead of 7 days — including a garrison standing on the shore with its ships waiting in
+   the harbour beside it. That is why the toggle changes the answer for a coastal hex's *land*
+   subhex, which looks like a bug until you notice the box is a claim about the force rather than
+   about where it is standing. */
 function startState(h, ri, o) {
   const f = forcedAf(region(h, ri));
   const af = f === null ? (o.fleet ? 1 : 0) : f; // river waypoint: default to fleet toggle
@@ -2528,7 +2548,34 @@ function hpop(a) {
   return t;
 }
 
-// Travel time from `from` to every reachable hex within maxD IRL days (min over fleet states).
+/* ---------------- the isochrone's unit is the subhex ----------------
+   Everywhere else on this map a hex that a coastline or a major river has cut in two is two places
+   that happen to share an outline, and the pathfinder has treated them that way for a long time. The
+   isochrone used to collapse them again on the way out, keeping one figure per hex and taking the
+   best of whatever states reached it — so a port whose bay a fleet could sail into came back shaded
+   over its whole hex, including the land an army with no ships could not reach at all. The reach was
+   right; the reporting threw the distinction away.
+
+   So every map the isochrone builds is keyed by *node* — hex and region together — and every fill it
+   paints is the region's own shape. A coastal hex can now be half green and half unshaded, which is
+   the truth about it. Hexes nothing has split have exactly one region and read as they always did. */
+const nk = (h, ri) => h * MAX_REGIONS + (ri | 0);
+const nkH = k => (k / MAX_REGIONS) | 0;
+const nkRi = k => k % MAX_REGIONS;
+
+/* Which subhexes a column can be said to *hold*, as against merely to cross. With ships, all of them:
+   a fleet at anchor is somewhere a force can be. Without ships, only ground it could stand on — so a
+   fleetless column leaves every sea subhex out of the field, whatever the search found there.
+
+   It is deliberately the field and not the search that is filtered. A fleetless army with embarking
+   allowed can still spend its month securing a fleet and cross a strait, and the land it reaches on
+   the far side is properly shaded; what goes is the water in between, which was never anywhere it
+   could be stationed. A strait drawn as a gap between two shaded shores is the honest picture of
+   that. River subhexes stay, because a bank is walkable ground that happens to be sailable too. */
+const isoHolds = (h, ri, o) => o.fleet || regWalkable(region(h, ri));
+
+// Travel time from `from` to every reachable subhex within maxD IRL days (min over fleet states —
+// but not over regions, which are different ground and get their own answer).
 function dijkstraAll(fromNode, o, maxD) {
   const dist = new Map(), best = new Map();
   const r0 = fromNode.ri | 0, [af0, sh0] = startState(fromNode.h, r0, o);
@@ -2537,7 +2584,8 @@ function dijkstraAll(fromNode, o, maxD) {
   while (heap.length) {
     const [d, h, ri, af, sh, g] = hpop(heap);
     if (d > (dist.get(sk(h, ri, af, sh, g)) ?? Infinity)) continue;
-    if (d < (best.get(h) ?? Infinity)) best.set(h, d);
+    const key = nk(h, ri);
+    if (isoHolds(h, ri, o) && d < (best.get(key) ?? Infinity)) best.set(key, d);
     if (d > maxD) continue;
     for (const mv of expand(h, ri, af, sh, g, o)) {
       const k2 = sk(mv.toH, mv.toRi, mv.af, mv.ships, mv.g), nd = d + mv.irl;
@@ -2547,10 +2595,15 @@ function dijkstraAll(fromNode, o, maxD) {
   return best;
 }
 
-// Straight-line ("as the crow flies") spread from an origin hex to every hex within
+// Straight-line ("as the crow flies") spread from an origin hex to every subhex within
 // maxD IRL days, at a fixed miles/IRL-day speed. Terrain, roads and rivers are ignored
 // — this mirrors the Google-Sheet straight-line calc used for messages & rumours.
-// Returns Map<hexId, irlDays>, same shape as dijkstraAll.
+// Returns Map<nodeKey, irlDays>, same shape as dijkstraAll.
+//
+// Measured centre to centre as it always was, and every region of a hex is given the same figure:
+// word does not slow down at a shoreline, and a bay is as far from the origin as the shore it bites
+// into. The subhex split matters here only so that the answer can be intersected with a march that
+// does care about it, and so that both are painted with the same brush.
 function spreadAll(fromNode, speedMiPerDay, maxD) {
   const pxPerMile = S.G.hex_width / RULES.HEX_MILES;   // hex_width px == HEX_MILES miles
   const maxPx = maxD * speedMiPerDay * pxPerMile;
@@ -2561,8 +2614,9 @@ function spreadAll(fromNode, speedMiPerDay, maxD) {
     const [cx, cy] = hexCenter(id);
     const px = Math.hypot(cx - ox, cy - oy);
     if (px > maxPx) continue;
-    const miles = px / pxPerMile;
-    best.set(id, miles / speedMiPerDay);
+    const d = (px / pxPerMile) / speedMiPerDay;
+    const n = Math.min(regionsOf(id).length, MAX_REGIONS);
+    for (let ri = 0; ri < n; ri++) best.set(nk(id, ri), d);
   }
   return best;
 }
@@ -2714,22 +2768,23 @@ function reliefMarch(toH, toRi, o, maxD) {
       if (nd < (dist.get(from) ?? Infinity)) { dist.set(from, nd); hpush(heap, [nd, from, from >>> SK_H]); }
     }
   }
-  /* Read off per hex, from the state a force *stationed* there would set out in — the same start
-     state a route from that hex would take, so a garrison is costed as a garrison rather than as
-     whatever state the search happened to pass through. Road group 0: an army standing in a hex is
-     not yet on any road, and picks one up with its first step. */
+  /* Read off per subhex, from the state a force *stationed* there would set out in — the same start
+     state a route from that subhex would take, so a garrison is costed as a garrison rather than as
+     whatever state the search happened to pass through. Road group 0: an army standing still is not
+     yet on any road, and picks one up with its first step. Each region answers for itself: a bay and
+     the shore beside it are not the same billet, and only one of them can be marched out of. */
   const best = new Map();
+  const seen = new Set();
   for (const [key] of dist) {
     const h = key >>> SK_H;
-    if (best.has(h)) continue;
-    let bd = Infinity;
+    if (seen.has(h)) continue;
+    seen.add(h);
     regionsOf(h).forEach((r, ri) => {
-      if (ri >= MAX_REGIONS) return;
+      if (ri >= MAX_REGIONS || !isoHolds(h, ri, o)) return;   // no ships, no billet at sea
       const [af0, sh0] = startState(h, ri, o);
       const v = dist.get(sk(h, ri, af0, sh0, 0));
-      if (v !== undefined && v < bd) bd = v;
+      if (v !== undefined && v <= maxD) best.set(nk(h, ri), v);
     });
-    if (bd <= maxD) best.set(h, bd);
   }
   return best;
 }
@@ -2740,13 +2795,13 @@ function reliefAll(fromNode, o, newsSpeed, maxD) {
   const news = spreadAll(fromNode, newsSpeed, maxD);
   const march = reliefMarch(fromNode.h, fromNode.ri | 0, o, maxD);
   const best = new Map(), parts = new Map();
-  for (const [h, m] of march) {
-    const x = news.get(h);
+  for (const [key, m] of march) {
+    const x = news.get(key);
     if (x === undefined) continue;              // out of earshot — nobody there ever hears of it
     const xd = optDays(x), yd = optDays(m), tot = xd + yd;
     if (tot > maxD) continue;
-    best.set(h, tot);
-    parts.set(h, { newsD: xd, marchD: yd, news: x, march: m });
+    best.set(key, tot);
+    parts.set(key, { newsD: xd, marchD: yd, news: x, march: m });
   }
   return { best, parts };
 }
@@ -2806,47 +2861,41 @@ function assignIsoOwners(maxD) {
   const own = new Map(), best = new Map();
   S.iso.data.forEach((m, i) => {
     if (!m) return;
-    for (const [h, d] of m) {
+    for (const [key, d] of m) {          // key is a subhex, so two halves of a hex can fall differently
       if (d > maxD) continue;
-      const cur = best.get(h);
-      if (cur === undefined || d < cur) { best.set(h, d); own.set(h, i); }
+      const cur = best.get(key);
+      if (cur === undefined || d < cur) { best.set(key, d); own.set(key, i); }
     }
   });
   S.iso.own = own; S.iso.best = best;
 }
-// The runner-up for a hex, which is what makes a border legible: a hex the second force reaches a day
-// later is a frontier, one it reaches a week later is deep inside somebody's territory.
-function isoRunnerUp(h) {
+// The runner-up for a subhex, which is what makes a border legible: ground the second force reaches a
+// day later is a frontier, ground it reaches a week later is deep inside somebody's territory.
+function isoRunnerUp(key) {
   let bi = -1, bd = Infinity;
-  const winner = S.iso.own?.get(h);
+  const winner = S.iso.own?.get(key);
   S.iso.data.forEach((m, i) => {
     if (!m || i === winner) return;
-    const d = m.get(h);
+    const d = m.get(key);
     if (d !== undefined && d < bd) { bd = d; bi = i; }
   });
   return bi < 0 ? null : { i: bi, d: bd };
 }
 
-/* The boundary of one area, traced side by side: an owned hex contributes each of its six sides that
-   does not have another hex of the same area behind it. Interior sides are simply never emitted, so
-   what is left is the outline — and, for free, the outline of a hole where a rival has taken a pocket
-   of ground in the middle, and the ragged edge where an area runs out of map.
-
-   The hex across side i sits at twice the side's midpoint offset: that midpoint is the inradius from
-   the centre, and adjacent centres are two inradii apart. So the neighbour can be found by asking what
-   hex is at that point, without needing to know how `neighbors()` happens to order its answers. */
-function isoOutlineD(idx) {
+/* Every piece of ground one area holds, as one path. This used to walk hex sides and emit only those
+   with no same-area hex behind them, which produced the outline directly — but a side is the wrong
+   unit now that half a hex can be held and the other half not, and a coastline is not one of the six
+   sides. So the area is described as a shape rather than as a set of edges, and the outline is got
+   from the shape by stroking and masking (see renderIso): the half of every line falling inside the
+   area is hidden, which silently removes every line between two of its own pieces and leaves the
+   silhouette — holes where a rival has taken a pocket in the middle, and all. The same trick the
+   region selection uses, for the same reason: no union of several hundred polygons to compute. */
+function isoAreaD(idx) {
   let d = '';
-  for (const [h, o] of S.iso.own) {
+  for (const [key, o] of S.iso.own) {
     if (o !== idx) continue;
-    const [cx, cy] = hexCenter(h);
-    for (let i = 0; i < 6; i++) {
-      const nb = nearestHex(cx + 2 * EDGE[i][0], cy + 2 * EDGE[i][1]);
-      if (nb && nb !== h && S.iso.own.get(nb) === idx) continue;
-      const a = CORN[i], b = CORN[(i + 1) % 6];
-      d += `M${(cx + a[0]).toFixed(1)} ${(cy + a[1]).toFixed(1)}` +
-           `L${(cx + b[0]).toFixed(1)} ${(cy + b[1]).toFixed(1)}`;
-    }
+    const h = nkH(key), r = region(h, nkRi(key));
+    if (r) d += regionShape(h, r);
   }
   return d;
 }
@@ -2860,9 +2909,18 @@ function renderIsoList() {
   if (!list) return;
   list.innerHTML = S.iso.origins.length ? ''
     : '<div class="emptynote">No origins yet — click a hex, or press Add origin.</div>';
-  // How many hexes each area actually holds, which is the only honest measure of who is winning.
+  // How much ground each area actually holds, which is the only honest measure of who is winning.
+  // Counted in hexes rather than in subhexes: a hex a coastline has cut in two is still one place on
+  // the map, and counting it twice would make an area look larger for standing on a shore.
   const held = new Map();
-  if (S.iso.own) for (const o of S.iso.own.values()) held.set(o, (held.get(o) || 0) + 1);
+  if (S.iso.own) {
+    const seen = new Map();
+    for (const [key, o] of S.iso.own) {
+      let s = seen.get(o); if (!s) seen.set(o, s = new Set());
+      s.add(nkH(key));
+    }
+    for (const [o, s] of seen) held.set(o, s.size);
+  }
   S.iso.origins.forEach((og, i) => {
     const div = document.createElement('div');
     div.className = 'rtitem' + (i === S.iso.active ? ' on' : '');
@@ -2999,15 +3057,22 @@ function renderIso() {
   const label = opt ? b => `${(b / n).toFixed(1)}–${((b + 1) / n).toFixed(1)} d`
                     : relief ? b => `${b} d`
                     : b => `≤ ${((b + 1) * band).toFixed(band < 1 ? 1 : 0)} d`;
-  // Shaded by the time its *own* origin takes to reach it — `best` is already the winner's figure and
-  // already inside maxD, so a hex belongs to exactly one band whoever holds it.
+  /* Shaded by the time its *own* origin takes to reach it — `best` is already the winner's figure and
+     already inside maxD, so a piece of ground belongs to exactly one band whoever holds it.
+
+     The shape painted is the region's, not the hex's, which is the whole point: a port whose bay a
+     fleet can enter and whose quay an army cannot reach shades the water and leaves the land bare.
+     `evenodd` because a region can come back as several loops — a strip and an island it encloses —
+     and the enclosing water has to punch a hole rather than paint over what it surrounds. Regions
+     never overlap, so batching a few hundred of them into one path is safe under that rule. */
   const byBand = [];
-  for (const [h, d] of S.iso.best) {
+  for (const [key, d] of S.iso.best) {
+    const h = nkH(key), r = region(h, nkRi(key));
+    if (!r) continue;
     const b = bucket(d);
-    const [cx, cy] = hexCenter(h);
-    byBand[b] = (byBand[b] || '') + hexPath(cx, cy);
+    byBand[b] = (byBand[b] || '') + regionShape(h, r);
   }
-  byBand.forEach((d, b) => { if (d) el('path', { d, fill: color(b, n), stroke: 'none' }, groups.iso); });
+  byBand.forEach((d, b) => { if (d) el('path', { d, fill: color(b, n), 'fill-rule': 'evenodd', stroke: 'none' }, groups.iso); });
   /* Outlines after every fill: a border drawn before the neighbouring area is painted would be half
      buried by it. Two passes rather than one, because a coloured line laid straight onto these fills
      has almost nothing to read against — the palette and the green-to-red ramp are the same brightness,
@@ -3016,15 +3081,29 @@ function renderIso() {
 
      Both passes run over every area before the next begins, so one area's casing cannot bury the
      neighbour's colour along a border they share. The active area goes last in the colour pass, so
-     where two borders coincide the one you are editing is the one you see. */
-  const outlines = S.iso.origins.map((og, i) => ({ og, i, d: isoOutlineD(i) })).filter(o => o.d);
+     where two borders coincide the one you are editing is the one you see.
+
+     What is stroked is the area's whole shape, every piece of it, and a mask then hides everything
+     lying inside that shape. The inner half of each line goes with it, and so does every line
+     between two pieces the same area holds, since both halves of those are interior — what survives
+     is the silhouette. Each area masks with its own shape, so a border two of them share is still
+     drawn twice, once in each colour. Widths are doubled to compensate: half of every stroke is
+     being thrown away. */
+  const outlines = S.iso.origins.map((og, i) => ({ og, i, d: isoAreaD(i) })).filter(o => o.d);
   const lineW = i => i === S.iso.active ? 4.2 : 3;
+  for (const { d, i } of outlines) {
+    const id = 'isoEdgeMask' + i;
+    const mask = el('mask', { id, maskUnits: 'userSpaceOnUse',
+                              x: 0, y: 0, width: S.G.image_width, height: S.G.image_height }, groups.iso);
+    el('rect', { x: 0, y: 0, width: S.G.image_width, height: S.G.image_height, fill: '#fff' }, mask);
+    el('path', { d, fill: '#000', 'fill-rule': 'evenodd' }, mask);
+  }
   for (const { d, i } of outlines)
-    el('path', { d, fill: 'none', stroke: '#0c1015', 'stroke-width': lineW(i) + 2.6,
-                 'stroke-linecap': 'round', opacity: 0.55 }, groups.iso);
+    el('path', { d, fill: 'none', stroke: '#0c1015', 'stroke-width': 2 * (lineW(i) + 2.6),
+                 'stroke-linejoin': 'round', opacity: 0.55, mask: `url(#isoEdgeMask${i})` }, groups.iso);
   for (const { d, og, i } of [...outlines].sort((a, b) => (a.i === S.iso.active) - (b.i === S.iso.active)))
-    el('path', { d, fill: 'none', stroke: og.color, 'stroke-width': lineW(i),
-                 'stroke-linecap': 'round' }, groups.iso);
+    el('path', { d, fill: 'none', stroke: og.color, 'stroke-width': 2 * lineW(i),
+                 'stroke-linejoin': 'round', mask: `url(#isoEdgeMask${i})` }, groups.iso);
   S.iso.origins.forEach((og, i) => {
     if (og.h == null) return;
     const [ox, oy] = nodePoint(og.h, og.ri | 0);
@@ -4164,26 +4243,29 @@ function snapMarker(p) {
                  'stroke-width': close ? 1.8 : 1 }, groups.hover);
 }
 
-/* What the isochrone has to say about a hex. With one origin that is simply how long the march takes.
+/* What the isochrone has to say about the subhex under the cursor — the subhex, because the two
+   halves of a split hex are different ground and may well have different answers, or one of them no
+   answer at all. With one origin that is simply how long the march takes.
    With several it is also who holds the hex and by how much — and the margin is the interesting number,
    because a hex won by half a day is a frontier and one won by a week is nobody's frontier at all. */
-function isoTip(h) {
-  if (!S.iso.own || !S.iso.own.has(h)) return '';
-  const i = S.iso.own.get(h), d = S.iso.best.get(h);
+function isoTip(h, ri) {
+  const key = nk(h, ri | 0);
+  if (!S.iso.own || !S.iso.own.has(key)) return '';
+  const i = S.iso.own.get(key), d = S.iso.best.get(key);
   const og = S.iso.origins[i];
   const many = placedOrigins() > 1;
   // In relief mode the total is the least of it. Which leg eats the budget is what you can act on:
   // a march-bound hex wants a road or a shorter stretch of one, a news-bound hex wants a courier
   // posted rather than a garrison moved, and the raw figures in brackets say how near the whole-day
   // billing came to costing a day it never used.
-  const p = isoRelief() ? S.iso.parts?.[i]?.get(h) : null;
+  const p = isoRelief() ? S.iso.parts?.[i]?.get(key) : null;
   if (p) {
     let r = `<br>${d} IRL d to relieve ${many ? escHtml(og?.name || 'the siege') : 'the siege'}` +
             `<br><span class="rg">word ${p.newsD} d (${p.news.toFixed(1)}) + march ${p.marchD} d (${p.march.toFixed(1)})</span>`;
     // With several sieges on the map a hex belongs to the one it can save soonest — but a hex that
     // covers two of them is the one you actually want, so say what else it reaches and at what price.
     if (many) {
-      const up = isoRunnerUp(h);
+      const up = isoRunnerUp(key);
       if (up) r += `<br><span class="rg">also relieves ${escHtml(S.iso.origins[up.i]?.name || 'the other')}` +
                    ` in ${up.d} d — ${up.d - d} d later</span>`;
     }
@@ -4194,7 +4276,7 @@ function isoTip(h) {
   // what is being paid, and what of it is wasted, are the point.
   if (isoOptimizing()) s += ` · ${optDays(d)} d order, ${optWaste(d).toFixed(2)} wasted`;
   if (many) {
-    const up = isoRunnerUp(h);
+    const up = isoRunnerUp(key);
     if (up) s += `<br><span class="rg">${escHtml(S.iso.origins[up.i]?.name || 'other')} ` +
                  `${up.d.toFixed(1)} d — held by ${(up.d - d).toFixed(1)} d</span>`;
   }
@@ -4249,7 +4331,7 @@ function onHover(e) {
     `${v.t}${hoverM ? ` · ${shKind} (${isPort(h, hoverRi) ? 'coastal/port' : 'inland'})` : ''}` +
     `${v.r ? ' · river (sheet)' : ''}${v.d ? ' · road (sheet)' : ''}` +
     (v.g ? `<br><span class="rg">${v.g}</span>` : '') +   // the region it belongs to, from the sheet
-    isoTip(h);
+    isoTip(h, hoverRi);
   tooltip.hidden = false;
   const wr = svg.parentElement.getBoundingClientRect();
   tooltip.style.left = (e.clientX - wr.left + 14) + 'px';

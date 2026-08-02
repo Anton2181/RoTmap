@@ -145,8 +145,11 @@
         <div id="isoLegend"></div>
         <p class="hint">While this panel is open, <b>clicking the map moves the selected origin</b> — no
         waypoints are placed. Elsewhere, <b>Shift</b>+click does the same. With more than one origin
-        each area is <b>outlined in its own colour</b>, and a contested hex goes to whichever origin
+        each area is <b>outlined in its own colour</b>, and contested ground goes to whichever origin
         reaches it in fewer days. Each origin marches under <b>its own column</b>, set below.</p>
+        <p class="hint">Shading is by <b>subhex</b>, not by hex: where a coast or a major river has cut
+        a hex in two, each half is asked separately and only the half that can actually be reached is
+        shaded. A bay a fleet can enter no longer lights up the shore an army can't march to.</p>
       </div>
 
       <div id="isoSettingsSlot"></div>
@@ -363,8 +366,8 @@
         <!-- The detail lives in the tooltips; the labels stay short enough to scan. -->
         <label class="chk" title="Double pace, at a cost — see the rules. Right-click a step in the readout to force only part of the march instead."><input type="checkbox" id="forced"> Forced march (whole route)</label>
         <label class="chk" title="Marines tradition: put the army ashore anywhere, not only at a port. Taking ship still needs one."><input type="checkbox" id="marines"> Marines — land anywhere</label>
-        <label class="chk" title="Take ship at coastal/river ports. +7 IRL days to secure a fleet if you have none, +1 to get back aboard after a landing; going ashore is free."><input type="checkbox" id="embark" checked> Allow embarking</label>
-        <label class="chk" title="Begin the route already aboard ship."><input type="checkbox" id="fleet"> Start as fleet</label>
+        <label class="chk" title="This force may spend the month getting ships it does not have: +7 IRL days at a coastal or major-river port, boarding folded in. It governs nothing else — a force that already has ships boards on their account, not on this one. Turn it off for a column that will never commandeer a fleet."><input type="checkbox" id="embark" checked> Allow securing a fleet</label>
+        <label class="chk" title="This force owns ships already, so it never spends the month securing them: boarding costs the 1-day re-embark, wherever it stands and whatever the box above says. On land the ships are simply waiting in its harbour — it does not begin afloat. It begins afloat only where standing afloat is a real choice, which is a major-river subhex; on a sea subhex it is afloat regardless, and on land it cannot be. With this off, the isochrone leaves sea subhexes out of the shading altogether — without ships there is nothing at sea to hold."><input type="checkbox" id="fleet"> Start as fleet</label>
         <label class="chk" title="Trade routes are used by default. They run end to end only, with no stops in between."><input type="checkbox" id="noTrade"> Avoid trade routes</label>
         <label class="field" style="margin-top:var(--s3)"><span>Weather</span><select id="weather">
           <option value="clear">Clear / light rain / hot</option>

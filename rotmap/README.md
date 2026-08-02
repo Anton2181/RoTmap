@@ -42,6 +42,38 @@ Each drawn feature type has its own **Layers** toggle — Roads, Rivers (major),
 
 Coast fills sit directly on top of the terrain — they *are* terrain, just at subhex resolution — so the Layers panel lists them (and the coast lines) right under Terrain. The fills are split around the rivers in the draw order: land subhex fills, then the thematic ref scans, then the river layers, then sea subhex fills, then the **Classic map**, then the coast lines. The Classic map is deliberately above *both* halves of the coast fills, because it's the basemap you trace shorelines from and an opaque sea subhex painted over it hides the very coast you're following. The consequence is forced: since the sea fills sit above the rivers, a scan above the fills is also above the drawn rivers. Coast lines, roads, trade routes, the hex grid and strongholds all stay above it. A river drawn across a split hex therefore stays visible over the land half and slides under the open water rather than being painted over. Both halves share the single "Coast fills" toggle.
 
+## The isochrone speaks in subhexes
+
+Everywhere else on the map, a hex a coastline or a major river has cut in two is *two places* that
+happen to share an outline, and the pathfinder has treated them that way for a long time. The
+isochrone used to collapse them again on the way out — one figure per hex, taking the best of
+whatever reached it — so a port whose bay a fleet could sail into came back shaded over its whole
+hex, land included, even for an army with no ships and no way ashore. The reach was right; the
+reporting threw the distinction away.
+
+So every field the isochrone builds is now keyed by **hex and region together**, in all four modes,
+and every band it paints is the region's own shape rather than the hexagon around it. A coastal hex
+can be half shaded and half bare, which is the truth about it; the tooltip answers for the subhex
+under the cursor and says nothing over the half that is out of reach. Hexes nothing has split have
+exactly one region and read exactly as they always did. Word of a siege is given to every region of
+a hex alike — news does not slow down at a shoreline — so it is the march that does the dividing.
+
+**Without ships, nothing at sea is shaded at all.** With "Start as fleet" off, the isochrone drops
+every sea subhex from the field — a fleetless column has no billet on the water, so painting it as
+ground held was never right. Only the field is filtered, not the search: an army allowed to secure a
+fleet can still spend its month doing so and cross a strait, and the land it reaches on the far side
+shades normally. A strait drawn as a gap between two shaded shores is the honest picture of
+that. River subhexes stay either way, since a bank is walkable ground that happens to be sailable
+too. One consequence worth knowing: a siege origin placed on a *sea* subhex with no fleet gives an
+empty field, because nothing can reach it inside any budget shorter than the securing month.
+
+The area outlines are drawn the way the region selection is: the whole shape is stroked and then
+masked by everything inside it, which hides the inner half of every line and, with it, every line
+between two pieces the same area holds. What survives is the silhouette, holes and coastlines
+included, without computing a union of several hundred polygons. The origin-list count stays in
+whole hexes — a hex cut in two is still one place on the map, and counting it twice would flatter
+whoever happened to hold a shore.
+
 ## Relieving a siege
 
 The Isochrone panel's fourth spread, **Siege relief**, turns the usual question inside out. An
@@ -97,6 +129,7 @@ Because each region is its own node, **naval subhexes block land movement**: an 
 **Drawn major rivers split hexes the same way**, into a region per bank, because a major river can't be forded anywhere — not even in the middle of a hex. The two banks are separate nodes: an army on one can't reach the other, or a road on the other, unless a road bridges the river inside that hex, and then the crossing is free (`bridge (within hex)`). Before this, a river that cut a hex without separating the two hex *centres* was invisible to the pathfinder, and a column could step onto a road across the water having forded nothing.
 - Erase is granular: click a node to remove just that vertex, click along a segment to cut that one edge (splitting the line in two), or Shift+click to delete the whole line. Drag across the map to wipe whole features/strongholds continuously. Stronghold markers erase/reset when clicked.
 - Embark/disembark only at coastal/port strongholds. Going ashore is **free**. Boarding costs +7 IRL days if you have no fleet — a month spent securing one, with the boarding folded in — or +1 IRL day if you already have ships and are simply getting back aboard after a landing. The two are never charged together. Fleets move 10 hexes/IRL day.
+- Those two costs have **a checkbox each**, and they are independent. **Start as fleet** says the column owns ships, which is what licenses the 1-day re-embark; **Allow securing a fleet** licenses the 7-day month, and nothing else. A fleet with no leave to secure another may sail, land and sail again from the same dock all day, but once it marches inland its ships are gone for good. A column with neither box never takes ship at all.
 - Water is only continuous where it really is continuous. **Sea to sea always connects** — the open sea and every bay along the coast are one body of water, so a coastal sea subhex sails freely to its neighbours. A **river** region, though, joins its neighbour only where the drawn major river actually goes: across a hex edge the line must cross that edge, and *within* a hex the line must run through both regions — that junction is the **river mouth**. Otherwise a bay sharing a hex with an inland channel would let a fleet step off the sea straight into the channel, anywhere along the coast, with no mouth at all.
 - Docking: going ashore and re-embarking at the same port is free of the 7-day penalty (just the 1-day re-embark), but marching or trading away from the dock hex leaves the fleet behind, so re-embarking later costs the 7 days again. The calculator tracks this held-fleet state along the whole route. Port status: every sea- or river-side stronghold is a port **by default** — on, or bordering, open sea, a drawn major river, or the sea part of a coast-crossed hex — so you don't have to flag a hundred of them by hand. An explicit flag (Stronghold tool, Shift+click) always wins in either direction, which is how you carve out the exceptions. Blue-ringed markers are ports. This is deliberately looser than the river-mouth rule above: standing on the water's edge makes a port, regardless of whether a fleet can cross that particular edge. The Stronghold tool also places the marker's exact position within its hex (saved in your features JSON).
 - Strongholds can be **removed and renamed** regardless of source. The Erase tool deletes a stronghold under the cursor — including ones that come from the datasheet, which are hidden with a persistent `removed` flag in your features JSON (Ctrl+Z, or clicking the hex with the Stronghold tool, restores it). The Label tool renames any hex or stronghold (datasheet ones included); clearing the text reverts to the datasheet name. Custom placements, port flags, removals and renames all live in `data/features.json`, so the datasheet snapshot is never mutated.
