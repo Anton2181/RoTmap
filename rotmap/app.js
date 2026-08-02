@@ -394,6 +394,25 @@ function hexPath(cx, cy) {
     d += (i ? 'L' : 'M') + (cx + CORN[i][0]).toFixed(1) + ' ' + (cy + CORN[i][1]).toFixed(1);
   return d + 'Z';
 }
+/* Two paths that share an edge do not quite meet. Each is rasterised on its own, each covers about
+   half the pixels along the join, and a half-covered pixel laid over a half-covered pixel comes out
+   at three quarters rather than whole — so a hairline of whatever is behind shows between them. The
+   hex grid used to hide it, since that strokes every hex outline; with the grid off and the map
+   zoomed out far enough for those hairlines to be dense, they read as a shimmer of a grid that isn't
+   there.
+
+   The geometry is not at fault and there is nothing to close up: every one of the 24,834 shared
+   corners on this map rounds to the same coordinate from both sides. What is wanted is for each patch
+   to reach a little past its own edge — and the reach has to be in *screen* pixels rather than map
+   ones. The seam is one pixel wide however far out you are zoomed, while a stroke measured in map
+   units shrinks away to nothing at exactly the zoom where the problem shows. Hence
+   `non-scaling-stroke`, and the stroke in the fill's own colour, so all it does is close the gap.
+
+   Only the layers that tile the whole map need this. The coast fills are painted over terrain that
+   has already been closed up, so a seam at their edge shows the terrain beneath rather than the
+   background — near enough their own colour to disappear. */
+const SEAM_BLEED = { 'stroke-width': 1, 'vector-effect': 'non-scaling-stroke', 'stroke-linejoin': 'round' };
+
 function renderTerrain() {
   groups.terrain.innerHTML = ''; groups.grid.innerHTML = '';
   // Absent entirely on the published map, where the layer is dropped rather than hidden.
@@ -408,8 +427,10 @@ function renderTerrain() {
     if (t !== 'N/A') all += p;
     if (v.r) rivers += p; // "River" flagged in the datasheet
   }
-  for (const t in byT)
-    el('path', { d: byT[t], fill: TERRAIN_COLORS[t] || '#666', stroke: 'none' }, groups.terrain);
+  for (const t in byT) {
+    const c = TERRAIN_COLORS[t] || '#666';
+    el('path', { d: byT[t], fill: c, stroke: c, ...SEAM_BLEED }, groups.terrain);
+  }
   if (rivers && groups.sheetRivers)
     el('path', { d: rivers, fill: '#2f62c9', 'fill-opacity': 0.45, stroke: '#2f62c9', 'stroke-width': 1 }, groups.sheetRivers);
   el('path', { d: all, fill: 'none', stroke: GRID.stroke, 'stroke-width': GRID.width }, groups.grid);
@@ -743,8 +764,11 @@ function renderBase(sub = coastSubcells()) {
       if (RULES.WATER.has(t)) sea += hexPath(cx, cy); else land += hexPath(cx, cy);
     }
   }
-  if (land) el('path', { d: land, fill: TERRAIN_COLORS.Flatlands, 'fill-rule': 'evenodd', stroke: 'none' }, g);
-  if (sea)  el('path', { d: sea,  fill: TERRAIN_COLORS.Ocean,     'fill-rule': 'evenodd', stroke: 'none' }, g);
+  // Bled like the terrain above it, and for the same reason: two paths tiling the whole map between
+  // them leave a hairline everywhere they meet, which here is every coastline.
+  const L = TERRAIN_COLORS.Flatlands, W = TERRAIN_COLORS.Ocean;
+  if (land) el('path', { d: land, fill: L, stroke: L, 'fill-rule': 'evenodd', ...SEAM_BLEED }, g);
+  if (sea)  el('path', { d: sea,  fill: W, stroke: W, 'fill-rule': 'evenodd', ...SEAM_BLEED }, g);
 }
 function renderCoasts(sub = coastSubcells()) {
   groups.coast.innerHTML = ''; groups.coastSea.innerHTML = '';
@@ -2794,16 +2818,18 @@ const nk = (h, ri) => h * MAX_REGIONS + (ri | 0);
 const nkH = k => (k / MAX_REGIONS) | 0;
 const nkRi = k => k % MAX_REGIONS;
 
-/* Which subhexes a column can be said to *hold*, as against merely to cross. With ships, all of them:
-   a fleet at anchor is somewhere a force can be. Without ships, only ground it could stand on — so a
-   fleetless column leaves every sea subhex out of the field, whatever the search found there.
+/* Which subhexes a column can be said to *hold*, as against merely to cross. Sea is somewhere a force
+   can be only if it could ever be afloat — which means either it has ships, or it is at liberty to go
+   and get some. A column that is neither is landlocked whatever the map looks like, and shading open
+   water for it would be describing a place it can never occupy.
 
-   It is deliberately the field and not the search that is filtered. A fleetless army with embarking
-   allowed can still spend its month securing a fleet and cross a strait, and the land it reaches on
-   the far side is properly shaded; what goes is the water in between, which was never anywhere it
-   could be stationed. A strait drawn as a gap between two shaded shores is the honest picture of
-   that. River subhexes stay, because a bank is walkable ground that happens to be sailable too. */
-const isoHolds = (h, ri, o) => o.fleet || regWalkable(region(h, ri));
+   Note what is *not* asked here: whether the budget actually stretches to the securing month. That is
+   the search's business, and it answers it properly — with seven days to find a fleet and only four
+   to spend, the water simply never comes back inside `maxD` and never reaches this test. Asking twice
+   would have meant this guess and the search's arithmetic disagreeing sooner or later.
+
+   River subhexes are held either way: a bank is walkable ground that happens to be sailable too. */
+const isoHolds = (h, ri, o) => o.fleet || o.secureFleet || regWalkable(region(h, ri));
 
 // Travel time from `from` to every reachable subhex within maxD IRL days (min over fleet states —
 // but not over regions, which are different ground and get their own answer).
@@ -6001,12 +6027,11 @@ function openLayers() {
   layersBtn.setAttribute('aria-expanded', 'true');
   // Under its own button the first time; wherever you dragged it every time after.
   const r = layersBtn.getBoundingClientRect();
-  // A size you chose wins over the default cap; without one, it is simply not taller than the window.
-  if (UI.layersSize) {
-    layersPop.style.width = UI.layersSize.w + 'px';
-    layersPop.style.height = UI.layersSize.h + 'px';
-    layersPop.style.maxHeight = '';
-  } else layersPop.style.maxHeight = (innerHeight - 40) + 'px';
+  // A width you chose is remembered; the height always fits the list, capped by the window. A saved
+  // `h` from when this was resizable both ways is simply ignored — it was measured against a list
+  // that has since changed length, so it no longer describes anything.
+  if (UI.layersSize?.w) layersPop.style.width = UI.layersSize.w + 'px';
+  layersPop.style.maxHeight = (innerHeight - 40) + 'px';
   clampFloat(layersPop, UI.layers || { x: innerWidth - layersPop.offsetWidth - 16, y: r.bottom + 8 });
 }
 // The corner drag reports through no event of its own; an observer is how you hear about it.
@@ -6015,8 +6040,10 @@ if (window.ResizeObserver) {
   new ResizeObserver(() => {
     if (seen && !layersPop.hidden) {
       const b = layersPop.getBoundingClientRect();
-      if (b.width > 40 && b.height > 40) {
-        UI.layersSize = { w: Math.round(b.width), h: Math.round(b.height) };
+      // Width only: the height is the list's, and recording it would put back the very thing the
+      // horizontal-only resize is there to prevent.
+      if (b.width > 40 && Math.round(b.width) !== UI.layersSize?.w) {
+        UI.layersSize = { w: Math.round(b.width) };
         saveUI();
       }
     }

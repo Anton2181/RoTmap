@@ -324,8 +324,14 @@ body.panel-shut #panel { display: none; }
 }
 
 /* Layers ------------------------------------------------------------------ */
+/* Width is yours to set; height is the list's own business. How tall this wants to be is decided
+   entirely by how many layers there are, and neither answer a drag could give is useful — shorter
+   only adds a scrollbar to something that would otherwise fit, taller only adds empty panel. It also
+   stops a height chosen against one list outliving it: the published build carries fewer rows than
+   the local one, and a remembered 21-row height left a third of the box blank. */
 #layersPop {
-  width: 274px; min-width: 210px; min-height: 140px; max-width: 94vw;
+  width: 274px; min-width: 210px; max-width: 94vw;
+  height: auto; resize: horizontal;
   display: flex; flex-direction: column;
 }
 #layerList { overflow-y: auto; padding: var(--s3) var(--s4) var(--s4); }
