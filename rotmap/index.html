@@ -100,7 +100,9 @@
           route there, or to remove the last waypoint from this one; right-click a hex the route stops
           in to remove that waypoint, wherever it sits in the route. <b>Remove last</b> does the same
           for touchscreens, where there is no right button. <b>Ctrl+Z</b> undoes. Click a route's
-          swatch to recolour it, double-click its name to rename. A route that sets out from a hex a
+          swatch to recolour it, double-click its name to rename; its <b>⋯</b> menu (or a right-click on
+          the row) will duplicate it, empty it of waypoints, or copy its march and its column to the
+          clipboard as text you can keep and paste back. A route that sets out from a hex a
           <b>token</b> is standing on takes that token's colour, so a legion's march is drawn in the
           legion's own colour. In the readout, <b>right-click a
           step</b> to force the march from there, end the push, or split the route in two at that hex
@@ -126,16 +128,20 @@
         </select></label>
         <div class="fields">
           <label class="field" id="isoBandWrap"><span>Band (IRL days)</span><input type="number" id="isoBand" value="1" step="0.5" min="0.25"></label>
-          <label class="field"><span>Max days</span><input type="number" id="isoMax" value="14" step="1" min="1"></label>
+          <label class="field"><span>Max days</span><input type="number" id="isoMax" value="7" step="1" min="1"></label>
         </div>
         <label class="chk" id="isoOptWrap" title="Orders are issued in whole days, so a march costing 3.2 days is paid for as 4 and the last 0.8 is thrown away. This shades every hex by how much of its final day it wastes, not by how far it is."><input type="checkbox" id="isoOpt"> Optimizer — shade by wasted day</label>
         <div class="btnrow">
-          <button class="btn" type="button" id="isoPick">Set origin</button>
-          <button class="btn" type="button" id="isoClear">Clear</button>
+          <button class="btn" type="button" id="isoAdd" title="Another origin, with its own colour and its own column. Contested ground goes to whichever origin reaches it first.">Add origin</button>
+          <button class="btn" type="button" id="isoPick" title="Then tap the hex to move the selected origin to.">Move origin</button>
+          <button class="btn danger" type="button" id="isoClear">Clear all</button>
         </div>
+        <div id="isoList"></div>
         <div id="isoLegend"></div>
-        <p class="hint">While this panel is open, <b>clicking the map moves the origin</b> — no
-        waypoints are placed. Elsewhere, <b>Shift</b>+click does the same.</p>
+        <p class="hint">While this panel is open, <b>clicking the map moves the selected origin</b> — no
+        waypoints are placed. Elsewhere, <b>Shift</b>+click does the same. With more than one origin
+        each area is <b>outlined in its own colour</b>, and a contested hex goes to whichever origin
+        reaches it in fewer days. Each origin marches under <b>its own column</b>, set below.</p>
       </div>
 
       <div id="isoSettingsSlot"></div>
@@ -295,6 +301,12 @@
     <button class="iconbtn" type="button" id="routeCardClose" aria-label="Close"><svg viewBox="0 0 22 22"><use href="#i-close"/></svg></button>
   </div>
   <div id="routeOut" class="routeout"></div>
+  <!-- Outside #routeOut on purpose: that div is rewritten wholesale on every recompute, and these
+       two buttons would go with it. -->
+  <div class="btnrow" id="routeStepsIO">
+    <button class="btn" type="button" id="copySteps" title="Copy this march as one line of hexes and terrain, ready to paste into orders.">Copy hexes</button>
+    <button class="btn" type="button" id="pasteSteps" title="Read hex numbers out of pasted text and make them this route's waypoints. Everything else in the text is ignored.">Paste hexes</button>
+  </div>
 </div>
 
 
@@ -308,6 +320,10 @@
           <label class="field" title="Peasant, regular and heavy infantry — everything on foot that isn't light infantry."><span>Other infantry</span><input type="number" id="inf" value="8000" step="500"></label>
           <label class="field"><span>Wagons</span><input type="number" id="wag" value="80" step="10"></label>
           <label class="field"><span>Noncombatants</span><input type="number" id="non" value="2500" step="100"></label>
+        </div>
+        <div class="btnrow">
+          <button class="btn" type="button" id="copyArmy" title="Copy this column and its conditions as one line of text, to keep somewhere and paste back later.">Copy column</button>
+          <button class="btn" type="button" id="pasteArmy" title="Read a column back out of pasted text. Anything the text does not mention returns to its default.">Paste column</button>
         </div>
       </div>
 

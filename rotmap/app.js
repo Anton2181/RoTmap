@@ -115,12 +115,25 @@ const S = {
   drawing: null, undoStack: [],
   routes: [], activeRoute: -1,
   tokens: [], tokenPick: false,   // counters dropped on hexes; tokenPick = next tap places one
-  iso: { origin: null, data: null }, isoPick: false,
+  /* Isochrones are a list for the same reason routes are: a campaign has several forces in it, and the
+     interesting question is usually not "how far can this one get" but "where do these two meet".
+     `origins` each carry a hex, a colour and a column of their own; `data` is one reach map per origin,
+     index for index; `own` and `best` are what falls out of comparing them — which origin reaches each
+     hex first, and how soon. An origin with h === null has been made but not yet placed. */
+  iso: { origins: [], active: -1, data: [], own: null, best: null }, isoPick: false,
   coastPickFor: null,
   dragErase: null, needRecompute: false,
   vb: { x: 0, y: 0, w: 4401, h: 2037 },
   adj: null, // derived: {roads:Set, tradeByHex:Map, ferry:Set (road x major river), riverByHex:Map}
 };
+
+/* Which panel is open, declared up here with the rest of the state rather than beside the panel code
+   that owns it: the column controls are shared between Routes and Isochrone, so working out *whose*
+   army the boxes are editing means asking this, and that question is asked from the travel calculator
+   a long way above the UI section. The panel machinery still does everything else with it. */
+const UI_LS = 'rotmap_ui_v1';
+const UI = { pane: 'route', shut: false, card: null, cardOff: false };
+try { Object.assign(UI, JSON.parse(localStorage.getItem(UI_LS)) || {}); } catch {}
 
 /* ---------------- geometry ---------------- */
 let CORN = [], EDGE = [], SUB = []; // offsets from center: corners, edge mids, sub-centres
@@ -450,34 +463,48 @@ function renderHexIds() {
     }, groups.hexIds).textContent = idS;
   }
 }
+/* One marker per stronghold, and a stronghold belongs to a subhex — so a hex split by a major river
+   can show a town on one bank and a keep on the other, each with its own name and each a port or not
+   on its own account. The dedupe therefore has to be by hex *and* subhex; keyed by hex alone, as it was,
+   the two would collapse into one. */
 function renderLabels() {
   groups.labels.innerHTML = '';
   const done = new Set();
-  const put = (id, name) => {
-    const sh = S.features.strongholds[id];
-    const [cx, cy] = (sh && sh.x != null) ? [sh.x, sh.y] : hexCenter(+id);
-    const port = (S.hexes[id]?.s || sh) && isPort(+id);
-    el('circle', { cx, cy, r: 3.4, fill: '#fff', stroke: port ? '#2f86c9' : '#14181e',
-                   'stroke-width': port ? 1.7 : 1.2 }, groups.labels);
+  const put = (id, ri, name, m) => {
+    const key = id + ':' + ri;
+    if (done.has(key)) return;
+    done.add(key);
+    const [cx, cy] = shPoint(id, m);
+    const port = isPort(+id, ri);
+    // A major stronghold is the same marker drawn larger, so the two read as degrees of one thing
+    // rather than as two different symbols. The stroke thickens with it, or the bigger circle would
+    // look fainter than the small one beside it, and the name lifts clear of the wider rim.
+    const major = !!m?.major;
+    const r = major ? 5.8 : 3.4;
+    el('circle', { cx, cy, r, fill: '#fff', stroke: port ? '#2f86c9' : '#14181e',
+                   'stroke-width': major ? (port ? 2.3 : 1.9) : (port ? 1.7 : 1.2) }, groups.labels);
     if (name) el('text', {
-      x: cx, y: cy - 6.5, 'text-anchor': 'middle', 'font-size': 10.5, fill: '#fff',
+      x: cx, y: cy - (major ? 9 : 6.5), 'text-anchor': 'middle', 'font-size': 10.5, fill: '#fff',
       stroke: '#14181e', 'stroke-width': 2.4, 'paint-order': 'stroke', 'font-family': 'system-ui,sans-serif',
     }, groups.labels).textContent = name;
   };
-  for (const id in S.features.labels) {
-    if (S.features.strongholds[id]?.removed) continue; // labelled but removed → show nothing
-    put(id, S.features.labels[id]); done.add(id);
-  }
-  for (const id in S.hexes) {
-    if (!S.hexes[id].s || done.has(id) || S.features.strongholds[id]?.removed) continue;
-    put(id, S.names.hexes[id] || ''); done.add(id);
-  }
-  for (const id in S.features.strongholds) {
-    if (done.has(id) || S.features.strongholds[id].removed) continue;
-    put(id, S.names.hexes[id] || '');
+  for (const id of namedHexes()) {
+    const es = shEntries(id);
+    // Every stronghold in the hex, marker-backed or straight off the datasheet, each on its own bank.
+    for (const { m, ri } of es) put(id, ri, shName(id, m), m);
+    // A hex named by hand with nothing fortified in it is still a place worth drawing — and it has no
+    // marker to hang the name off, so it stays hex-keyed and sits wherever the centre falls.
+    if (!es.length && S.features.labels[id]) put(id, shRegion(id, {}), S.features.labels[id], null);
   }
   // Floating OCR labels (S.names.floating) are not rendered — they were mis-OCR'd stray text, not
   // real strongholds. Use the Label tool to name a hex if a genuine label is needed.
+}
+/* What to call a marker. Its own name if it has been given one; otherwise the datasheet's name for the
+   hex, which is right for the common case of one stronghold in a hex and is the best guess available
+   for the first of two. A hex label left over from before names move onto markers still counts. */
+function shName(h, m) {
+  if (m && m.name !== undefined) return m.name;
+  return S.features.labels[h] ?? S.names.hexes[h] ?? '';
 }
 
 /* ---------------- coasts (split hexes into land/sea parts) ---------------- */
@@ -986,7 +1013,13 @@ function pushUndo() { pushUndoEntry('features', JSON.stringify(S.features)); }
 // Routes and tokens each keep the state as of their last commit, so the "before" snapshot is always
 // already to hand and no call site has to remember to take one at the right moment.
 let routesSnap = null, tokensSnap = null;
-const snapRoutes = () => JSON.stringify({ routes: S.routes, active: S.activeRoute });
+// Isochrone origins ride along in the routes snapshot. They are cheap — a hex, a colour, a column —
+// and now that each carries an army of its own they are exactly the sort of thing worth getting back
+// after a mistaken edit. The derived reach maps are not saved; they are recomputed from the origins.
+const snapRoutes = () => JSON.stringify({
+  routes: S.routes, active: S.activeRoute,
+  iso: { origins: S.iso.origins, active: S.iso.active },
+});
 function pushUndoRoutes(c) {
   pushUndoEntry('routes', routesSnap ?? snapRoutes(), c);
   routesSnap = null;                    // retaken by the next saveRoutes()
@@ -994,7 +1027,8 @@ function pushUndoRoutes(c) {
 function undoLast() {
   const u = S.undoStack.pop();
   if (!u) return false;
-  if (u.k === 'features') { S.features = JSON.parse(u.d); commitFeatures(); }
+  // Migrated on the way back too: the stack can hold a snapshot taken before the shape changed.
+  if (u.k === 'features') { S.features = migrateFeatures(JSON.parse(u.d)); commitFeatures(); }
   else if (u.k === 'tokens') {
     S.tokens = JSON.parse(u.d); tokensSnap = u.d;
     renderTokens(); renderTokenList(); saveTokens();
@@ -1002,10 +1036,51 @@ function undoLast() {
     const r = JSON.parse(u.d);
     S.routes = r.routes;
     S.activeRoute = Math.min(r.active ?? -1, S.routes.length - 1);
+    // A snapshot from before origins were a list simply has no `iso`, and leaving the current ones
+    // alone is the right reading of that: the entry was never about them.
+    if (r.iso) {
+      S.iso.origins = r.iso.origins || [];
+      S.iso.active = Math.min(r.iso.active ?? -1, S.iso.origins.length - 1);
+    }
     routesSnap = u.d;
     computeRoute();
   }
   return true;
+}
+/* Bring a features object up to the current shape. Shape-sniffing rather than version-gated, because
+   the `version` field has always been written and never read, so it cannot be trusted to mean anything.
+
+   The only change so far is strongholds: one object per hex became a list of them, so that a hex split
+   by a river can hold a place on each bank. A single object is wrapped, and a label that belonged to
+   the hex moves onto its one marker — with several markers in a hex, one name per hex would draw the
+   same word twice and mean neither of them.
+
+   Idempotent, so it is safe to run on every path that produces an S.features: boot from storage, boot
+   from the shipped file, an imported file, a reset, and an undo back past its own introduction. */
+function migrateFeatures(f) {
+  if (!f || typeof f !== 'object') return f;
+  if (!f.features) f.features = [];
+  if (!f.labels) f.labels = {};
+  if (!f.strongholds) f.strongholds = {};
+  for (const id in f.strongholds) {
+    const v = f.strongholds[id];
+    if (!Array.isArray(v)) f.strongholds[id] = v ? [v] : [];
+    // A hex whose only marker was a tombstone still needs the tombstone; an empty list means nothing
+    // was ever there and the key is just noise.
+    if (!f.strongholds[id].length) delete f.strongholds[id];
+  }
+  // Names move from the hex onto the marker, once. A hex with a label but no marker keeps the label
+  // where it is — it is a named place rather than a stronghold, and renderLabels still draws it.
+  for (const id in f.labels) {
+    const list = f.strongholds[id];
+    if (!list || list.length !== 1) continue;
+    if (list[0].name === undefined && !list[0].removed) {
+      list[0].name = f.labels[id];
+      delete f.labels[id];
+    }
+  }
+  f.version = 2;
+  return f;
 }
 function saveLocal() {
   localStorage.setItem(LS_KEY, JSON.stringify(S.features));
@@ -1504,14 +1579,99 @@ const onWayFrac = (p, a, b) => {
   const dx = b[0] - a[0], dy = b[1] - a[1], l2 = dx * dx + dy * dy;
   return l2 ? ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2 : 0;
 };
-// Where a stronghold actually stands: its own marker if one was placed, else the hex centre. Null
-// unless the marker sits in region ri — a coastal hex's sea half must not claim the keep on its
-// land half, and an unplaced marker only counts if the hex centre falls in the region you asked for.
+/* ---------------- strongholds, one per subhex ----------------
+   A hex split by a major river has two banks, and two banks can hold two different places: a town on
+   the near side and a keep on the far side are not one settlement with one name, and taking ship from
+   one of them is not the same as taking ship from the other. So a stronghold belongs to a subhex.
+
+   It is *not*, however, keyed by the subhex index. Region indices are rebuilt from the drawn coastline
+   every time it changes and are explicitly not safe to cache against — the same reason subTerrain is
+   recomputed rather than trusted. A stored index would let a keep jump silently to the wrong bank the
+   next time a coast was nudged. What is stable is where the marker stands, so the marker's coordinate
+   stays authoritative and its subhex is derived from it, which is what strongholdPoint already did.
+   Redraw a coastline and every marker re-derives itself to the bank it is actually on.
+
+   Hence the shape: strongholds[hexId] is a *list* of markers, each { x, y, major?, coastal?, name?,
+   removed? }. One entry per subhex is the intended use, and shList enforces that on the way in.
+
+   A datasheet stronghold (S.hexes[h].s) has no coordinate — it stands at the hex centre, and so falls
+   in whichever subhex the centre lands in. `removed` on a marker is how a datasheet stronghold is
+   erased in a way that survives a reload. */
+
+// The markers in a hex, always an array. Tolerates the old single-object shape in place, so a board
+// saved before this change reads correctly even if the migration has not run over it yet.
+function shList(h) {
+  const v = S.features.strongholds[h];
+  if (!v) return [];
+  return Array.isArray(v) ? v : [v];
+}
+// Where a marker stands. A placed one knows; an unplaced one — which is what a datasheet stronghold
+// amounts to — stands at the middle of its hex.
+const shPoint = (h, m) => (m && m.x != null) ? [m.x, m.y] : hexCenter(+h);
+/* Which subhex a marker is in, derived rather than stored. The S.adj guard is not paranoia: boot draws
+   the labels before it ever solves a route, so this is reached with the region geometry not yet built.
+   It is done here rather than in regionsOf because deriveAdj itself walks regions, and a guard down
+   there would recurse. */
+const shRegion = (h, m) => {
+  if (!S.adj) deriveAdj();
+  return regionAt(+h, shPoint(h, m));
+};
+/* Every live stronghold in a hex, each paired with the subhex it stands in.
+
+   Two sources feed this, and keeping them straight is most of the work. A *marker* is something the
+   drawing put there: a placed position, a type, a name, or a tombstone. The *datasheet* stronghold has
+   none of that — it is a bare flag on the hex, standing at the hex centre, so it belongs to whichever
+   subhex the centre falls in. It shows up here as a synthetic entry marked `_sheet`, unless something
+   already occupies its subhex: a marker standing there *is* that stronghold, and a tombstone there is
+   how it gets erased.
+
+   The synthetic entry is a throwaway, so nothing may write to it. shEnsure exists for that. */
+function shEntries(h) {
+  const out = [], taken = new Set();
+  for (const m of shList(h)) {
+    const ri = shRegion(h, m);
+    taken.add(ri);
+    if (!m.removed) out.push({ m, ri });
+  }
+  if (S.hexes[h]?.s) {
+    const ri = shRegion(h, {});
+    if (!taken.has(ri)) out.push({ m: { _sheet: true }, ri });
+  }
+  return out;
+}
+// The stronghold standing in subhex ri, if any. The first match wins: two in one subhex is not the
+// intended shape, and picking the earlier is at least stable.
+function shAt(h, ri) {
+  return shEntries(h).find(e => e.ri === (ri | 0))?.m || null;
+}
+/* The *stored* marker for this subhex, made real if it was not. Everything that writes to a stronghold
+   goes through here — otherwise editing a datasheet stronghold would mutate the synthetic entry above
+   and the change would vanish on the next render with nothing to show it had ever been made. */
+function shEnsure(h, ri) {
+  const cur = shAt(h, ri);
+  if (cur && !cur._sheet) return cur;
+  // A marker taking over from the datasheet's stronghold stands where that stood: the hex centre, which
+  // is what an absent x/y means. One for an empty subhex needs a position of its own, or it would land
+  // in the centre's subhex rather than the one asked for.
+  const m = cur?._sheet ? {} : shPointFor(h, ri);
+  S.features.strongholds[h] = [...shList(h).filter(x => shRegion(h, x) !== (ri | 0)), m];
+  return m;
+}
+// Every hex that could be drawing a stronghold or a name: one with markers, one the datasheet fortifies,
+// one labelled by hand. The renderer and the search list both walk exactly this set, so what you can
+// find is what you can see.
+function namedHexes() {
+  const out = new Set();
+  for (const id in S.features.strongholds) out.add(+id);
+  for (const id in S.hexes) if (S.hexes[id].s) out.add(+id);
+  for (const id in S.features.labels) out.add(+id);
+  return out;
+}
+/* Where a stronghold actually stands, or null if this subhex has none — a coastal hex's sea half must
+   not claim the keep on its land half. Unchanged in meaning from before; only the lookup moved. */
 function strongholdPoint(h, ri) {
-  if (!hasStronghold(h)) return null;
-  const sh = S.features.strongholds[h];
-  const pt = (sh && sh.x != null) ? [sh.x, sh.y] : hexCenter(h);
-  return regionAt(h, pt) === (ri | 0) ? pt : null;
+  const m = shAt(h, ri);
+  return m ? shPoint(h, m) : null;
 }
 // The anchor for a route's first and last point. You march to the gate of a place, not to the middle
 // of the ground around it, so a route that begins or ends at a stronghold is drawn to its marker.
@@ -1600,8 +1760,22 @@ const SETTINGS_LS = 'rotmap_settings_v1';
 let SETTINGS = { ...ROUTE_SETTINGS };
 try { Object.assign(SETTINGS, JSON.parse(localStorage.getItem(SETTINGS_LS)) || {}); } catch {}
 
-// The settings in force: the active route's own, or the loose ones when nothing is selected.
+/* The settings in force — which is to say, whose army the column boxes are describing. There is one set
+   of boxes, carried between the Routes panel and the Isochrone panel, and on each it edits the thing
+   that panel is about: the active route, or the active origin. Falling back to the loose SETTINGS when
+   neither exists, which is the state the map opens in.
+
+   That the answer depends on the open panel is the price of not having two sets of boxes that would
+   eventually disagree. It does mean every caller that wants a *particular* army — the route readout,
+   an origin's reach — must pass those settings in explicitly rather than trusting the ambient answer. */
+function activeIsoOrigin() { return S.iso.origins[S.iso.active] || null; }
 function activeSettings() {
+  if (UI.pane === 'iso') {
+    const og = activeIsoOrigin();
+    if (!og) return SETTINGS;
+    if (!og.set) og.set = { ...SETTINGS };
+    return og.set;
+  }
   const rt = S.routes[S.activeRoute];
   if (!rt) return SETTINGS;
   if (!rt.set) rt.set = { ...SETTINGS };      // a route from before settings existed
@@ -1644,73 +1818,214 @@ function syncRouteForm() {
   for (const id of SETTING_NUMS) document.getElementById(id).value = st[id] ?? 0;
   for (const id of SETTING_CHKS) document.getElementById(id).checked = !!st[id];
   document.getElementById('weather').value = st.weather || 'clear';
-  const rt = S.routes[S.activeRoute];
-  // Two panels want to know whose column they are describing: the one that sets it, and the
-  // isochrone, which is off on its own tab and marches under the same numbers.
-  const whose = rt ? rt.name : 'no route — defaults';
-  for (const id of ['settingsFor', 'isoFor']) {
-    const el = document.getElementById(id);
-    if (el) el.textContent = whose;
-  }
+  const rt = S.routes[S.activeRoute], og = activeIsoOrigin();
+  // Each panel says whose column it is showing, and they no longer agree: the Routes panel edits the
+  // route's army, the Isochrone panel the selected origin's. Saying so in both headings is the only
+  // thing stopping one set of boxes from looking like it means two different things at once.
+  const setFor = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+  setFor('settingsFor', rt ? rt.name : 'no route — defaults');
+  setFor('isoFor', og ? og.name : 'no origin — defaults');
   syncingForm = false;
 }
 function readRouteForm(changedId) {
   if (syncingForm) return;
   const st = activeSettings();
-  // One undo step per field rather than per keystroke: typing 8000 is one change, not four.
-  if (S.routes[S.activeRoute]) pushUndoRoutes('set' + S.activeRoute + changedId);
+  // One undo step per field rather than per keystroke: typing 8000 is one change, not four. The key
+  // has to name the owner as well as the field, or editing a route and then an origin would coalesce.
+  const owner = UI.pane === 'iso' ? 'i' + S.iso.active : 'r' + S.activeRoute;
+  if (st !== SETTINGS) pushUndoRoutes('set' + owner + changedId);
   for (const id of SETTING_NUMS) st[id] = +document.getElementById(id).value || 0;
   for (const id of SETTING_CHKS) st[id] = document.getElementById(id).checked;
   st.weather = document.getElementById('weather').value;
-  if (!S.routes[S.activeRoute]) { try { localStorage.setItem(SETTINGS_LS, JSON.stringify(SETTINGS)); } catch {} }
+  // The loose defaults are the only settings with nowhere else to live, so they are the only ones that
+  // go to their own key; a route's or an origin's travel with the routes blob.
+  if (st === SETTINGS) { try { localStorage.setItem(SETTINGS_LS, JSON.stringify(SETTINGS)); } catch {} }
   computeRoute();
 }
-// Does hex h have a stronghold? Datasheet strongholds (S.hexes[h].s) and custom-placed ones both
-// count, unless a `removed` override hides it (this is how a datasheet stronghold gets deleted).
-function hasStronghold(h) {
-  const c = S.features.strongholds[h];
-  if (c && c.removed) return false;
-  return !!(S.hexes[h]?.s || c);
+
+/* ---------------- a column, as a line of text ----------------
+   An army is entered once and wanted again for months: the same legion marches in the spring and the
+   autumn, and retyping five numbers and a weather is how a route quietly ends up describing the wrong
+   force. So a column can be written out as one line, kept in a note or a chat log, and read back.
+
+   The line is meant to be legible and hand-editable rather than exact, so only what differs from the
+   default is spelled out: `forced` appears when a march is forced, `no-embark` when embarking has been
+   turned off (it is on by default), and a condition the line never mentions is simply at its default.
+   That makes a paste deterministic — the text fully describes a column, rather than half-describing
+   one and leaving the rest of whatever was in the boxes behind. */
+const WEATHERS = new Set(Object.keys(RULES.WEATHER));
+// Case-insensitive, because a line that has been through a chat client or a person's own typing may
+// not have kept `noTrade`'s capital.
+const SETTING_KEY = new Map([...SETTING_NUMS, ...SETTING_CHKS].map(k => [k.toLowerCase(), k]));
+const CHK_SET = new Set(SETTING_CHKS);
+
+function armyToText(st) {
+  const parts = SETTING_NUMS.map(k => `${k}=${+st[k] || 0}`);
+  parts.push(`weather=${st.weather || 'clear'}`);   // always stated: it is a choice, not a flag
+  for (const k of SETTING_CHKS) {
+    const on = !!st[k];
+    if (on !== !!ROUTE_SETTINGS[k]) parts.push(on ? k : 'no-' + k);
+  }
+  return 'RoTmap column: ' + parts.join(' ');
 }
-// Erase a stronghold: a datasheet one is hidden with a persistent `removed` flag (Ctrl+Z or the
-// Stronghold tool restores it); a purely custom one is just deleted. Returns true if it was a
-// datasheet stronghold (for messaging).
-function removeStronghold(id) {
-  const sheet = !!S.hexes[id]?.s;
-  if (sheet) S.features.strongholds[id] = { removed: true };
-  else delete S.features.strongholds[id];
-  return sheet;
+
+/* Deliberately forgiving: the point of a text format is that a person can retype it. Reads our own
+   line, a JSON blob (what an older copy or a poke at localStorage would give), and a bare list like
+   "cav 500 inf 2000". Returns null when nothing in the text was recognisable, so the caller can say
+   so rather than silently resetting the column to defaults.
+
+   `=` is the only separator accepted, not `:`. Allowing `:` would let the "column:" in our own header
+   pair itself with the `li` that follows and swallow the first real number with it. */
+const KV_RE = /([a-z][a-z-]*)\s*=\s*(-?\d+(?:\.\d+)?|[a-z_]+)/gi;
+function armyFromText(txt) {
+  const s = String(txt || '').trim();
+  if (!s) return null;
+  const out = { ...ROUTE_SETTINGS };
+  let hit = false;
+  if (s.startsWith('{')) {
+    let j; try { j = JSON.parse(s); } catch { return null; }
+    if (!j || typeof j !== 'object') return null;
+    for (const [lk, k] of SETTING_KEY) {
+      const v = j[k] ?? j[lk];
+      if (v === undefined) continue;
+      out[k] = CHK_SET.has(k) ? !!v : Math.max(0, Math.round(+v) || 0);
+      hit = true;
+    }
+    if (typeof j.weather === 'string' && WEATHERS.has(j.weather)) { out.weather = j.weather; hit = true; }
+    return hit ? out : null;
+  }
+  for (const m of s.matchAll(KV_RE)) {
+    const k = SETTING_KEY.get(m[1].toLowerCase()), v = m[2];
+    if (m[1].toLowerCase() === 'weather') {
+      if (WEATHERS.has(v.toLowerCase())) { out.weather = v.toLowerCase(); hit = true; }
+    } else if (!k) continue;
+    // A number written against a switch ("forced=0") means the switch, not a count.
+    else if (CHK_SET.has(k)) { out[k] = !/^(0|no|false|off)$/i.test(v); hit = true; }
+    else { out[k] = Math.max(0, Math.round(+v) || 0); hit = true; }
+  }
+  // Bare words are switches. Scanned over what the pairs above did *not* claim, so that "forced=0"
+  // cannot be undone a moment later by the word "forced" sitting inside it.
+  for (const m of s.replace(KV_RE, ' ').matchAll(/[a-z][a-z_-]*/gi)) {
+    const w = m[0].toLowerCase();
+    const direct = SETTING_KEY.get(w);
+    if (direct && CHK_SET.has(direct)) { out[direct] = true; hit = true; continue; }
+    const bare = w.replace(/^no[-_]/, '');
+    const neg = bare === w ? null : SETTING_KEY.get(bare);
+    if (neg && CHK_SET.has(neg)) { out[neg] = false; hit = true; }
+  }
+  // A bare list of numbers with no key to attach them to is not a column, whatever else it may be.
+  return hit ? out : null;
 }
-// Nearest stronghold marker to (wx,wy) within thr — considers custom placements AND datasheet
-// strongholds (which may have no custom entry). Skips already-removed ones.
-function nearestStronghold(wx, wy, thr) {
-  let bs = null, bsd = thr;
-  const consider = id => {
-    const sh = S.features.strongholds[id];
-    if (sh && sh.removed) return;
-    const [cx, cy] = (sh && sh.x != null) ? [sh.x, sh.y] : hexCenter(+id);
-    const d = Math.hypot(wx - cx, wy - cy);
-    if (d < bsd) { bsd = d; bs = id; }
-  };
-  for (const id in S.features.strongholds) consider(id);
-  const nh = nearestHex(wx, wy);
-  if (nh && S.hexes[nh]?.s) consider(nh); // datasheet stronghold with no custom entry
-  return { id: bs, d: bsd };
+
+// Paste into whichever settings the panel is currently editing — the active route's, or the loose
+// defaults when there is no route, exactly as typing in the boxes would.
+function applyArmyText(txt) {
+  const got = armyFromText(txt);
+  if (!got) { toast('No column found in that text', true); return; }
+  pushUndoRoutes();
+  Object.assign(activeSettings(), got);
+  const rt = S.routes[S.activeRoute];
+  if (!rt) { try { localStorage.setItem(SETTINGS_LS, JSON.stringify(SETTINGS)); } catch {} }
+  computeRoute();          // rereads the boxes from the object it just wrote
+  toast('Column pasted' + (rt ? ' into ' + rt.name : ''));
 }
-// Port = a stronghold on, or bordering, navigable water: open sea, a drawn major river, or the sea
-// part of a coast-crossed hex. Sea- and river-side strongholds are ports by default so you don't
-// have to flag a hundred of them by hand; an explicit flag (Stronghold tool, Shift+click) always
-// wins, in either direction, which is how you carve out the exceptions.
-// Note this is deliberately looser than `waterLink`: being a port is about standing on the water's
-// edge, not about whether a fleet can cross that particular edge.
-function isPort(h) {
-  const sh = S.features.strongholds[h];
-  if (sh && sh.removed) return false;
-  if (!S.hexes[h]?.s && !sh) return false; // no stronghold in this hex
-  if (sh && sh.coastal !== undefined) return sh.coastal; // explicit flag wins
+/* Does a stronghold stand here? With no `ri` the question is about the whole hex — which is what the
+   hover readout, the search list and the step table want, since they name a place rather than a bank.
+   With an `ri` it is about that subhex alone, which is what movement wants. */
+function hasStronghold(h, ri) {
+  if (ri === undefined) return shEntries(h).length > 0;
+  return !!shAt(h, ri);
+}
+/* Erase the stronghold in one subhex. A datasheet one has no entry of its own to delete, so it is
+   hidden behind a marker carrying `removed` — that flag is the only way "no stronghold here" survives a
+   reload when the hex is one the datasheet insists has one. A custom marker is simply dropped.
+   Returns true if what was erased came off the datasheet, which is what the messaging says. */
+function removeStronghold(h, ri) {
+  const sheet = !!S.hexes[h]?.s;
+  if (ri === undefined) {                      // the whole hex, which is what the erase tools mean
+    if (sheet) S.features.strongholds[h] = [{ removed: true }];
+    else delete S.features.strongholds[h];
+    return sheet;
+  }
+  const rest = shList(h).filter(x => shRegion(h, x) !== (ri | 0));
+  // A tombstone is only needed where the datasheet's own stronghold stands: it is the only thing that
+  // would otherwise come back on the next reload, having never had a marker to delete.
+  const sheetHere = sheet && shRegion(h, {}) === (ri | 0);
+  if (sheetHere) rest.push({ removed: true });
+  if (rest.length) S.features.strongholds[h] = rest;
+  else delete S.features.strongholds[h];
+  return sheetHere;
+}
+/* Three states rather than two: no stronghold, an ordinary one, a major one — for one subhex at a time.
+   "None" goes through removeStronghold rather than around it, so that setting a datasheet hex to none
+   and back to major again still works. Major is purely how large the marker is drawn; nothing in the
+   movement rules reads it. */
+function setStrongholdType(h, ri, kind) {
+  pushUndo();
+  if (kind === 'none') removeStronghold(h, ri);
+  else {
+    const m = shEnsure(h, ri);
+    delete m.removed;                  // naming a type (re)adds one that had been erased
+    if (kind === 'major') m.major = true; else delete m.major;
+  }
+  commitFeatures();
+}
+// A sensible spot for a marker that is being created rather than placed by hand: the middle of the
+// subhex it belongs to. Given as {x, y} so it can be spread straight into a new marker.
+function shPointFor(h, ri) {
   if (!S.adj) deriveAdj();
-  if (hasSea(h)) return true;
-  return neighbors(h).some(n => { const e = sharedEdgePts(h, n); return regionsOf(n).some((r, rj) => regSail(r) && regionOnEdge(n, rj, e)); });
+  const p = nodePoint(+h, ri | 0);
+  return { x: +p[0].toFixed(1), y: +p[1].toFixed(1) };
+}
+/* Nearest stronghold marker to (wx,wy) within thr, across every hex that has one — including a
+   datasheet stronghold with no marker of its own. Returns the subhex as well as the hex, because with
+   several markers in a hex "the nearest stronghold" is no longer answered by naming the hex. */
+function nearestStronghold(wx, wy, thr) {
+  let bs = null, bri = 0, bsd = thr;
+  const consider = (id, m) => {
+    if (m.removed) return;
+    const [cx, cy] = shPoint(id, m);
+    const d = Math.hypot(wx - cx, wy - cy);
+    if (d < bsd) { bsd = d; bs = +id; bri = shRegion(id, m); }
+  };
+  for (const id in S.features.strongholds) for (const m of shList(id)) consider(id, m);
+  const nh = nearestHex(wx, wy);
+  // A datasheet stronghold the drawing has never touched has no marker to iterate, so it is offered
+  // separately — but only if nothing in this hex already stands for it.
+  if (nh && S.hexes[nh]?.s && !shList(nh).length) consider(nh, {});
+  return { id: bs, ri: bri, d: bsd };
+}
+/* Port = a stronghold standing on, or bordering, navigable water: open sea, a drawn major river, or
+   the sea part of a coast-crossed hex. Sea- and river-side strongholds are ports by default so you do
+   not have to flag a hundred of them by hand; an explicit flag on the marker always wins, in either
+   direction, which is how the exceptions get carved out.
+
+   Now asked of a subhex rather than a hex, and that is a change of meaning, not just of signature: a
+   keep on the far bank of a major river used to make the near bank embarkable too, because the whole
+   hex counted. It no longer does. Only the bank the port actually stands on can take ship, which is
+   the point of splitting them — and it will make some existing routes slower, or impossible.
+
+   Called with no `ri` the old hex-wide reading is kept, for the readouts that describe a place rather
+   than a bank. Note this is deliberately looser than `waterLink`: being a port is about standing on the
+   water's edge, not about whether a fleet can cross that particular edge. */
+function isPort(h, ri) {
+  if (!S.adj) deriveAdj();
+  if (ri === undefined) return regionsOf(h).some((r, i) => isPort(h, i));
+  const m = shAt(h, ri);
+  if (!m) return false;                              // no stronghold in this subhex
+  if (m.coastal !== undefined) return m.coastal;      // explicit flag wins
+  // Water inside the hex only counts if this subhex actually touches it: a landlocked bank across a
+  // major river shares its hex with the sea half and is not thereby a port.
+  if (regionAdj(h).some(([a, b]) =>
+      (a === (ri | 0) && regSail(region(h, b))) || (b === (ri | 0) && regSail(region(h, a))))) return true;
+  if (regSail(region(h, ri))) return true;           // the subhex is itself navigable — a river bank
+  // Otherwise the shore has to be over an edge this subhex occupies. Asking the whole hex, as this
+  // used to, is what let an inland bank claim a coast on the far side of the water.
+  return neighbors(h).some(n => {
+    const e = sharedEdgePts(h, n);
+    if (!regionOnEdge(h, ri, e)) return false;
+    return regionsOf(n).some((r, rj) => regSail(r) && regionOnEdge(n, rj, e));
+  });
 }
 // Too small to show in any total (steps are tenths of a day), big enough to settle a tie. Used to
 // make a free move lose to not making it at all, where both reach the same place for the same price.
@@ -1799,16 +2114,23 @@ function expand(h, ri, af, ships, g, o) {
       if (a === ri && regSail(region(h, b)) && waterLink(h, ri, h, b)) out.push({ toH: h, toRi: b, af: 1, ships: 1, g: 0, irl: 0, note: 'sail (within hex)' });
       if (b === ri && regSail(region(h, a)) && waterLink(h, ri, h, a)) out.push({ toH: h, toRi: a, af: 1, ships: 1, g: 0, irl: 0, note: 'sail (within hex)' });
     }
-    // Ashore inside this hex. Needs a port — unless the army is Marines, who land anywhere.
-    if (isPort(h) || o.marines) for (const [a, b] of regionAdj(h)) {
-      if (a === ri && regWalkable(region(h, b))) out.push({ toH: h, toRi: b, af: 0, ships: 1, g: 0, irl: DISEMBARK, note: DISEMBARK_NOTE });
-      if (b === ri && regWalkable(region(h, a))) out.push({ toH: h, toRi: a, af: 0, ships: 1, g: 0, irl: DISEMBARK, note: DISEMBARK_NOTE });
+    /* Ashore inside this hex. Needs a port — unless the army is Marines, who land anywhere. The port
+       now has to be in the subhex being landed *on*, not merely somewhere in the hex: putting an army
+       ashore on the far bank of a river because the near bank has a harbour was never right. */
+    for (const [a, b] of regionAdj(h)) {
+      if (a === ri && regWalkable(region(h, b)) && (o.marines || isPort(h, b)))
+        out.push({ toH: h, toRi: b, af: 0, ships: 1, g: 0, irl: DISEMBARK, note: DISEMBARK_NOTE });
+      if (b === ri && regWalkable(region(h, a)) && (o.marines || isPort(h, a)))
+        out.push({ toH: h, toRi: a, af: 0, ships: 1, g: 0, irl: DISEMBARK, note: DISEMBARK_NOTE });
     }
+    // Likewise across a hex edge: the landing subhex is the one that must hold the port, so the test
+    // moves inside the loop over the destination's regions.
     for (const { n, e } of N) {
-      if (!(isPort(n) || o.marines) || !regionOnEdge(h, ri, e)) continue;
+      if (!regionOnEdge(h, ri, e)) continue;
       const rs = regionsOf(n);
-      for (let rj = 0; rj < rs.length; rj++) if (regWalkable(rs[rj]) && regionOnEdge(n, rj, e))
-        out.push({ toH: n, toRi: rj, af: 0, ships: 1, g: 0, irl: SHIP_IRL + DISEMBARK, note: DISEMBARK_NOTE });
+      for (let rj = 0; rj < rs.length; rj++)
+        if (regWalkable(rs[rj]) && regionOnEdge(n, rj, e) && (o.marines || isPort(n, rj)))
+          out.push({ toH: n, toRi: rj, af: 0, ships: 1, g: 0, irl: SHIP_IRL + DISEMBARK, note: DISEMBARK_NOTE });
     }
     return out;
   }
@@ -1883,7 +2205,9 @@ function expand(h, ri, af, ships, g, o) {
   }
   // (No standalone ferry move: a ferry is a property of the road step that crosses a major river,
   // so it is already covered by the road steps above.)
-  if (o.embark && isPort(h)) {
+  // Taking ship is the port's own doing, so it is the subhex the column is standing in that must have
+  // one. A keep on the far bank of a river no longer lends its harbour to this side.
+  if (o.embark && isPort(h, ri)) {
     // Two different things, never both: with no fleet you spend a month securing one (and the
     // boarding is folded into that month), while an army that already has ships is simply
     // getting back aboard after a landing, which is the day that gets charged.
@@ -2288,12 +2612,234 @@ function isoOptimizing() {
       && !!document.getElementById('isoOpt')?.checked;
 }
 
+/* ---------------- several origins, and the ground between them ----------------
+   One origin answers "how far can this force reach". Several answer the more useful question: given
+   two forces setting out at the same moment, which of them gets to a given hex first — and therefore
+   where the line between them falls. Contested ground goes to whichever origin reaches it in fewer
+   days, which is a Voronoi diagram drawn in travel time rather than in miles, and looks nothing like
+   one: a road or a river bends a border a long way, and a mountain range holds it still.
+
+   Each origin marches as its own army, so the race is between forces rather than between points. That
+   is deliberate but worth remembering when reading a border: it moves if you change either column. */
+const ISO_COLORS = PALETTE;
+function freeIsoColor() {
+  const used = new Set(S.iso.origins.map(o => o.color));
+  return ISO_COLORS.find(c => !used.has(c)) || ISO_COLORS[S.iso.origins.length % ISO_COLORS.length];
+}
+function freeIsoName() {
+  const taken = new Set(S.iso.origins.map(o => o.name));
+  for (let k = S.iso.origins.length + 1; ; k++) if (!taken.has('Origin ' + k)) return 'Origin ' + k;
+}
+// A new origin inherits the column currently on screen: adding a second one almost always means the
+// same force setting out from somewhere else, and retyping the army to find that out is the tedium
+// this list exists to remove.
+function newIsoOrigin(h, ri) {
+  return { h: h ?? null, ri: ri | 0, color: freeIsoColor(), name: freeIsoName(), set: { ...activeSettings() } };
+}
+/* A board saved before any of this had one origin under `iso.origin`, or none, and no colours, names or
+   columns on it. Run before anything reads the list, so no other code has to know the old shape. */
+function migrateIso() {
+  const iso = S.iso;
+  if (!Array.isArray(iso.origins)) iso.origins = [];
+  if (iso.origin) {
+    // Built by hand rather than through newIsoOrigin: `sea` is how the very oldest saves said which
+    // half of a split hex they meant, and that has to be turned into a region index here.
+    const ri = iso.origin.ri ?? Math.max(0, regionsOf(iso.origin.h).findIndex(r => !!r.sea === !!iso.origin.sea));
+    iso.origins.push({ h: iso.origin.h, ri: ri | 0, color: freeIsoColor(), name: freeIsoName(), set: { ...SETTINGS } });
+    iso.origin = null;
+    iso.active = iso.origins.length - 1;
+  }
+  for (const og of iso.origins) {
+    if (og.ri === undefined) og.ri = Math.max(0, regionsOf(og.h).findIndex(r => !!r.sea === !!og.sea));
+    if (!og.color) og.color = freeIsoColor();
+    if (!og.name) og.name = freeIsoName();
+    if (!og.set) og.set = { ...SETTINGS };
+  }
+  if (iso.active >= iso.origins.length) iso.active = iso.origins.length - 1;
+  if (iso.active < 0 && iso.origins.length) iso.active = 0;
+}
+const placedOrigins = () => S.iso.origins.filter(o => o.h != null).length;
+
+/* Who holds each hex, and how soon they get there. Strictly-less means a tie goes to the origin that
+   already holds the hex, which is the earlier one in the list — arbitrary, but stable, and a contested
+   hex must not flicker between two owners every time something unrelated is recomputed. */
+function assignIsoOwners(maxD) {
+  const own = new Map(), best = new Map();
+  S.iso.data.forEach((m, i) => {
+    if (!m) return;
+    for (const [h, d] of m) {
+      if (d > maxD) continue;
+      const cur = best.get(h);
+      if (cur === undefined || d < cur) { best.set(h, d); own.set(h, i); }
+    }
+  });
+  S.iso.own = own; S.iso.best = best;
+}
+// The runner-up for a hex, which is what makes a border legible: a hex the second force reaches a day
+// later is a frontier, one it reaches a week later is deep inside somebody's territory.
+function isoRunnerUp(h) {
+  let bi = -1, bd = Infinity;
+  const winner = S.iso.own?.get(h);
+  S.iso.data.forEach((m, i) => {
+    if (!m || i === winner) return;
+    const d = m.get(h);
+    if (d !== undefined && d < bd) { bd = d; bi = i; }
+  });
+  return bi < 0 ? null : { i: bi, d: bd };
+}
+
+/* The boundary of one area, traced side by side: an owned hex contributes each of its six sides that
+   does not have another hex of the same area behind it. Interior sides are simply never emitted, so
+   what is left is the outline — and, for free, the outline of a hole where a rival has taken a pocket
+   of ground in the middle, and the ragged edge where an area runs out of map.
+
+   The hex across side i sits at twice the side's midpoint offset: that midpoint is the inradius from
+   the centre, and adjacent centres are two inradii apart. So the neighbour can be found by asking what
+   hex is at that point, without needing to know how `neighbors()` happens to order its answers. */
+function isoOutlineD(idx) {
+  let d = '';
+  for (const [h, o] of S.iso.own) {
+    if (o !== idx) continue;
+    const [cx, cy] = hexCenter(h);
+    for (let i = 0; i < 6; i++) {
+      const nb = nearestHex(cx + 2 * EDGE[i][0], cy + 2 * EDGE[i][1]);
+      if (nb && nb !== h && S.iso.own.get(nb) === idx) continue;
+      const a = CORN[i], b = CORN[(i + 1) % 6];
+      d += `M${(cx + a[0]).toFixed(1)} ${(cy + a[1]).toFixed(1)}` +
+           `L${(cx + b[0]).toFixed(1)} ${(cy + b[1]).toFixed(1)}`;
+    }
+  }
+  return d;
+}
+
+/* The origin list, built like the route list because it is the same idea: several of a thing, one of
+   them selected, each with a colour you can change and a name you can give it. What differs is that an
+   origin is one point rather than a path, so the row shows where it stands and how much ground it holds
+   — the two things you would otherwise have to count off the map. */
+function renderIsoList() {
+  const list = document.getElementById('isoList');
+  if (!list) return;
+  list.innerHTML = S.iso.origins.length ? ''
+    : '<div class="emptynote">No origins yet — click a hex, or press Add origin.</div>';
+  // How many hexes each area actually holds, which is the only honest measure of who is winning.
+  const held = new Map();
+  if (S.iso.own) for (const o of S.iso.own.values()) held.set(o, (held.get(o) || 0) + 1);
+  S.iso.origins.forEach((og, i) => {
+    const div = document.createElement('div');
+    div.className = 'rtitem' + (i === S.iso.active ? ' on' : '');
+    const n = held.get(i) || 0;
+    const where = og.h == null ? 'unplaced' : n ? `${n} hex${n === 1 ? '' : 'es'}` : `hex ${og.h}`;
+    div.innerHTML = `<span class="sw" style="background:${og.color}" title="Change colour"></span>` +
+      `<span class="nm" title="Click to select, double-click to rename">${escHtml(og.name)}</span>` +
+      `<span class="tm">${where}</span>` +
+      `<span class="mn" title="More — copy or paste this origin's column, delete it">⋯</span>` +
+      `<span class="x" title="Delete origin">×</span>`;
+    div.querySelector('.sw').onclick = e => {
+      e.stopPropagation();
+      openColorPanelAt(e.currentTarget, `<b>${escHtml(og.name)}</b> — colour`,
+                       ISO_COLORS, () => og.color,
+                       c => { pushUndoRoutes('isocolor' + i); og.color = c; computeRoute(); });
+    };
+    div.querySelector('.nm').ondblclick = e => {
+      e.stopPropagation();
+      const n = prompt('Origin name:', og.name);
+      if (n && n.trim()) { pushUndoRoutes(); og.name = n.trim(); computeRoute(); }
+    };
+    div.querySelector('.mn').onclick = e => {
+      e.stopPropagation();
+      const r = e.currentTarget.getBoundingClientRect();
+      openIsoMenu(i, r.left, r.bottom + 3);
+    };
+    div.querySelector('.x').onclick = e => { e.stopPropagation(); removeIsoOrigin(i); };
+    div.oncontextmenu = e => { e.preventDefault(); e.stopPropagation(); openIsoMenu(i, e.clientX, e.clientY); };
+    // Selecting an origin changes what the column boxes below are editing, so the form must be reread.
+    div.onclick = () => { S.iso.active = i; computeRoute(); };
+    list.appendChild(div);
+  });
+}
+function openIsoMenu(i, x, y) {
+  const og = S.iso.origins[i];
+  if (!og) return;
+  openCtx(x, y, box => {
+    ctxHead(box, `<b>${escHtml(og.name)}</b>${og.h == null ? ' — unplaced' : ` — hex ${og.h}`}`);
+    ctxItem(box, 'Move to next click', () => {
+      closeCtx();
+      S.iso.active = i; S.isoPick = true;
+      document.getElementById('isoPick').classList.add('on');
+      computeRoute();
+      toast('Click a hex to move ' + og.name);
+    });
+    ctxItem(box, 'Duplicate origin', () => { closeCtx(); cloneIsoOrigin(i); });
+    ctxSep(box);
+    ctxItem(box, 'Copy column', () => { closeCtx(); copyText(armyToText(og.set || SETTINGS), 'Column'); });
+    ctxItem(box, 'Paste column', async () => {
+      closeCtx();
+      S.iso.active = i;
+      // activeSettings() only answers "the origin's" while the Isochrone panel is the open one, and the
+      // menu can be raised from anywhere. Write to the origin directly instead of trusting the ambient.
+      const got = armyFromText(await pasteText('a column'));
+      if (!got) { toast('No column found in that text', true); return; }
+      pushUndoRoutes();
+      og.set = { ...(og.set || SETTINGS), ...got };
+      computeRoute();
+      toast('Column pasted into ' + og.name);
+    });
+    ctxSep(box);
+    ctxItem(box, 'Delete origin', () => { closeCtx(); removeIsoOrigin(i); }, 'danger');
+  });
+}
+function cloneIsoOrigin(i) {
+  const og = S.iso.origins[i];
+  if (!og) return;
+  pushUndoRoutes();
+  const copy = { ...og, set: { ...(og.set || SETTINGS) }, color: freeIsoColor(), name: freeIsoName() };
+  S.iso.origins.splice(i + 1, 0, copy);
+  S.iso.active = i + 1;
+  computeRoute();
+  // Sitting exactly on top of the one it came from, which is invisible until it is moved — so say so.
+  toast(copy.name + ' added on the same hex — click the map to move it');
+}
+function removeIsoOrigin(i) {
+  if (!S.iso.origins[i]) return;
+  pushUndoRoutes();
+  S.iso.origins.splice(i, 1);
+  if (S.iso.active >= S.iso.origins.length) S.iso.active = S.iso.origins.length - 1;
+  computeRoute();
+}
+function addIsoOrigin() {
+  migrateIso();
+  pushUndoRoutes();
+  S.iso.origins.push(newIsoOrigin(null, 0));
+  S.iso.active = S.iso.origins.length - 1;
+  // Armed rather than placed: an origin has to stand somewhere, and only the map knows where.
+  S.isoPick = true;
+  document.getElementById('isoPick').classList.add('on');
+  computeRoute();
+  closeSheet();
+  toast('Click a hex to place ' + S.iso.origins[S.iso.active].name);
+}
+/* Where a click on the map goes. With no origins at all the first click makes one, because that is how
+   this panel behaved when there was only ever one origin and nobody should have to find a button to get
+   the old behaviour back. After that a click moves whichever origin is selected. */
+function placeIsoOrigin(h, ri) {
+  migrateIso();
+  pushUndoRoutes();
+  const og = activeIsoOrigin();
+  if (og) { og.h = h; og.ri = ri | 0; }
+  else {
+    S.iso.origins.push(newIsoOrigin(h, ri));
+    S.iso.active = S.iso.origins.length - 1;
+  }
+  S.isoPick = false;
+}
+
 function renderIso() {
   groups.iso.innerHTML = '';
   const lg = document.getElementById('isoLegend');
   lg.innerHTML = '';
-  if (!S.iso.origin || !S.iso.data) return;
-  const maxD = +document.getElementById('isoMax').value || 14;
+  renderIsoList();
+  if (!S.iso.own || !S.iso.own.size) return;
+  const maxD = +document.getElementById('isoMax').value || 7;
   const opt = isoOptimizing();
   // Both modes shade the same way — bucket every hex, batch each bucket into one path — and differ
   // only in what the bucket means and what the chip beside it should say.
@@ -2307,16 +2853,39 @@ function renderIso() {
                      : d => Math.min(n - 1, Math.floor(d / band));
   const label = opt ? b => `${(b / n).toFixed(1)}–${((b + 1) / n).toFixed(1)} d`
                     : b => `≤ ${((b + 1) * band).toFixed(band < 1 ? 1 : 0)} d`;
+  // Shaded by the time its *own* origin takes to reach it — `best` is already the winner's figure and
+  // already inside maxD, so a hex belongs to exactly one band whoever holds it.
   const byBand = [];
-  for (const [h, d] of S.iso.data) {
-    if (d > maxD) continue;
+  for (const [h, d] of S.iso.best) {
     const b = bucket(d);
     const [cx, cy] = hexCenter(h);
     byBand[b] = (byBand[b] || '') + hexPath(cx, cy);
   }
   byBand.forEach((d, b) => { if (d) el('path', { d, fill: color(b, n), stroke: 'none' }, groups.iso); });
-  const [ox, oy] = nodePoint(S.iso.origin.h, S.iso.origin.ri | 0);
-  el('circle', { cx: ox, cy: oy, r: 5.5, fill: '#fff', stroke: '#000', 'stroke-width': 1.6 }, groups.iso);
+  /* Outlines after every fill: a border drawn before the neighbouring area is painted would be half
+     buried by it. Two passes rather than one, because a coloured line laid straight onto these fills
+     has almost nothing to read against — the palette and the green-to-red ramp are the same brightness,
+     and a yellow border on a yellow band disappears. So every border gets a dark casing first and its
+     colour on top of that, which is how a road is drawn on a paper map and for the same reason.
+
+     Both passes run over every area before the next begins, so one area's casing cannot bury the
+     neighbour's colour along a border they share. The active area goes last in the colour pass, so
+     where two borders coincide the one you are editing is the one you see. */
+  const outlines = S.iso.origins.map((og, i) => ({ og, i, d: isoOutlineD(i) })).filter(o => o.d);
+  const lineW = i => i === S.iso.active ? 4.2 : 3;
+  for (const { d, i } of outlines)
+    el('path', { d, fill: 'none', stroke: '#0c1015', 'stroke-width': lineW(i) + 2.6,
+                 'stroke-linecap': 'round', opacity: 0.55 }, groups.iso);
+  for (const { d, og, i } of [...outlines].sort((a, b) => (a.i === S.iso.active) - (b.i === S.iso.active)))
+    el('path', { d, fill: 'none', stroke: og.color, 'stroke-width': lineW(i),
+                 'stroke-linecap': 'round' }, groups.iso);
+  S.iso.origins.forEach((og, i) => {
+    if (og.h == null) return;
+    const [ox, oy] = nodePoint(og.h, og.ri | 0);
+    const act = i === S.iso.active;
+    el('circle', { cx: ox, cy: oy, r: act ? 6.5 : 5.5, fill: '#fff', stroke: og.color,
+                   'stroke-width': act ? 2.8 : 2 }, groups.iso);
+  });
   // Waste is not a distance, and five chips reading "0.4–0.6 d" would be taken for one if left
   // unlabelled beside the band legend they replace.
   if (opt) {
@@ -2350,16 +2919,21 @@ function computeRoute() {
     if (w.ri === undefined) { const ri = regionsOf(w.h).findIndex(r => !!r.sea === !!w.sea); return { h: w.h, ri: ri < 0 ? 0 : ri }; }
     return w;
   });
-  if (S.iso.origin && S.iso.origin.ri === undefined)
-    S.iso.origin = { h: S.iso.origin.h, ri: Math.max(0, regionsOf(S.iso.origin.h).findIndex(r => !!r.sea === !!S.iso.origin.sea)) };
-  const o = armyOpts();          // the active route's — what the readout and the isochrone describe
+  migrateIso();
+  // The active *route's* army, named explicitly rather than taken from armyOpts()'s ambient answer:
+  // that now depends on which panel is open, and the readout below must describe the route whatever
+  // panel that happens to be.
+  const o = armyOpts(S.routes[S.activeRoute]?.set);
   const isoMode = document.getElementById('isoMode')?.value || 'army';
-  const isoMax = +document.getElementById('isoMax').value || 14;
-  if (S.iso.origin) {
-    if (isoMode === 'message') S.iso.data = spreadAll(S.iso.origin, RULES.SPREAD.message, isoMax);
-    else if (isoMode === 'rumour') S.iso.data = spreadAll(S.iso.origin, RULES.SPREAD.rumour, isoMax);
-    else S.iso.data = dijkstraAll(S.iso.origin, o, isoMax);
-  } else S.iso.data = null;
+  const isoMax = +document.getElementById('isoMax').value || 7;
+  // One reach map per origin, each under its own column. Straight-line spreads ignore the column
+  // entirely, so for those the two origins differ only in where they stand.
+  S.iso.data = S.iso.origins.map(og =>
+    og.h == null ? null
+    : isoMode === 'message' ? spreadAll(og, RULES.SPREAD.message, isoMax)
+    : isoMode === 'rumour' ? spreadAll(og, RULES.SPREAD.rumour, isoMax)
+    : dijkstraAll(og, armyOpts(og.set), isoMax));
+  assignIsoOwners(isoMax);
   renderIso();
   const results = [];
   S.routes.forEach((rt, i) => {
@@ -2395,7 +2969,9 @@ function computeRoute() {
     cum += st.irl;
     const name = S.features.labels[st.h] ?? S.names.hexes[st.h];
     const hexLbl = (name ? name + ' ' : '') + st.h;
-    const terr = terrainLabel(st.h, st.ri, st.sea) + (hasStronghold(st.h) ? ' ⌂' : '');
+    // The ⌂ marks a stronghold the column is actually standing in, which on a split hex is a question
+    // about the bank, not the hex.
+    const terr = terrainLabel(st.h, st.ri, st.sea) + (hasStronghold(st.h, st.ri) ? ' ⌂' : '');
     const sameHex = st.h === prevH; prevH = st.h;
     // Shuffling about inside one hex — embarking into its own water, crossing its own bridge — is
     // bookkeeping the solver needs and the reader does not. It only earns a row if it costs
@@ -2560,6 +3136,168 @@ function removeWaypoint(ri, wi) {
   computeRoute();
 }
 
+/* ---------------- a march, as a line of text ----------------
+   Orders are written in prose, and the thing wanted in them is the sequence: which hexes, over what
+   ground, and where the column takes ship. Reading that off the table a row at a time is transcription
+   work, and transcription is where a hex number goes wrong. So the readout can hand over the whole
+   march as one line.
+
+   The same rule as the table decides what earns a place: shuffling about inside one hex is bookkeeping
+   the solver needs, and only appears if it cost something — which is exactly what makes embarking and
+   disembarking show up as stages of their own, between hexes rather than attached to one. */
+function stepsToText(ri) {
+  const rt = S.routes[ri], r = lastResults[ri];
+  if (!rt || !r || r.fail || !r.steps?.length) return null;
+  const parts = [];
+  let prevH = null;
+  r.steps.forEach((st, j) => {
+    const sameHex = st.h === prevH; prevH = st.h;
+    if (j > 0 && sameHex && st.irl < 0.005) return;
+    const terr = terrainLabel(st.h, st.ri, st.sea).toLowerCase();
+    if (j === 0) parts.push(`${st.h} (${terr}, start)`);
+    else if (sameHex) parts.push(st.note || 'in hex');       // a stage, not a hex: embark, disembark
+    else parts.push(`${st.h} (${terr}${st.note ? ', ' + st.note : ''})`);
+  });
+  const game = r.irl * RULES.GAME_DAYS_PER_IRL;
+  const miles = Math.round(r.miles ?? r.hexes * RULES.HEX_MILES);
+  // The summary goes on its own line so it can be deleted with one keystroke by anyone who only
+  // wanted the chain — and so its numbers stay off the line the importer reads.
+  return `${rt.name} — ${r.irl.toFixed(1)} IRL days (${game.toFixed(0)} in-game), ` +
+         `${r.hexes} hexes ≈ ${miles} mi\n` + parts.join(' -> ');
+}
+
+/* Hex numbers back out of pasted text, in the order they appear. Everything else is ignored, so a line
+   copied from Copy hexes comes back unedited, and so does one typed by hand as "948 949 950".
+
+   Numbers that are not hexes have to go before looking, and a march line is full of them:
+     · inside brackets — a ford's "+0.5d", a trade route's mileage;
+     · costs standing on their own, because embarking is a stage rather than a hex and arrives written
+       as "secure ships +7d". That 7 is a month of shipwrighting, and left alone it silently becomes
+       a waypoint in hex 7;
+     · our own summary line, where "5.0 IRL days, 12 hexes ≈ 240 mi" offers four plausible hex ids.
+   Where the text has an arrow chain, that chain is the only part worth reading at all. */
+function hexListFromText(txt) {
+  const lines = String(txt || '').split(/\r?\n/);
+  const chain = lines.filter(l => /->|→|—>/.test(l));
+  const src = (chain.length ? chain : lines.filter(l => !/IRL day/i.test(l))).join(' ')
+    .replace(/\([^)]*\)/g, ' ').replace(/\[[^\]]*\]/g, ' ')
+    .replace(/[+-]\s*\d+(?:\.\d+)?\s*d\b/gi, ' ')                    // "+7d", "+0.5d" — a cost
+    .replace(/\d+(?:\.\d+)?\s*(?:mi|miles|hexes?|days?)\b/gi, ' ')   // "240 mi", "12 hexes"
+    .replace(/\d+\.\d+/g, ' ');                 // any remaining decimal is a cost, never a hex
+  const out = [], skipped = [];
+  for (const m of src.matchAll(/\d+/g)) {
+    const h = +m[0];
+    if (!S.hexes[h] || S.hexes[h].t === 'N/A') { skipped.push(h); continue; }
+    if (out[out.length - 1] !== h) out.push(h);  // a repeat is the same hex twice, not a second stop
+  }
+  return { hexes: out, skipped };
+}
+// A pasted list names hexes, not subhexes: which bank of a split hex the column is on is not in the
+// text. Land is the safe reading — the solver finds its own way across a bridge or aboard a ship — so
+// the first marchable region wins, falling back to 0 for a hex that is all water.
+function landRi(h) {
+  const i = regionsOf(h).findIndex(regWalkable);
+  return i < 0 ? 0 : i;
+}
+// `ri` names the route to paste into, defaulting to the active one — the card's button has no other
+// route in mind, but a route's own menu does, and pasting into the wrong route because it happened to
+// be selected is not a mistake worth leaving available.
+function applyHexList(txt, ri = S.activeRoute) {
+  const { hexes, skipped } = hexListFromText(txt);
+  const rt = S.routes[ri];
+  if (!rt) { toast('No route to paste into — make one first', true); return; }
+  if (hexes.length < 2) { toast('Need at least two hex numbers; found ' + hexes.length, true); return; }
+  pushUndoRoutes();
+  rt.wps = hexes.map(h => ({ h, ri: landRi(h) }));
+  computeRoute();
+  toast(`${hexes.length} waypoints into ${rt.name}` +
+        (skipped.length ? ` · ignored ${skipped.length} number${skipped.length > 1 ? 's' : ''} that name no hex` : ''));
+}
+
+/* ---------------- duplicating and emptying a route ----------------
+   Planning is comparative: the same column by the north road and by the south, or this march in clear
+   weather and in snow. Both start from a route that already exists, and rebuilding it waypoint by
+   waypoint to change one thing is the tedious part.
+
+   A copy takes the waypoints, the column and the conditions, and gets a colour of its own — two
+   identical lines in the same colour would be one line as far as the eye is concerned. */
+function nextCopyName(base) {
+  const stem = base.replace(/ copy( \d+)?$/, '');
+  const taken = new Set(S.routes.map(r => r.name));
+  if (!taken.has(stem + ' copy')) return stem + ' copy';
+  for (let k = 2; ; k++) if (!taken.has(`${stem} copy ${k}`)) return `${stem} copy ${k}`;
+}
+function cloneRoute(i) {
+  const rt = S.routes[i];
+  if (!rt) return;
+  pushUndoRoutes();
+  const used = new Set(S.routes.map(r => r.color));
+  const copy = {
+    name: nextCopyName(rt.name),
+    color: PALETTE.find(c => !used.has(c)) || rt.color,
+    wps: rt.wps.map(w => ({ ...w })),          // waypoints carry forced-march marks; copy, don't share
+    set: { ...(rt.set || SETTINGS) },
+  };
+  S.routes.splice(i + 1, 0, copy);
+  S.activeRoute = i + 1;                        // the copy is what you are about to change
+  computeRoute();
+  toast('Duplicated as ' + copy.name);
+}
+// Emptied, not deleted: the route keeps its name, colour and column, and is ready to be walked
+// somewhere else. Removing it altogether is still the × in the list.
+function clearRouteWaypoints(i) {
+  const rt = S.routes[i];
+  if (!rt || !rt.wps.length) { toast('That route has no waypoints'); return; }
+  pushUndoRoutes();
+  const n = rt.wps.length;
+  rt.wps = [];
+  if (fmPending && fmPending.ri === i) fmPending = null;   // its waypoint is gone with the rest
+  S.activeRoute = i;
+  computeRoute();
+  toast(`Cleared ${n} waypoint${n > 1 ? 's' : ''} from ${rt.name} — Ctrl+Z to undo`);
+}
+
+// Everything a route can be asked to do that is not worth a permanent button. Right-click the row, or
+// tap its ⋯ — a touchscreen has no second button, and these are exactly the operations someone on a
+// tablet still needs.
+function openRouteMenu(i, x, y) {
+  const rt = S.routes[i];
+  if (!rt) return;
+  openCtx(x, y, box => {
+    ctxHead(box, `<b>${escHtml(rt.name)}</b> — ${rt.wps.length} waypoint${rt.wps.length === 1 ? '' : 's'}`);
+    ctxItem(box, 'Duplicate route', () => { closeCtx(); cloneRoute(i); });
+    ctxSep(box);
+    ctxItem(box, 'Copy hexes', () => {
+      closeCtx();
+      const t = stepsToText(i);
+      if (t) copyText(t, 'March');
+      else toast('Nothing to copy — that route has no solved march', true);
+    });
+    // Replaces this route's waypoints, not the selected route's — the menu was opened on a particular
+    // row and that is the route it should act on.
+    ctxItem(box, 'Paste hexes', async () => {
+      closeCtx();
+      applyHexList(await pasteText('a list of hexes'), i);
+    });
+    ctxSep(box);
+    ctxItem(box, 'Copy column', () => { closeCtx(); copyText(armyToText(rt.set || SETTINGS), 'Column'); });
+    ctxItem(box, 'Paste column', async () => {
+      closeCtx();
+      S.activeRoute = i;                       // paste into the route whose menu this is
+      applyArmyText(await pasteText('a column'));
+    });
+    ctxSep(box);
+    ctxItem(box, 'Clear waypoints', () => { closeCtx(); clearRouteWaypoints(i); }, 'danger');
+    ctxItem(box, 'Delete route', () => {
+      closeCtx();
+      pushUndoRoutes();
+      S.routes.splice(i, 1);
+      if (S.activeRoute >= S.routes.length) S.activeRoute = S.routes.length - 1;
+      computeRoute();
+    }, 'danger');
+  });
+}
+
 function renderRouteList(results) {
   const list = document.getElementById('routeList');
   list.innerHTML = S.routes.length ? '' : '<div class="emptynote">No routes yet — click a hex, or right-click one and Start a route here.</div>';
@@ -2570,7 +3308,16 @@ function renderRouteList(results) {
     const tm = r ? (r.fail ? '✗' : r.irl.toFixed(1) + 'd') : rt.wps.length + ' wp';
     div.innerHTML = `<span class="sw" style="background:${rt.color}" title="Change colour"></span>` +
       `<span class="nm" title="Click to activate, double-click to rename">${rt.name}</span>` +
-      `<span class="tm">${tm}</span><span class="x" title="Delete route">×</span>`;
+      `<span class="tm">${tm}</span>` +
+      `<span class="mn" title="More — duplicate, copy hexes or column, clear waypoints">⋯</span>` +
+      `<span class="x" title="Delete route">×</span>`;
+    div.querySelector('.mn').onclick = e => {
+      e.stopPropagation();
+      const r = e.currentTarget.getBoundingClientRect();
+      openRouteMenu(i, r.left, r.bottom + 3);
+    };
+    // The row itself too, since that is where a right-click naturally lands.
+    div.oncontextmenu = e => { e.preventDefault(); e.stopPropagation(); openRouteMenu(i, e.clientX, e.clientY); };
     div.querySelector('.sw').onclick = e => {
       e.stopPropagation();
       openColorPanelAt(e.currentTarget, `<b>${escHtml(rt.name)}</b> — colour`,
@@ -2876,7 +3623,7 @@ svg.addEventListener('pointerup', e => {
     // and no waypoints get scattered across the map while you drag the shading about. Shift+click
     // and the armed Set origin button do the same from anywhere else.
     if (S.isoPick || e.shiftKey || UI.pane === 'iso') {
-      S.iso.origin = { h, ri }; S.isoPick = false;
+      placeIsoOrigin(h, ri);
       document.getElementById('isoPick').classList.remove('on');
       computeRoute();
       return;
@@ -2928,7 +3675,7 @@ function drawClick(wx, wy, scale, e) {
   if (S.tool === 'erase') {
     const thr = 8 / scale * 1.5 + 3;
     // strongholds (custom placements/flags AND datasheet ones) — nearest marker wins over lines
-    const { id: bs, d: bsd } = nearestStronghold(wx, wy, thr);
+    const { id: bs, ri: bsri, d: bsd } = nearestStronghold(wx, wy, thr);
     // per-feature min distance; among near-ties, the most recently drawn wins (helps with stacked lines)
     const dists = S.features.features.map(f => {
       let m = Infinity;
@@ -2944,7 +3691,9 @@ function drawClick(wx, wy, scale, e) {
     }
     if (bs !== null && bsd <= bd) {
       pushUndo();
-      const wasSheet = removeStronghold(bs);
+      // The eraser takes the one marker it landed on, not every stronghold in the hex — with two on two
+      // banks, clicking one of them should not clear the other.
+      const wasSheet = removeStronghold(bs, bsri);
       commitFeatures();
       document.getElementById('saveInfo').textContent = wasSheet
         ? `Hex ${bs}: datasheet stronghold removed (Ctrl+Z or the Stronghold tool restores it).`
@@ -2986,17 +3735,22 @@ function drawClick(wx, wy, scale, e) {
   if (S.tool === 'stronghold') {
     const h = nearestHex(wx, wy);
     if (!h) return;
+    // Which subhex you clicked decides which stronghold you are working on, so a second click on the
+    // far bank of a river adds a second one rather than dragging the first across the water.
+    const ri = regionAt(h, [wx, wy]);
     pushUndo();
-    const sh = S.features.strongholds[h] || (S.features.strongholds[h] = {});
-    delete sh.removed; // interacting with the Stronghold tool (re)adds a previously removed one
+    const m = shEnsure(h, ri);
+    delete m.removed;   // interacting with the Stronghold tool (re)adds one that had been erased
+    const sub = isSplit(h) ? ` subhex ${ri}` : '';
     let msg;
     if (e.shiftKey) {
-      sh.coastal = !isPort(h);
-      msg = `Hex ${h}: now ${sh.coastal ? 'coastal (port — can embark/disembark)' : 'inland (no port)'}.`;
+      const want = !isPort(h, ri);
+      m.coastal = want;
+      msg = `Hex ${h}${sub}: now ${want ? 'coastal (port — can embark/disembark)' : 'inland (no port)'}.`;
     } else {
       const p = e.altKey ? [wx, wy] : (snapPoint(wx, wy, 14, scale) || [wx, wy]);
-      sh.x = +p[0].toFixed(1); sh.y = +p[1].toFixed(1);
-      msg = `Hex ${h}: stronghold marker placed.`;
+      m.x = +p[0].toFixed(1); m.y = +p[1].toFixed(1);
+      msg = `Hex ${h}${sub}: stronghold marker placed.`;
     }
     commitFeatures();
     document.getElementById('saveInfo').textContent = msg;
@@ -3005,11 +3759,20 @@ function drawClick(wx, wy, scale, e) {
   if (S.tool === 'label') {
     const h = nearestHex(wx, wy);
     if (!h) return;
-    const cur = S.features.labels[h] ?? S.names.hexes[h] ?? '';
-    const name = prompt(`Name for hex ${h}${hasStronghold(h) ? ' (stronghold)' : ''} — rename or clear:`, cur);
+    // A name belongs to the stronghold you clicked, not to the hex it stands in — two places on two
+    // banks are two names. With no stronghold under the click the name still goes on the hex, which is
+    // how an unfortified place gets labelled.
+    const ri = regionAt(h, [wx, wy]);
+    const m = shAt(h, ri);
+    const sub = isSplit(h) ? ` subhex ${ri}` : '';
+    const cur = m ? shName(h, m) : (S.features.labels[h] ?? S.names.hexes[h] ?? '');
+    const name = prompt(`Name for hex ${h}${sub}${m ? ' (stronghold)' : ''} — rename or clear:`, cur);
     if (name === null) return;
     pushUndo();
-    if (name.trim()) S.features.labels[h] = name.trim();
+    // A blank name on a stronghold is an empty name, not a deletion — the keep is still there, just
+    // unlabelled. Only a bare hex label is removed outright.
+    if (m) shEnsure(h, ri).name = name.trim();
+    else if (name.trim()) S.features.labels[h] = name.trim();
     else delete S.features.labels[h];
     commitFeatures();
     return;
@@ -3083,6 +3846,42 @@ function overlappingRiver(nf) {
   return null;
 }
 
+/* ---------------- clipboard, and saying so ----------------
+   Copying is invisible work: nothing on screen changes, so without a word of confirmation you cannot
+   tell a successful copy from a dead button. Hence the toast — brief, out of the way, and never in
+   front of the map's own controls.
+
+   The async clipboard API needs a secure context, so it is there on the published map and absent when
+   the file is opened straight off disk. Rather than fail quietly in the case a person is most likely
+   to be testing in, both directions fall back to a prompt box: on copy it holds the text ready to be
+   taken with Ctrl+C, on paste it waits for Ctrl+V. Clumsier, but it always works. */
+let toastT = null;
+function toast(msg, bad) {
+  let t = document.getElementById('toast');
+  if (!t) { t = document.createElement('div'); t.id = 'toast'; document.body.appendChild(t); }
+  t.textContent = msg;
+  t.classList.toggle('bad', !!bad);
+  t.classList.add('on');
+  clearTimeout(toastT);
+  toastT = setTimeout(() => t.classList.remove('on'), bad ? 4200 : 2000);
+}
+async function copyText(text, what) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(what + ' copied');
+  } catch {
+    // No clipboard permission, or no secure context. Show the text instead of pretending.
+    window.prompt(what + ' — press Ctrl+C to copy, then Enter:', text);
+  }
+}
+async function pasteText(what) {
+  try {
+    const t = await navigator.clipboard.readText();
+    if (t && t.trim()) return t;
+  } catch {}
+  return window.prompt('Paste ' + what + ' here, then press Enter:', '') || '';
+}
+
 function flashReject(p) {
   const c = el('circle', { cx: p[0], cy: p[1], r: 6, fill: 'none', stroke: '#e5695e', 'stroke-width': 2 }, groups.hover);
   setTimeout(() => c.remove(), 450);
@@ -3090,7 +3889,7 @@ function flashReject(p) {
 // Drag-erase: remove the whole nearest feature / stronghold under the cursor (defers route recompute).
 function eraseWholeAt(wx, wy, scale) {
   const thr = 8 / scale * 1.5 + 3;
-  const { id: bs, d: bsd } = nearestStronghold(wx, wy, thr);
+  const { id: bs, ri: bsri, d: bsd } = nearestStronghold(wx, wy, thr);
   let bi = -1, bd = thr;
   S.features.features.forEach((f, i) => {
     for (let k = 0; k + 1 < f.pts.length; k++) {
@@ -3100,7 +3899,7 @@ function eraseWholeAt(wx, wy, scale) {
   });
   if (bs === null && bi < 0) return; // nothing under cursor
   if (S.dragErase && !S.dragErase.undoPushed) { pushUndo(); S.dragErase.undoPushed = true; }
-  if (bs !== null && bsd <= bd) removeStronghold(bs);
+  if (bs !== null && bsd <= bd) removeStronghold(bs, bsri);
   else S.features.features.splice(bi, 1);
   renderFeatures(); renderLabels(); saveLocal(); S.needRecompute = true;
 }
@@ -3165,6 +3964,26 @@ function snapMarker(p) {
                  'stroke-width': close ? 1.8 : 1 }, groups.hover);
 }
 
+/* What the isochrone has to say about a hex. With one origin that is simply how long the march takes.
+   With several it is also who holds the hex and by how much — and the margin is the interesting number,
+   because a hex won by half a day is a frontier and one won by a week is nobody's frontier at all. */
+function isoTip(h) {
+  if (!S.iso.own || !S.iso.own.has(h)) return '';
+  const i = S.iso.own.get(h), d = S.iso.best.get(h);
+  const og = S.iso.origins[i];
+  const many = placedOrigins() > 1;
+  let s = `<br>${d.toFixed(1)} IRL d from ${many ? escHtml(og?.name || 'origin') : 'origin'}`;
+  // With the optimizer shading, the true cost alone is the least interesting of the three numbers:
+  // what is being paid, and what of it is wasted, are the point.
+  if (isoOptimizing()) s += ` · ${optDays(d)} d order, ${optWaste(d).toFixed(2)} wasted`;
+  if (many) {
+    const up = isoRunnerUp(h);
+    if (up) s += `<br><span class="rg">${escHtml(S.iso.origins[up.i]?.name || 'other')} ` +
+                 `${up.d.toFixed(1)} d — held by ${(up.d - d).toFixed(1)} d</span>`;
+  }
+  return s;
+}
+
 const tooltip = document.getElementById('tooltip');
 function onHover(e) {
   const [wx, wy, s] = toWorld(e);
@@ -3203,20 +4022,17 @@ function onHover(e) {
     el('path', { d: hexPath(cx, cy), fill: 'none', stroke: '#fff', 'stroke-width': 1, opacity: 0.8 }, groups.hover);
   }
   const v = S.hexes[h];
-  const name = S.features.labels[h] ?? S.names.hexes[h];
-  const isSh = hasStronghold(h);
+  // The readout describes the subhex under the cursor, so it names the stronghold standing there rather
+  // than whichever one the hex happens to contain.
+  const hoverRi = regionAt(h, [wx, wy]);
+  const hoverM = shAt(h, hoverRi);
+  const name = hoverM ? shName(h, hoverM) : (S.features.labels[h] ?? S.names.hexes[h]);
+  const shKind = hoverM ? (hoverM.major ? 'major stronghold' : 'stronghold') : '';
   tooltip.innerHTML = `<span class="t">${name ? name + ' — ' : ''}hex ${h}${subLabel}</span><br>` +
-    `${v.t}${isSh ? (isPort(h) ? ' · stronghold (coastal/port)' : ' · stronghold (inland)') : ''}` +
+    `${v.t}${hoverM ? ` · ${shKind} (${isPort(h, hoverRi) ? 'coastal/port' : 'inland'})` : ''}` +
     `${v.r ? ' · river (sheet)' : ''}${v.d ? ' · road (sheet)' : ''}` +
     (v.g ? `<br><span class="rg">${v.g}</span>` : '') +   // the region it belongs to, from the sheet
-    // With the optimizer shading, the true cost alone is the least interesting of the three numbers:
-    // what is being paid, and what of it is wasted, are the point.
-    (S.iso.data && S.iso.data.has(h)
-      ? `<br>${S.iso.data.get(h).toFixed(1)} IRL d from origin` +
-        (isoOptimizing()
-          ? ` · ${optDays(S.iso.data.get(h))} d order, ${optWaste(S.iso.data.get(h)).toFixed(2)} wasted`
-          : '')
-      : '');
+    isoTip(h);
   tooltip.hidden = false;
   const wr = svg.parentElement.getBoundingClientRect();
   tooltip.style.left = (e.clientX - wr.left + 14) + 'px';
@@ -3287,16 +4103,15 @@ document.getElementById('importInput').onchange = async e => {
   try {
     const j = JSON.parse(await f.text());
     if (!Array.isArray(j.features)) throw 0;
-    pushUndo(); S.features = { version: 1, labels: {}, strongholds: {}, ...j }; commitFeatures();
+    // An exported file may predate the per-subhex shape, so an import goes through the migration too.
+    pushUndo(); S.features = migrateFeatures({ version: 2, labels: {}, strongholds: {}, ...j }); commitFeatures();
   } catch { alert('Not a valid features.json'); }
   e.target.value = '';
 };
 document.getElementById('resetBtn').onclick = async () => {
   if (!confirm('Discard local drawing and reload data/features.json?')) return;
   localStorage.removeItem(LS_KEY);
-  S.features = await fetchFeaturesFile() || { version: 1, features: [], labels: {}, strongholds: {} };
-  if (!S.features.labels) S.features.labels = {};
-  if (!S.features.strongholds) S.features.strongholds = {};
+  S.features = migrateFeatures(await fetchFeaturesFile() || { version: 2, features: [], labels: {}, strongholds: {} });
   S.undoStack = [];
   commitFeatures();
 };
@@ -3307,8 +4122,12 @@ document.getElementById('isoPick').onclick = () => {
   // The next thing to do is tap the map, which on a phone is behind the sheet.
   if (S.isoPick) closeSheet();
 };
+document.getElementById('isoAdd').onclick = addIsoOrigin;
 document.getElementById('isoClear').onclick = () => {
-  S.iso.origin = null; S.iso.data = null; S.isoPick = false;
+  if (!S.iso.origins.length) return;
+  pushUndoRoutes();
+  S.iso.origins = []; S.iso.active = -1; S.iso.origin = null;
+  S.iso.data = []; S.iso.own = null; S.iso.best = null; S.isoPick = false;
   document.getElementById('isoPick').classList.remove('on');
   computeRoute();
 };
@@ -3321,6 +4140,18 @@ function clearAllRoutes() {
   pushUndoRoutes(); S.routes = []; S.activeRoute = -1; computeRoute();
 }
 document.getElementById('clearRoute').onclick = clearAllRoutes;
+
+// Copy/paste the column, from whichever panel the controls are currently sitting on — they are one set
+// of boxes carried between Routes and Isochrone, so these two travel with them.
+document.getElementById('copyArmy').onclick = () => copyText(armyToText(activeSettings()), 'Column');
+document.getElementById('pasteArmy').onclick = async () => applyArmyText(await pasteText('a column'));
+// Copy/paste the march. Both act on the active route, which is the one the card is describing.
+document.getElementById('copySteps').onclick = () => {
+  const t = stepsToText(S.activeRoute);
+  if (t) copyText(t, 'March');
+  else toast('Nothing to copy — no solved march on the active route', true);
+};
+document.getElementById('pasteSteps').onclick = async () => applyHexList(await pasteText('a list of hexes'));
 // Same as right-clicking the map, for touchscreens, which have no second button. Two buttons do it:
 // one in the sheet beside its siblings, one floating on the map for when the sheet is shut.
 function removeLastWaypoint() {
@@ -3604,8 +4435,18 @@ function ctxItem(box, html, fn, cls) {
   const d = document.createElement('div');
   d.className = 'ctxit' + (cls ? ' ' + cls : '');
   d.innerHTML = html;
-  // Moving onto any other row puts an open flyout away, the way a menu should behave.
-  d.addEventListener('mouseenter', () => { if (ctxSub && ctxSub._owner !== d) closeCtxSub(); });
+  /* Moving onto any other row puts an open flyout away, the way a menu should behave — but "any other
+     row" has to mean a row of the *parent* menu. The rows inside a flyout are built by this same
+     function, so they inherited this handler too, and the first thing the pointer touched on its way
+     into a flyout was a row that promptly closed the flyout it was standing in. The flyout could be
+     opened and never used: it vanished the moment you reached for it.
+
+     Hence the second test. The first (`_owner === d`) spares the row the flyout hangs off; this one
+     spares everything the flyout contains. */
+  d.addEventListener('mouseenter', () => {
+    if (!ctxSub || ctxSub._owner === d || ctxSub.contains(d)) return;
+    closeCtxSub();
+  });
   if (fn) d.addEventListener('click', e => { e.stopPropagation(); fn(e); });
   box.appendChild(d);
   return d;
@@ -3724,6 +4565,45 @@ function hexMenu(h, pt, wp) {
       });
     }
     if (S.mode === 'draw' && S.drawing) ctxItem(box, 'Finish line', () => { finishDrawing(); closeCtx(); });
+    /* Strongholds are drawing work, so the entry belongs to draw mode — and it belongs on the
+       right-click menu because changing one is a decision about a place you are already looking at,
+       not a reason to go and select a tool. Whether it is a port lives here too: it is the other thing
+       about a stronghold that is a type rather than a position, and it was previously reachable only by
+       Shift+clicking with the Stronghold tool, which is not a discoverable gesture. */
+    if (S.mode === 'draw') {
+      // A stronghold belongs to a subhex, so the entry acts on the subhex you right-clicked and says so
+      // when the hex is split — otherwise "Stronghold: none" on a hex that visibly has one would look
+      // like a bug rather than a statement about this particular bank.
+      const shRi = pt ? regionAt(h, pt) : 0;
+      const m = shAt(h, shRi);
+      const cur = !m ? 'none' : (m.major ? 'major' : 'ordinary');
+      const where = isSplit(h) ? ' · this subhex' : '';
+      ctxFlyout(ctxItem(box, `Stronghold<span class="arw">${cur}${where}▸</span>`), s => {
+        for (const [kind, lbl] of [['none', 'None'], ['minor', 'Ordinary'], ['major', 'Major — larger marker']]) {
+          const want = kind === 'minor' ? 'ordinary' : kind;
+          const it = ctxItem(s, lbl, () => { setStrongholdType(h, shRi, kind); closeCtx(); });
+          if (want === cur) it.style.color = '#fff';
+        }
+        if (m) {
+          ctxSep(s);
+          const port = isPort(h, shRi);
+          ctxItem(s, port ? 'Make inland — no port' : 'Make coastal — port', () => {
+            pushUndo();
+            shEnsure(h, shRi).coastal = !port;
+            commitFeatures();
+            closeCtx();
+          });
+          ctxItem(s, 'Rename…', () => {
+            const n = prompt(`Name for this stronghold (hex ${h}):`, shName(h, m));
+            closeCtx();
+            if (n === null) return;
+            pushUndo();
+            shEnsure(h, shRi).name = n.trim();
+            commitFeatures();
+          });
+        }
+      });
+    }
     // Routing from a hex you are already looking at, without first switching mode and hunting for
     // the New route button. The waypoint lands on the subhex region under the cursor, exactly as a
     // left-click would place it, so starting on the sea side of a split hex still means the sea.
@@ -3932,7 +4812,7 @@ async function fetchFeaturesFile() {
     const r = await fetch('data/features.json');
     if (!r.ok) return null;
     const j = await r.json();
-    return Array.isArray(j.features) ? { version: 1, labels: {}, ...j } : null;
+    return Array.isArray(j.features) ? { version: 2, labels: {}, strongholds: {}, ...j } : null;
   } catch { return null; }
 }
 async function boot() {
@@ -3947,8 +4827,7 @@ async function boot() {
   const ls = localStorage.getItem(LS_KEY);
   if (ls) { try { S.features = JSON.parse(ls); } catch {} }
   else { const ff = await fetchFeaturesFile(); if (ff) S.features = ff; }
-  if (!S.features.labels) S.features.labels = {};
-  if (!S.features.strongholds) S.features.strongholds = {};
+  migrateFeatures(S.features);
   renderFeatures(); renderLabels();
   buildLayerUI();
   for (const L of LAYERS) L._apply?.();
@@ -3972,6 +4851,10 @@ async function boot() {
     if (rr && Array.isArray(rr.routes)) {
       S.routes = rr.routes;
       S.activeRoute = Math.min(rr.active ?? S.routes.length - 1, S.routes.length - 1);
+    }
+    if (rr && rr.iso && Array.isArray(rr.iso.origins)) {
+      S.iso.origins = rr.iso.origins;
+      S.iso.active = Math.min(rr.iso.active ?? 0, S.iso.origins.length - 1);
     }
   } catch {}
   computeRoute();
@@ -4019,16 +4902,22 @@ function subEdit(q, n) {
 }
 // Every name the map actually draws, by the same rules renderLabels uses — a hex named by hand wins
 // over its datasheet name, and a stronghold that has been erased is not a place any more.
+/* Mirrors renderLabels, so what the search finds is exactly what the map draws — including two places
+   in one hex, which now get a row each. Keyed by hex and subhex for the same reason the renderer is:
+   keyed by hex alone, the second of two banks would be silently dropped from the search. */
 function placeList() {
   const out = [], seen = new Set();
-  const add = (id, name) => {
-    if (seen.has(id)) return;
-    seen.add(id);
-    if (name) out.push({ h: +id, name });
+  const add = (id, ri, name) => {
+    const key = id + ':' + ri;
+    if (seen.has(key)) return;
+    seen.add(key);
+    if (name) out.push({ h: +id, ri, name });
   };
-  for (const id in S.features.labels) if (!S.features.strongholds[id]?.removed) add(id, S.features.labels[id]);
-  for (const id in S.hexes) if (S.hexes[id].s && !S.features.strongholds[id]?.removed) add(id, S.names.hexes[id]);
-  for (const id in S.features.strongholds) if (!S.features.strongholds[id].removed) add(id, S.names.hexes[id]);
+  for (const id of namedHexes()) {
+    const es = shEntries(id);
+    for (const { m, ri } of es) add(id, ri, shName(id, m));
+    if (!es.length && S.features.labels[id]) add(id, shRegion(id, {}), S.features.labels[id]);
+  }
   return out;
 }
 // The regions the sheet gives each hex, with how many hexes each covers.
@@ -4062,7 +4951,7 @@ function searchPlaces(raw) {
     const n = fold(pl.name);
     if (!n) continue;
     const rank = score(n);
-    if (rank !== null) hits.push({ h: pl.h, name: pl.name, rank });
+    if (rank !== null) hits.push({ h: pl.h, ri: pl.ri, name: pl.name, rank });
   }
   for (const rg of regionList()) {
     const rank = score(fold(rg.name));
@@ -4070,7 +4959,12 @@ function searchPlaces(raw) {
   }
   hits.sort((a, b) => a.rank - b.rank || a.name.localeCompare(b.name));
   const seen = new Set();
-  return hits.filter(x => { const k = x.region ?? x.h; return !seen.has(k) && seen.add(k); }).slice(0, SEARCH_MAX);
+  // Two places in one hex are two answers, so the dedupe key has to carry the subhex — otherwise
+  // searching for the one on the far bank would silently return the one on the near bank instead.
+  return hits.filter(x => {
+    const k = x.region ?? (x.h + ':' + (x.ri ?? ''));
+    return !seen.has(k) && seen.add(k);
+  }).slice(0, SEARCH_MAX);
 }
 
 const searchInput = document.getElementById('search');
@@ -4082,7 +4976,8 @@ let searchHits = [], searchSel = 0;
    there, or takes that one back out. Selected rows stay in the list even once the box is empty, so a
    selection made three searches ago can still be found and switched off. */
 let sel = [];      // [{ region } | { h }] in the order they were chosen
-const selKey = it => (it.region != null ? 'r:' + it.region : 'h:' + it.h);
+// Carries the subhex, so selecting the keep on one bank does not light up the town on the other.
+const selKey = it => (it.region != null ? 'r:' + it.region : 'h:' + it.h + ':' + (it.ri ?? ''));
 const inSel = it => sel.some(s => selKey(s) === selKey(it));
 const regionSize = name => {
   let n = 0;
@@ -4095,7 +4990,9 @@ const regionSize = name => {
 function searchRows() {
   const pinned = sel.map(it => it.region != null
     ? { region: it.region, name: it.region, hexes: regionSize(it.region) }
-    : { h: it.h, name: S.features.labels[it.h] || S.names.hexes[it.h] || '' });
+    // Rebuilt from the marker where there is one, so a renamed stronghold's pin renames with it.
+    : { h: it.h, ri: it.ri, name: (it.ri != null && shAt(it.h, it.ri) ? shName(it.h, shAt(it.h, it.ri)) : null)
+                                  || S.features.labels[it.h] || S.names.hexes[it.h] || '' });
   const keys = new Set(pinned.map(selKey));
   const hits = searchPlaces(searchInput.value).filter(x => !keys.has(selKey(x)));
   return { pinned, hits, rows: [...pinned, ...hits] };
@@ -4190,8 +5087,10 @@ function panToSelection(item) {
     if (x0 === Infinity) return;
     cx = (x0 + x1) / 2; cy = (y0 + y1) / 2;   // the middle of the region, however much of it fits
   } else {
-    const sh = S.features.strongholds[item.h];
-    [cx, cy] = (sh && sh.x != null) ? [sh.x, sh.y] : hexCenter(item.h);
+    // Pans to the marker the row stands for, so picking the far-bank place goes to the far bank rather
+    // than to whichever stronghold in the hex happened to be listed first.
+    const m = item.ri != null ? shAt(item.h, item.ri) : null;
+    [cx, cy] = m ? shPoint(item.h, m) : hexCenter(item.h);
   }
   S.vb = { ...S.vb, x: cx - S.vb.w / 2, y: cy - S.vb.h / 2 };
   applyViewBox();
@@ -4280,16 +5179,13 @@ searchInput.addEventListener('keydown', e => {
    the panel into a sheet that slides up. Only the transform differs, so there
    is one set of handlers rather than two.
    ========================================================================== */
-const UI_LS = 'rotmap_ui_v1';
 const panelEl = document.getElementById('panel');
 const panelTitleEl = document.getElementById('panelTitle');
 const railEl = document.getElementById('rail');
 const undoFloat = document.getElementById('undoWpFloat');
 const narrow = () => matchMedia('(max-width: 820px)').matches;
 
-const UI = { pane: 'route', shut: false, card: null, cardOff: false };
 function saveUI() { try { localStorage.setItem(UI_LS, JSON.stringify(UI)); } catch {} }
-try { Object.assign(UI, JSON.parse(localStorage.getItem(UI_LS)) || {}); } catch {}
 
 /* Which panel is showing. Draw is a mode as well as a panel — the map behaves differently while it
    is open — so opening it switches the map into drawing and leaving it switches back. That is the
@@ -4304,6 +5200,10 @@ function showPane(name, opts) {
   for (const b of railEl.querySelectorAll('.railbtn[data-pane]')) b.classList.toggle('on', b.dataset.pane === name);
   panelTitleEl.textContent = PANE_TITLES[name];
   placeSettings(name);
+  // The column boxes mean different things on different panels now — the route's army on Routes, the
+  // selected origin's on Isochrone — so switching panels has to reread them. Without this the boxes
+  // would show one army's numbers while writing them into another's.
+  syncRouteForm();
   setMode(name === 'draw' ? 'draw' : 'route');
   // Says out loud what the map is about to do with a click, since it is no longer the same
   // everywhere: on this panel the button is redundant, and looking pressed is the honest signal.
@@ -4525,7 +5425,7 @@ function renderRouteButtons(results) {
     const tm = r ? (r.fail ? '✗' : r.irl.toFixed(1) + 'd') : rt.wps.length + ' wp';
     b.innerHTML = `<span class="sw" style="background:${escHtml(rt.color)}"></span>` +
                   `<span class="nm">${escHtml(rt.name)}</span><span class="tm">${tm}</span>`;
-    b.title = `Show ${rt.name} — its column, conditions and step list`;
+    b.title = `Show ${rt.name} — its column, conditions and step list. Right-click for more.`;
     b.onclick = () => {
       if (act) return hideCard();
       S.activeRoute = i;
@@ -4533,6 +5433,10 @@ function renderRouteButtons(results) {
       computeRoute();          // the panel and the readout both follow the active route
       showCard();
     };
+    // The same menu the list row has. This button stands for the route just as much as that row does,
+    // and with the panel shut it is the only handle on it — so duplicating or emptying a route from
+    // here should not mean opening the panel first to find the identical menu.
+    b.oncontextmenu = e => { e.preventDefault(); e.stopPropagation(); openRouteMenu(i, e.clientX, e.clientY); };
     routeBtns.appendChild(b);
   });
 }

@@ -339,6 +339,13 @@ body.panel-shut #panel { display: none; }
 .float.dragging .floathead { cursor: grabbing; }
 .float.dragging { box-shadow: 0 20px 50px #000c; }
 #routeOut { flex: 1; min-height: 0; overflow-y: auto; padding: var(--s4); }
+/* Pinned under the scrolling readout rather than inside it: the steps table can be long, and a copy
+   button you have to scroll to the bottom of a march to find is a button you retype the march instead
+   of using. flex: 0 0 auto keeps it out of the scroll area's height negotiation. */
+#routeStepsIO {
+  flex: 0 0 auto; padding: var(--s3) var(--s4);
+  border-top: 1px solid var(--line); background: var(--bg-raise);
+}
 
 .routeout .big {
   font-size: var(--f5); font-weight: 600; letter-spacing: -.02em;
@@ -433,6 +440,13 @@ body.colsizing { cursor: col-resize; user-select: none; }
 .rtitem .tm, .tokitem .hx { color: var(--ink-3); font-size: var(--f2); font-variant-numeric: tabular-nums; }
 .rtitem .x, .tokitem .x { flex: 0 0 auto; padding: 0 var(--s1); color: var(--ink-3); }
 .rtitem .x:hover, .tokitem .x:hover { color: var(--bad); }
+/* The route's own menu. Dim until the row is under the cursor, so a list of routes reads as names and
+   times rather than as a column of handles — but always present on a touchscreen, which has no hover
+   to reveal it with and no second mouse button to do without it. */
+.rtitem .mn { flex: 0 0 auto; padding: 0 var(--s1); color: var(--ink-3); opacity: .35; letter-spacing: 1px; }
+.rtitem:hover .mn, .rtitem.on .mn { opacity: 1; }
+.rtitem .mn:hover { color: var(--ink); }
+@media (hover: none) { .rtitem .mn { opacity: 1; } }
 .emptynote { color: var(--ink-3); font-size: var(--f2); padding: var(--s2) 0; }
 
 /* Search ------------------------------------------------------------------ */
@@ -495,6 +509,25 @@ body.colsizing { cursor: col-resize; user-select: none; }
    when it finishes. */
 @keyframes findflash { 0%, 100% { opacity: 1 } 50% { opacity: .12 } }
 #lyr_selHex > path.just { animation: findflash .55s ease-in-out 3; }
+
+/* Confirmation for work that leaves no trace on screen — a copy, a paste, a route emptied. Top-centre
+   rather than the usual bottom corner: on a phone the panel is a sheet across the bottom, and that is
+   also where the floating route buttons live. Above the context menu (60), since a menu item is what
+   usually raises one, and never taking pointer events — it is a remark, not a control. */
+#toast {
+  position: fixed; z-index: 70; top: var(--s4); left: 50%;
+  transform: translate(-50%, -14px);
+  max-width: min(90vw, 480px);
+  padding: var(--s2) var(--s4);
+  background: var(--bg-raise); color: var(--ink);
+  border: 1px solid var(--line-2); border-radius: var(--r1);
+  box-shadow: 0 6px 22px #0008;
+  font-size: var(--f2); text-align: center;
+  opacity: 0; pointer-events: none;
+  transition: opacity .16s ease, transform .16s ease;
+}
+#toast.on { opacity: 1; transform: translate(-50%, 0); }
+#toast.bad { border-color: var(--bad); color: var(--bad); }
 
 #tooltip {
   position: absolute; z-index: 15; pointer-events: none;
