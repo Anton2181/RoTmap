@@ -456,11 +456,10 @@ function renderTerrain() {
    without being told, since unclaimed ground is exactly what a transparent pixel means. */
 /* The Warlords scan's legend, keyed by the colour the scan actually uses. Sampled from the legend
    image rather than read off it by eye, so these are the exact values in the file and a lookup can
-   be an equality test instead of a nearest-match.
+   be an equality test rather than a nearest-match.
 
-   The scan holds one colour more than the legend does — #00ff21, a bright green over about a third
-   of a per cent of the map. Rather than guess whose it is, an unnamed colour is reported as unnamed,
-   with its value, which is at least a true statement and points at what needs adding here. */
+   Every colour in the scan is named. If one ever isn't — a realm added to the map before it reaches
+   this table — the readout says so and gives its value, rather than guessing or falling silent. */
 const WARLORD_NAMES = {
   '#b542a0': 'Legion XIV',
   '#cca32a': 'Legion XIII',
@@ -472,6 +471,8 @@ const WARLORD_NAMES = {
   '#842a4b': 'Legion VI',
   '#007f46': 'Legion VII',
   '#6ab5d8': 'Blue Scarves',
+  // Not in the legend image, which lists ten; identified separately. A third of a per cent of the map.
+  '#00ff21': 'Legion XII',
 };
 const rgbKey = hex => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16)).join(',');
 const WARLORD_BY_RGB = new Map(Object.entries(WARLORD_NAMES).map(([hex, n]) => [rgbKey(hex), n]));
@@ -568,18 +569,29 @@ function paintRealm(id) {
     const rs = cells.regions;
     for (let ri = 0; ri < rs.length; ri++) {
       if (rs[ri].sea || cols.has(hx + ':' + ri)) continue;
+      // Unclaimed neighbours vote too, for staying unclaimed. Counting only the claimed ones made a
+      // single claimed edge decisive however much neutral ground the piece also touched — one vote
+      // beating nothing, because nothing was allowed to speak — so a spit adjoining one realm and
+      // two stretches of nobody's land came out as that realm's. Neutral is a real answer about a
+      // piece of ground, not the absence of one.
       const votes = new Map();
+      let neutral = 0;
       for (const n of neighbors(hx)) {
         if (!S.hexes[n] || S.hexes[n].t === 'N/A') continue;
         const nrs = regionsOf(n);
         for (let rj = 0; rj < nrs.length; rj++) {
+          if (nrs[rj].sea || !regionsMeet(hx, ri, n, rj)) continue;
           const c = cols.get(n + ':' + rj);
-          if (c && !nrs[rj].sea && regionsMeet(hx, ri, n, rj)) votes.set(c, (votes.get(c) || 0) + 1);
+          if (c) votes.set(c, (votes.get(c) || 0) + 1); else neutral++;
         }
       }
       let best = null, bn = 0;
       for (const [c, n] of votes) if (n > bn) { bn = n; best = c; }
-      if (best) inherited.set(hx + ':' + ri, best);
+      // Strictly more than the neutral ground, so a tie leaves it unclaimed: land is inherited when
+      // most of what it adjoins is held, not merely when something adjoining it is. A piece whose
+      // only land neighbour is claimed still inherits — there is nothing there to object — which is
+      // the case this pass was written for.
+      if (best && bn > neutral) inherited.set(hx + ':' + ri, best);
     }
   }
   for (const [k, c] of inherited) cols.set(k, c);
