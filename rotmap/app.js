@@ -125,7 +125,7 @@ const LAYERS = [
   { id: 'coastLines', name: 'Coast lines',  def: 0.28, op: 0.28, types: ['coast'] },
   { id: 'iso',      name: 'Isochrone',      def: 0.55 },
   { id: 'grid',     name: 'Hex grid',       def: 0.28 },
-  { id: 'hexIds',   name: 'Hex IDs',        def: 0, lazy: renderHexIds }, // 4,230 numbers; built on first use
+  { id: 'hexIds',   name: 'Hex IDs',        def: 0, lazy: renderHexIds }, // 4,113 numbers, baked to images on first use
   { id: 'roads',    name: 'Roads',          def: 1, types: ['road'] },
   { id: 'trade',    name: 'Trade routes',   def: 1, types: ['trade'] },
   { id: 'labels',   name: 'Strongholds',    def: 1 },
@@ -620,17 +620,97 @@ function paintRealm(id) {
   for (const [c, d] of byColour) // one path per realm, so 4,000 hexes cost a couple of dozen nodes
     el('path', { d, fill: `rgb(${c})`, 'fill-rule': 'evenodd', stroke: 'none' }, g);
 }
-function renderHexIds() {
+/* Four thousand numbers, drawn once into pictures.
+
+   As live <text> this was 4,113 nodes, each with a stroked outline behind it — and text with
+   paint-order:stroke is about the most expensive thing an SVG renderer can be asked for, since every
+   glyph has to be outlined, stroked and filled again on every frame of every pan and zoom. Switching
+   the layer on made the whole map stick.
+
+   Nothing about the numbers ever changes: they are the hex ids, at the hex centres, in a fixed size.
+   So they are rendered to a canvas once and hung in the layer as images — four of them rather than
+   one, because a single canvas at this supersampling would be eighty megapixels and some browsers
+   refuse canvases a fraction of that. Tiling by the supersampling factor keeps each canvas at exactly
+   the world's pixel size, which is the largest that can be relied on. Panning and zooming then costs
+   nine bitmap blits instead of four thousand outlined glyphs.
+
+   Supersampled so the numbers survive being zoomed into: they are drawn at nine map pixels and read
+   at whatever zoom you are at, so the raster has to hold three pixels to the map's one for them to
+   stay crisp up to 3:1. Beyond that they soften, which is a fair trade for a layer to glance at.
+
+   Blob URLs rather than data URLs: the same pixels, but a short string in the DOM instead of a
+   megabyte of base64 per tile. They are revoked when the layer is rebuilt, since a sheet refetch
+   would otherwise leak the old set. If a canvas cannot be had at all, the old text nodes are still
+   there to fall back on — slow, but a slow map beats a blank layer. */
+const HEXID_FONT = '9px system-ui, sans-serif';
+const HEXID_SS = 3;        // supersampling: how many raster pixels to a map pixel
+const HEXID_TILES = 3;     // tiles per axis. At TILES === SS each canvas is exactly the world's
+                           // pixel size, which is the largest every browser will reliably allocate.
+let hexIdUrls = [];
+async function renderHexIds() {
   groups.hexIds.innerHTML = '';
+  for (const u of hexIdUrls) URL.revokeObjectURL(u);
+  hexIdUrls = [];
+  const hw = Math.max(...CORN.map(c => Math.abs(c[0]))), hh = Math.max(...CORN.map(c => Math.abs(c[1])));
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  const ids = [];
   for (const idS in S.hexes) {
-    if (S.hexes[idS].t === 'N/A') continue; // off-map filler hexes
+    if (S.hexes[idS].t === 'N/A') continue;          // the sheet's padding is not anywhere
     const [cx, cy] = hexCenter(+idS);
+    ids.push([idS, cx, cy]);
+    x0 = Math.min(x0, cx - hw); x1 = Math.max(x1, cx + hw);
+    y0 = Math.min(y0, cy - hh); y1 = Math.max(y1, cy + hh);
+  }
+  if (!ids.length) return;
+  const N = HEXID_TILES, tw = (x1 - x0) / N, th = (y1 - y0) / N;
+  /* A number wider than the gap to the tile edge hangs over into the next tile. The tile that holds
+     its hex centre clips the overhang, and the neighbour never draws it at all, because the centre
+     is not in *its* bounds — so the label came out sliced down the middle, once along every seam.
+     Every tile therefore draws any label within a margin of its edge as well as those inside it. The
+     two draw identical pixels and each clips to its own half, so the halves meet; a label drawn twice
+     costs nothing, since each canvas keeps only the part that falls inside it. One hex width of margin
+     is far more than a four-digit number at nine pixels can span. */
+  const margin = S.G.hex_width;
+  let ok = true;
+  for (let ty = 0; ty < N && ok; ty++) for (let tx = 0; tx < N && ok; tx++) {
+    const ox = x0 + tx * tw, oy = y0 + ty * th;
+    const cv = document.createElement('canvas');
+    cv.width = Math.ceil(tw * HEXID_SS); cv.height = Math.ceil(th * HEXID_SS);
+    const ctx = cv.getContext('2d');
+    if (!ctx) { ok = false; break; }
+    ctx.scale(HEXID_SS, HEXID_SS);
+    ctx.translate(-ox, -oy);
+    ctx.font = HEXID_FONT;
+    ctx.textAlign = 'center';
+    ctx.lineWidth = 2; ctx.lineJoin = 'round';
+    ctx.strokeStyle = '#14181e'; ctx.fillStyle = '#fff';
+    for (const [idS, cx, cy] of ids) {
+      if (cx < ox - margin || cx > ox + tw + margin || cy < oy - margin || cy > oy + th + margin) continue;
+      ctx.strokeText(idS, cx, cy + 3.6);             // stroke first: SVG's paint-order: stroke
+      ctx.fillText(idS, cx, cy + 3.6);
+    }
+    const img = el('image', { x: ox, y: oy, width: tw, height: th, 'pointer-events': 'none' }, groups.hexIds);
+    try {
+      // One tile at a time. Nine canvases of nine megapixels each is a third of a gigabyte if they
+      // are all alive at once; awaiting the encode lets each go before the next is made.
+      const url = await new Promise(res => {
+        if (cv.toBlob) cv.toBlob(bl => res(bl ? URL.createObjectURL(bl) : null), 'image/png');
+        else res(cv.toDataURL());
+      });
+      if (!url) { ok = false; break; }
+      if (url.startsWith('blob:')) hexIdUrls.push(url);
+      img.setAttribute('href', url);
+    } catch { ok = false; }
+  }
+  if (ok) return;
+  // No canvas to be had. The numbers matter more than the frame rate, so draw them the slow way.
+  groups.hexIds.innerHTML = '';
+  for (const [idS, cx, cy] of ids)
     el('text', {
       x: cx, y: cy + 3.6, 'text-anchor': 'middle', 'font-size': 9, fill: '#fff',
       stroke: '#14181e', 'stroke-width': 2, 'paint-order': 'stroke',
       'font-family': 'system-ui,sans-serif', 'pointer-events': 'none',
     }, groups.hexIds).textContent = idS;
-  }
 }
 /* One marker per stronghold, and a stronghold belongs to a subhex — so a hex split by a major river
    can show a town on one bank and a keep on the other, each with its own name and each a port or not
