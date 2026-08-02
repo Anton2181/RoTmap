@@ -5014,6 +5014,28 @@ function hexMenu(h, pt, wp) {
         }
       });
     }
+    /* Extending the route you are already building, from the menu rather than by clicking the map.
+       A left-click does this too — but only while the map is listening for waypoints, and it is not
+       whenever the Isochrone panel is open, where every click moves an origin instead. Plotting a
+       march against ground an isochrone has just shaded meant leaving that panel, losing the
+       shading, and coming back; this is the same push, one menu away.
+
+       Nothing here changes the mode or the open panel, deliberately. The request is to add a
+       waypoint, not to be taken somewhere else — that is the whole reason the entry exists. */
+    if (act) {
+      const n = act.wps.length + 1;
+      const ord = n % 100 >= 11 && n % 100 <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] || 'th';
+      ctxItem(box, `Add waypoint here<span class="arw">${escHtml(act.name)} · ${n}${ord}</span>`, () => {
+        closeCtx();
+        if (!S.adj) deriveAdj();
+        pushUndoRoutes();
+        act.wps.push({ h, ri: pt ? regionAt(h, pt) : 0 });
+        // A route that begins on a hex a token stands on takes that token's colour, exactly as one
+        // begun by clicking the map does — this can be the first waypoint as well.
+        if (act.wps.length === 1) adoptTokenColor(act);
+        computeRoute();
+      });
+    }
     // Routing from a hex you are already looking at, without first switching mode and hunting for
     // the New route button. The waypoint lands on the subhex region under the cursor, exactly as a
     // left-click would place it, so starting on the sea side of a split hex still means the sea.
