@@ -125,9 +125,10 @@
           <option value="rumour">Rumour — 90 mi/day, straight line</option>
         </select></label>
         <div class="fields">
-          <label class="field"><span>Band (IRL days)</span><input type="number" id="isoBand" value="1" step="0.5" min="0.25"></label>
+          <label class="field" id="isoBandWrap"><span>Band (IRL days)</span><input type="number" id="isoBand" value="1" step="0.5" min="0.25"></label>
           <label class="field"><span>Max days</span><input type="number" id="isoMax" value="14" step="1" min="1"></label>
         </div>
+        <label class="chk" id="isoOptWrap" title="Orders are issued in whole days, so a march costing 3.2 days is paid for as 4 and the last 0.8 is thrown away. This shades every hex by how much of its final day it wastes, not by how far it is."><input type="checkbox" id="isoOpt"> Optimizer — shade by wasted day</label>
         <div class="btnrow">
           <button class="btn" type="button" id="isoPick">Set origin</button>
           <button class="btn" type="button" id="isoClear">Clear</button>

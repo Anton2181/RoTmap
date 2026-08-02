@@ -2239,29 +2239,88 @@ function isoColor(b, n) {
   return `hsl(${Math.round(130 - 130 * t)},75%,48%)`;
 }
 
+/* ---------------- optimizer: what the last day of an order buys ----------------
+   Orders are issued in whole days. A march the solver prices at 3.2 IRL days is paid for as 4, and
+   the remaining 0.8 of a day is simply thrown away — the column sits still, having already arrived.
+   Ordinary bands answer "how far can I get"; they cannot show that a hex two days out costs the same
+   order as one four hours further on, which is exactly the choice a player makes when picking where
+   to halt.
+
+   So the optimizer stops shading by distance and shades by *slack*: ceil(cost) − cost, the part of
+   the final day the march does not use. Green hexes sit just under a whole day — the order is spent
+   almost to the hour, and going any further would buy another whole day. Red hexes have just spilled
+   over a boundary, paying for a day they will barely touch. Both readings matter more than the raw
+   distance, and a red hex beside a green one is a standing invitation to push a little harder or
+   stop a little sooner. */
+const OPT_BUCKETS = 5;             // 0.2-day steps: fine enough to read, coarse enough to batch paths
+
+// The slack this cost throws away when billed in whole days. An exact whole number wastes nothing,
+// so the epsilon keeps 3.0 from being read as an order of 4 through float dust.
+function optWaste(d) {
+  const w = Math.ceil(d - 1e-9) - d;
+  return w > 0 ? w : 0;
+}
+function optDays(d) { return Math.max(0, Math.ceil(d - 1e-9)); }   // whole days actually paid for
+// Little waste green, nearly a whole day wasted red. Same ramp as the bands, darkened slightly along
+// the way so the two ends stay apart for a red-green eye as well as by hue.
+function optColor(b, n) {
+  const t = n <= 1 ? 0 : b / (n - 1);
+  return `hsl(${Math.round(130 - 130 * t)},72%,${Math.round(51 - 8 * t)}%)`;
+}
+// An army-mode idea only: a straight-line spread has no orders in it to round up.
+function isoOptimizing() {
+  return (document.getElementById('isoMode')?.value || 'army') === 'army'
+      && !!document.getElementById('isoOpt')?.checked;
+}
+
 function renderIso() {
   groups.iso.innerHTML = '';
   const lg = document.getElementById('isoLegend');
   lg.innerHTML = '';
   if (!S.iso.origin || !S.iso.data) return;
-  const band = +document.getElementById('isoBand').value || 1;
   const maxD = +document.getElementById('isoMax').value || 14;
-  const n = Math.max(1, Math.ceil(maxD / band));
+  const opt = isoOptimizing();
+  // Both modes shade the same way — bucket every hex, batch each bucket into one path — and differ
+  // only in what the bucket means and what the chip beside it should say.
+  const band = opt ? 1 : (+document.getElementById('isoBand').value || 1);
+  const n = opt ? OPT_BUCKETS : Math.max(1, Math.ceil(maxD / band));
+  const color = opt ? optColor : isoColor;
+  // The epsilon is not decoration: 4 − 3.2 lands a hair under 0.8 while 2 − 1.2 lands a hair over,
+  // so without it two costs that waste the same 0.8 of a day would be shaded differently. Nudging
+  // down puts every exact boundary in the kinder bucket, and the chip labels read that way too.
+  const bucket = opt ? d => Math.max(0, Math.min(n - 1, Math.floor(optWaste(d) * n - 1e-9)))
+                     : d => Math.min(n - 1, Math.floor(d / band));
+  const label = opt ? b => `${(b / n).toFixed(1)}–${((b + 1) / n).toFixed(1)} d`
+                    : b => `≤ ${((b + 1) * band).toFixed(band < 1 ? 1 : 0)} d`;
   const byBand = [];
   for (const [h, d] of S.iso.data) {
     if (d > maxD) continue;
-    const b = Math.min(n - 1, Math.floor(d / band));
+    const b = bucket(d);
     const [cx, cy] = hexCenter(h);
     byBand[b] = (byBand[b] || '') + hexPath(cx, cy);
   }
-  byBand.forEach((d, b) => { if (d) el('path', { d, fill: isoColor(b, n), stroke: 'none' }, groups.iso); });
+  byBand.forEach((d, b) => { if (d) el('path', { d, fill: color(b, n), stroke: 'none' }, groups.iso); });
   const [ox, oy] = nodePoint(S.iso.origin.h, S.iso.origin.ri | 0);
   el('circle', { cx: ox, cy: oy, r: 5.5, fill: '#fff', stroke: '#000', 'stroke-width': 1.6 }, groups.iso);
+  // Waste is not a distance, and five chips reading "0.4–0.6 d" would be taken for one if left
+  // unlabelled beside the band legend they replace.
+  if (opt) {
+    const cap = document.createElement('div');
+    cap.className = 'isocap';
+    cap.textContent = 'Day thrown away by rounding the order up:';
+    lg.appendChild(cap);
+  }
   for (let b = 0; b < n; b++) {
     const div = document.createElement('div');
     div.className = 'isochip';
-    div.innerHTML = `<span class="sw" style="background:${isoColor(b, n)}"></span>≤ ${((b + 1) * band).toFixed(band < 1 ? 1 : 0)} d`;
+    div.innerHTML = `<span class="sw" style="background:${color(b, n)}"></span>${label(b)}`;
     lg.appendChild(div);
+  }
+  if (opt) {
+    const foot = document.createElement('div');
+    foot.className = 'isocap dim';
+    foot.textContent = 'Green halts spend their last day almost to the hour; red ones have just bought a day they barely use.';
+    lg.appendChild(foot);
   }
 }
 
@@ -3135,7 +3194,14 @@ function onHover(e) {
     `${v.t}${isSh ? (isPort(h) ? ' · stronghold (coastal/port)' : ' · stronghold (inland)') : ''}` +
     `${v.r ? ' · river (sheet)' : ''}${v.d ? ' · road (sheet)' : ''}` +
     (v.g ? `<br><span class="rg">${v.g}</span>` : '') +   // the region it belongs to, from the sheet
-    (S.iso.data && S.iso.data.has(h) ? `<br>${S.iso.data.get(h).toFixed(1)} IRL d from origin` : '');
+    // With the optimizer shading, the true cost alone is the least interesting of the three numbers:
+    // what is being paid, and what of it is wasted, are the point.
+    (S.iso.data && S.iso.data.has(h)
+      ? `<br>${S.iso.data.get(h).toFixed(1)} IRL d from origin` +
+        (isoOptimizing()
+          ? ` · ${optDays(S.iso.data.get(h))} d order, ${optWaste(S.iso.data.get(h)).toFixed(2)} wasted`
+          : '')
+      : '');
   tooltip.hidden = false;
   const wr = svg.parentElement.getBoundingClientRect();
   tooltip.style.left = (e.clientX - wr.left + 14) + 'px';
@@ -3231,7 +3297,7 @@ document.getElementById('isoClear').onclick = () => {
   document.getElementById('isoPick').classList.remove('on');
   computeRoute();
 };
-for (const id of ['isoBand', 'isoMax', 'isoMode'])
+for (const id of ['isoBand', 'isoMax', 'isoMode', 'isoOpt'])
   document.getElementById(id).addEventListener('change', () => { updateIsoSettingsShown(); computeRoute(); });
 // No confirmation. It is one Ctrl+Z away from being back, and a modal that stops the work to ask
 // about something already undoable is friction pretending to be safety.
@@ -4327,6 +4393,17 @@ function updateIsoSettingsShown() {
   const note = document.getElementById('isoNotArmy');
   if (slot) slot.hidden = iso && !army;
   if (note) note.hidden = !(iso && !army);
+  // Nothing to round in a straight line, so the optimizer goes away with the column controls. And
+  // while it is on the colours no longer mean bands at all — the band box would be asking for an
+  // answer nothing reads, so it is dimmed rather than left looking live.
+  const optWrap = document.getElementById('isoOptWrap');
+  if (optWrap) optWrap.hidden = !army;
+  const bandWrap = document.getElementById('isoBandWrap');
+  if (bandWrap) {
+    const off = isoOptimizing();
+    bandWrap.classList.toggle('off', off);
+    bandWrap.title = off ? 'Not used while the optimizer is shading by wasted day.' : '';
+  }
 }
 
 /* ---------------- layers, as a panel over the map ---------------- */

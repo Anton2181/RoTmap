@@ -123,6 +123,9 @@ select { cursor: pointer; }
   border-radius: var(--r1); cursor: pointer; color: var(--ink);
 }
 .chk:hover { background: var(--bg-raise); }
+/* `display: flex` above out-specifies the UA's [hidden], so a hidden switch would otherwise stay on
+   screen. The optimizer box relies on this to leave with the column controls. */
+.chk[hidden] { display: none; }
 .chk input { flex: 0 0 auto; width: 15px; height: 15px; margin: 0; accent-color: var(--accent); }
 
 input[type=range] {
@@ -461,6 +464,14 @@ body.colsizing { cursor: col-resize; user-select: none; }
   color: var(--ink-2); font-size: var(--f1);
 }
 .isochip .sw { width: 11px; height: 11px; border-radius: 3px; }
+/* The optimizer legend needs a sentence around it: five swatches labelled in fractions of a day read
+   as bands if nothing says otherwise. */
+.isocap { color: var(--ink-2); font-size: var(--f1); margin: 2px 0 4px; }
+.isocap.dim { color: var(--ink-3); margin-top: 5px; line-height: 1.35; }
+/* A box whose answer nothing is currently reading. Dimmed rather than disabled — the value it holds
+   is still worth seeing, and it comes back the moment the optimizer is switched off. */
+.field.off { opacity: .45; }
+.field.off input { pointer-events: none; }
 
 /* Draw tools -------------------------------------------------------------- */
 .tools { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s2); }
