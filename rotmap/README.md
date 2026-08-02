@@ -75,6 +75,21 @@ that. River subhexes stay either way, since a bank is walkable ground that happe
 too. One consequence worth knowing: a siege origin placed on a *sea* subhex with no fleet gives an
 empty field, because nothing can reach it inside any budget shorter than the securing month.
 
+**Whether a subhex reaches a hex edge** is decided by sampling that edge — and the sampling used to
+lie. Each sample was nudged 0.18 of the way to the hex centre before being tested, which on a 29px
+edge is four and a half pixels: not a test of the boundary at all, but of a line well inside the hex,
+and a coastline crossing at an angle has moved a long way by then. Only five samples were taken, and
+those bunched between 12% and 88%, so a region reaching the edge near a corner was missed outright.
+Two bays that plainly met along 40% of their shared edge came back as not touching, and a fleet in
+one had to put ashore and launch again — a whole wasted day — to reach water it was already looking
+at. An edge is now read exactly as the land-meeting table reads one: 32 samples across its full
+length, `regionAtEdge`'s own small inset, and the same 3-sample threshold, because one sample is an
+artifact and a run of them is a shore. Across the whole map that reconnects 278 region pairs and
+disconnects 105 — and the disconnected ones hold 0–6% of their edge, several of them literally none,
+which is to say they were never touching and the deep probe had been reporting a neighbour it found
+inside the hex. Memoised per hex, region and neighbour, so the extra samples cost nothing after the
+first pass; `deriveAdj` clears the cache when the ground changes shape.
+
 The area outlines are drawn the way the region selection is: the whole shape is stroked and then
 masked by everything inside it, which hides the inner half of every line and, with it, every line
 between two pieces the same area holds. What survives is the silhouette, holes and coastlines
@@ -82,32 +97,32 @@ included, without computing a union of several hundred polygons. The origin-list
 whole hexes — a hex cut in two is still one place on the map, and counting it twice would flatter
 whoever happened to hold a shore.
 
-## Relieving a siege
+## The relief army
 
-The Isochrone panel's fourth spread, **Siege relief**, turns the usual question inside out. An
+The Isochrone panel's fourth spread, **Relief army**, turns the usual question inside out. An
 ordinary isochrone asks how far a force can get; this one asks what a defender actually needs to know:
-*how far away can I station this force and still have it arrive in time*. The origin is the hex
-**being besieged**, and every shaded hex is somewhere you could quarter troops, shaded by how many
-days they would take to get back — word of the siege travelling out to them as the crow flies
+*how far away can I station this force and still have it arrive in time*. The origin is wherever it is
+happening — a siege, a battle, a landing — and every shaded hex is somewhere you could quarter troops,
+shaded by how many days they would take to get there: news travelling out to them as the crow flies
 (rumour, 90 mi a day, or a courier at 240), and then the column marching in over the roads.
 
 Each leg is billed in **whole days, and separately**, then added. Orders are issued in whole days,
 and these are two orders rather than one — the news lands during a day and the column sets out on
 the next — so a rumour that takes three hours and a march that takes six still cost two days between
-them, and no hex but the besieged one can come in under two. The default budget is **4 days**;
+them, and no hex but the origin's own can come in under two. The default budget is **4 days**;
 hovering a hex breaks the total back out into its two legs, with the unrounded figures in brackets,
 because which leg is eating the budget is what you can do something about. A hex held back by the
 march wants a road; one held back by the news wants a courier posted, not a garrison moved.
 
 The march is costed **inward**, in the direction it is actually made, which is not the same
 calculation as the outward one every other mode does. A hex is paid for by the step that enters it,
-so a march solved outward from the siege never pays for the besieged hex — and on a fortress in the
-mountains that is a whole day at half pace, unpaid, on precisely the ground fortresses stand on. So
+so a march solved outward from the origin never pays for the hex it is aimed at — and on a fortress
+in the mountains that is a whole day at half pace, unpaid, on precisely the ground fortresses stand on. So
 this mode runs the movement graph backwards, recovering each node's incoming moves from its possible
 predecessors and expanding each hex at most once, which keeps the work in proportion to the area
 covered rather than to the map.
 
-Several origins are several sieges, and a hex goes to whichever one it can save soonest; the tooltip
+Several origins are several emergencies, and a hex goes to whichever one it can reach soonest; the tooltip
 names the other and says how much later it would arrive, since a hex that covers two sieges is
 usually the hex you want. How long you really have is a judgement the map cannot make for you — but
 the walls falling is not the end of it, since taking a stronghold in hand costs the besieger 5

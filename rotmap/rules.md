@@ -70,19 +70,19 @@ Light infantry detachments move at normal (road) speed off-road and ignore the m
 - Scouting: own + adjacent hex (light cav +1–2); −1 hex bad weather, −2 very bad.
 - Wagons off-road: allowed, growing breakdown chance the longer off-road.
 
-## Relieving a siege
+## The relief army
 
-The isochrone's **Siege relief** spread answers where a force has to be stationed to save a place
-that is being besieged. It is two journeys in opposite directions, not one:
+The isochrone's **Relief army** spread answers where a force has to be stationed to reach trouble in
+time — a siege, a battle, a landing. It is two journeys in opposite directions, not one:
 
-- **x** — word of the siege reaching the force, as the crow flies, at rumour (90 mi/IRL day) or
+- **x** — news of it reaching the force, as the crow flies, at rumour (90 mi/IRL day) or
   courier (240) speed.
 - **y** — the force marching from where it stands *back to* the besieged hex, pathfound under its
   own column and the weather.
 
 Each leg is billed in **whole IRL days and separately**, then added: orders are issued in whole days,
 and these are two orders — news lands during a day, and the column forms up and sets out on the next.
-So the smallest possible answer for any hex but the besieged one is 2 days, and half a day of riding
+So the smallest possible answer for any hex but the origin's own is 2 days, and half a day of riding
 plus half a day of marching is 2, not 1.
 
 The march is costed **inward**. This matters: a hex is paid for by the step that enters it, so a

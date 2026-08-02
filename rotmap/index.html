@@ -100,8 +100,9 @@
           route there, or to remove the last waypoint from this one; right-click a hex the route stops
           in to remove that waypoint, wherever it sits in the route. <b>Remove last</b> does the same
           for touchscreens, where there is no right button. <b>Ctrl+Z</b> undoes. Click a route's
-          swatch to recolour it, double-click its name to rename; its <b>⋯</b> menu (or a right-click on
-          the row) will duplicate it, empty it of waypoints, or copy its march and its column to the
+          swatch to recolour it, double-click its name to rename; its <b>⋯</b> menu — or a right-click
+          on the row, or on the <b>title bar of the breakdown card</b>, which describes the same route
+          — will duplicate it, empty it of waypoints, or copy its march and its column to the
           clipboard as text you can keep and paste back. A route that sets out from a hex a
           <b>token</b> is standing on takes that token's colour, so a legion's march is drawn in the
           legion's own colour. In the readout, <b>right-click a
@@ -125,9 +126,9 @@
           <option value="army">Army travel — pathfinding</option>
           <option value="message">Message — 240 mi/day, straight line</option>
           <option value="rumour">Rumour — 90 mi/day, straight line</option>
-          <option value="relief">Siege relief — news spread and army travel</option>
+          <option value="relief">Relief army — news spread and army travel</option>
         </select></label>
-        <label class="field" id="isoNewsWrap" hidden title="How word of the siege gets out. Either way it travels as the crow flies; the march back is pathfound."><span>Word of the siege travels by</span><select id="isoNews">
+        <label class="field" id="isoNewsWrap" hidden title="How word of it gets out — a siege, a battle, a landing, whatever is happening at the origin. Either way the news travels as the crow flies; the march back is pathfound."><span>News travels by</span><select id="isoNews">
           <option value="rumour">Rumour — 90 mi/day</option>
           <option value="message">Message — 240 mi/day</option>
         </select></label>
@@ -174,37 +175,43 @@
       </div>
 
       <!-- Shown only in relief mode, where the origin means something quite different from the
-           other three: it is the place being besieged, not the force setting out. -->
+           other three: it is where the trouble is, not the force setting out. -->
       <div class="group" id="isoReliefNote" hidden>
-        <p class="hint">The origin is the <b>hex under siege</b>; what is shaded is where you could
-        station a force and still have it arrive in time.</p>
+        <p class="hint">The origin is <b>where it is happening</b> — a siege, a battle, a landing;
+        what is shaded is where you could station a force and still have it arrive in time.</p>
         <details class="hint">
-          <summary>How siege relief works</summary>
-          Two journeys in opposite directions, not one. Word of the siege reaches the force as the
-          crow flies, at the speed set above; then the column marches back over the roads, under the
-          column and conditions set below. A hex is shaded by the <b>total</b> — a 1-day rumour and a
-          3-day march is a 4 — and hovering it breaks that back out into its two legs, with the
-          unrounded figures in brackets, since which leg is eating the budget is what you can do
-          something about. A hex held back by the march wants a road; one held back by the news wants
-          a courier posted rather than a garrison moved.
+          <summary>How a relief army works</summary>
+          The place to be relieved is the <b>subhex</b> the origin stands on, taken exactly as placed
+          — on a hex a coast or a major river has cut up, that is the half you clicked, water
+          included, and the tooltip's header names which. Relief is then costed to <i>that</i> piece
+          of ground: a force can be a hex away and still pay a day to reach a bay its ships cannot
+          enter from where they are.
+          <p>Two journeys in opposite directions, not one. News of it reaches the force as the crow
+          flies, at the speed set above; then the column marches back over the roads, under the column
+          and conditions set below. A hex is shaded by the <b>total</b> — a 1-day rumour and a 3-day
+          march is a 4 — and hovering it breaks that back out into its two legs, with the unrounded
+          figures in brackets, since which leg is eating the budget is what you can do something
+          about. A hex held back by the march wants a road; one held back by the news wants a courier
+          posted rather than a garrison moved.</p>
           <p><b>Each leg is billed in whole days, and then they are added.</b> Word arriving in the
           afternoon still costs that day, and the column forms up and sets out on the next one; so
           half a day of riding and half a day of marching are two days here, not one, and nothing but
-          the besieged hex itself can come in under two.</p>
+          the origin's own hex can come in under two.</p>
           <p>The march is costed <b>inwards</b>, in the direction it is actually made. A hex is paid
           for by the step that enters it, so relieving a fortress in the mountains pays the mountain
-          on the way in — a march solved outward from the siege would never pay it at all — and the
+          on the way in — a march solved outward from the origin would never pay it at all — and the
           force sets out under the column of the hex it is standing in.</p>
         </details>
         <details class="hint"><summary>How long you actually have</summary>
-        <p>The clock does not stop when the walls do. Taking a stronghold in hand after it falls costs
-        <b>5 in-game days</b> for a fortress — <b>1 IRL day</b> — while a town takes <b>1d6 × 5</b>
-        (1–6 IRL days, 3½ on average) and a city <b>2d6 × 5</b> (2–12 IRL days, 7 on average). Add
-        however long you expect the place to hold out before that, and you have the real budget: a
-        force that arrives while the enemy is still counting the grain has not arrived late.</p>
-        <p>The <b>4 days</b> this opens on is a working default, not a rule. Set it to whatever the
-        siege in front of you is worth, and remember that a town's 1d6 is a gamble you are making
-        before the roll — 4 covers a town two times in three.</p>
+        <p>For a siege, the clock does not stop when the walls do. Taking a stronghold in hand after
+        it falls costs <b>5 in-game days</b> for a fortress — <b>1 IRL day</b> — while a town takes
+        <b>1d6 × 5</b> (1–6 IRL days, 3½ on average) and a city <b>2d6 × 5</b> (2–12 IRL days, 7 on
+        average). Add however long you expect the place to hold out before that, and you have the real
+        budget: a force that arrives while the enemy is still counting the grain has not arrived late.</p>
+        <p>For a battle it is whatever you judge the line can hold for, which the map cannot tell you.
+        The <b>4 days</b> this opens on is a working default, not a rule — set it to whatever the
+        thing in front of you is worth, and remember that a town's 1d6 is a gamble you are making
+        before the roll: 4 covers a town two times in three.</p>
         </details>
       </div>
     </section>

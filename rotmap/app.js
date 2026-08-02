@@ -1191,6 +1191,9 @@ function snapToEdge(x, y, hex) {
 
 /* ---------------- derived movement data ---------------- */
 function deriveAdj() {
+  // Both edge caches are answers about the shape of the ground, and the ground is about to be
+  // re-derived. The point sampling only depends on the grid, but it costs nothing to drop.
+  edgePtsCache = new Map(); edgeReachCache = new Map();
   const roads = new Set(), ferry = new Set();
   const tradeByHex = new Map();
   const riverByHex = new Map();
@@ -1687,11 +1690,38 @@ const endPoint = (h, ri) => strongholdPoint(h, ri) || nodePoint(h, ri);
 const isSplit = h => { const s = S.adj.sub.get(h); return !!(s && s.regions.length > 1); };
 // Does region ri of h occupy the shared edge with hex n (so movement can cross there)?
 // edgePts may be null when neither hex is coast-split (a whole region always spans the edge).
+/* Does region (h, ri) actually reach the edge this hex shares with a neighbour? Sampled along that
+   edge, because a region is a traced outline and the question is really whether the water — or the
+   ground — comes right up to the boundary.
+
+   Each sample has to be nudged a little inside the hex before it is tested, since a point exactly on
+   the boundary is ambiguous. That nudge used to be 0.18 of the way to the hex centre: four and a half
+   pixels of a twenty-nine pixel edge, which does not test the boundary at all but a line well inside
+   the hex — and a coastline crossing at an angle has moved a long way by then. Two bays that plainly
+   met along forty per cent of their shared edge came back as not touching, so a fleet in one had to
+   put ashore and launch again, a whole day, to reach water it was already looking at. Sampling only
+   five points, bunched between 12% and 88%, made it worse: a region reaching the edge near a corner
+   was missed outright.
+
+   So an edge is now read exactly as the land-meeting table reads one — the same count of samples
+   across its whole length, the same threshold, and regionAtEdge's own small inset — and for the same
+   reason it gives: a single sample is an artifact, a run of them is a shore. Memoised per hex,
+   region and neighbour, which is what pays for the extra samples; deriveAdj clears it whenever the
+   ground changes shape. */
+const EDGE_N = 32, EDGE_MIN = 3;
+let edgePtsCache = new Map(), edgeReachCache = new Map();
 function regionOnEdge(h, ri, edgePts) {
   const r = region(h, ri); if (!r) return false;
   if (r.whole || !edgePts) return true;
+  const ck = h + ':' + (ri | 0) + ':' + edgePts.key;
+  const had = edgeReachCache.get(ck);
+  if (had !== undefined) return had;
   const [cx, cy] = hexCenter(h);
-  return edgePts.some(m => pointInPoly([m[0] + (cx - m[0]) * 0.18, m[1] + (cy - m[1]) * 0.18], r.poly));
+  let n = 0;
+  for (const m of edgePts) if (regionAtEdge(h, m, cx, cy) === (ri | 0) && ++n >= EDGE_MIN) break;
+  const ans = n >= EDGE_MIN;
+  edgeReachCache.set(ck, ans);
+  return ans;
 }
 // Do regions (h,ri) and (n,rj) actually meet — over a real stretch of the edge they share? That each
 // of them touches that edge *somewhere* is not enough: where a major river crosses the edge, both
@@ -1716,10 +1746,21 @@ function sharedEdgeCorners(a, b) {
   const [bx, by] = hexCenter(b);
   return c.map((p, i) => [Math.hypot(p[0] - bx, p[1] - by), i]).sort((u, v) => u[0] - v[0]).slice(0, 2).map(x => c[x[1]]);
 }
-// Points sampled along the shared edge between adjacent hexes a and b.
+// Points sampled along the whole shared edge between adjacent hexes a and b — cell centres rather
+// than a hand-picked few, so nothing is favoured and the ends are covered as well as the middle. The
+// same geometry every time for a given pair, so it is worked out once; the array carries the pair's
+// name for the benefit of the reach cache above.
 function sharedEdgePts(a, b) {
+  const k = a + '|' + b;
+  const had = edgePtsCache.get(k);
+  if (had) return had;
   const [c1, c2] = sharedEdgeCorners(a, b), out = [];
-  for (const t of [0.12, 0.3, 0.5, 0.7, 0.88]) out.push([c1[0] + (c2[0] - c1[0]) * t, c1[1] + (c2[1] - c1[1]) * t]);
+  for (let i = 0; i < EDGE_N; i++) {
+    const t = (i + 0.5) / EDGE_N;
+    out.push([c1[0] + (c2[0] - c1[0]) * t, c1[1] + (c2[1] - c1[1]) * t]);
+  }
+  out.key = k;
+  edgePtsCache.set(k, out);
   return out;
 }
 // Where the march from a to b meets a drawn major river, or null if it never does. This is the spot
@@ -3128,7 +3169,7 @@ function renderIso() {
   if (opt || relief) {
     const cap = document.createElement('div');
     cap.className = 'isocap';
-    cap.textContent = relief ? 'Days from the siege beginning to relief arriving — word out, then march back:'
+    cap.textContent = relief ? 'Days from the news dropping to the relief arriving — word out, then the march back:'
                              : 'Day thrown away by rounding the order up:';
     lg.appendChild(cap);
   }
@@ -4272,9 +4313,9 @@ function isoTip(h, ri) {
   // billing came to costing a day it never used.
   const p = isoRelief() ? S.iso.parts?.[i]?.get(key) : null;
   if (p) {
-    let r = `<br>${d} IRL d to relieve ${many ? escHtml(og?.name || 'the siege') : 'the siege'}` +
-            `<br><span class="rg">word ${p.newsD} d (${p.news.toFixed(1)}) + march ${p.marchD} d (${p.march.toFixed(1)})</span>`;
-    // With several sieges on the map a hex belongs to the one it can save soonest — but a hex that
+    let r = `<br>${d} IRL d ${many ? 'to relieve ' + escHtml(og?.name || 'it') : 'for relief to arrive'}` +
+            `<br><span class="rg">news ${p.newsD} d (${p.news.toFixed(1)}) + march ${p.marchD} d (${p.march.toFixed(1)})</span>`;
+    // With several origins on the map a hex belongs to the one it can relieve soonest — but a hex that
     // covers two of them is the one you actually want, so say what else it reaches and at what price.
     if (many) {
       const up = isoRunnerUp(key);
@@ -4436,7 +4477,7 @@ document.getElementById('isoPick').onclick = () => {
 document.getElementById('isoAdd').onclick = addIsoOrigin;
 document.getElementById('isoClear').onclick = clearAllIsoOrigins;
 /* One box, two questions. "Max days" in the spread modes is how far out to bother looking, and seven
-   is a comfortable answer; in relief mode the same box is the budget a siege gives you, and four is
+   is a comfortable answer; in relief mode the same box is the budget the event gives you, and four is
    the working figure. Carrying one number between them would mean a mode switch silently answering
    a question you didn't ask — so each mode keeps its own, and keeps whatever you last set it to. */
 const ISO_MAX_DEFAULT = { army: 7, message: 7, rumour: 7, relief: 4 };
@@ -5626,6 +5667,10 @@ function makeDraggable(el, handle, onDrop) {
   let drag = null;
   handle.addEventListener('pointerdown', e => {
     if (e.target.closest('button')) return;    // the close button is not a handle
+    // Only the primary button drags. The right one is asking for a menu, and letting it take the
+    // pointer capture as well left the surface stuck to the cursor behind whatever menu opened.
+    // Touch and pen report button 0 for their primary contact, so nothing is lost by the test.
+    if (e.button !== 0) return;
     const r = el.getBoundingClientRect();
     drag = { dx: e.clientX - r.left, dy: e.clientY - r.top };
     el.classList.add('dragging');
@@ -5688,7 +5733,7 @@ function updateIsoSettingsShown() {
   // "Max days" is a limit on how far to look; in relief mode the same box is the budget itself —
   // the whole question, not a bound on the answer — and calling it the same thing hides that.
   const maxLbl = document.getElementById('isoMaxLbl');
-  if (maxLbl) maxLbl.textContent = relief ? 'Days to relieve' : 'Max days';
+  if (maxLbl) maxLbl.textContent = relief ? 'Days to arrive' : 'Max days';
   // Nothing to round in a straight line, so the optimizer goes away with the column controls. And
   // while it is on the colours no longer mean bands at all — the band box would be asking for an
   // answer nothing reads, so it is dimmed rather than left looking live.
@@ -5825,7 +5870,19 @@ function renderRouteButtons(results) {
   });
 }
 
-makeDraggable(routeCard, document.getElementById('routeCardHead'), () => rememberCard());
+const routeCardHead = document.getElementById('routeCardHead');
+makeDraggable(routeCard, routeCardHead, () => rememberCard());
+/* The card is a view of one route, so its head is that route's handle in every sense: the left button
+   moves the card, the right one asks about the route. It raises the same menu the ⋯ on the route's row
+   raises, because it is the same question about the same thing — and until now the only way to
+   duplicate, rename or copy the route you were actually reading was to leave it, go back to the
+   Routes panel, and find its row again. The head always describes S.activeRoute, so there is no
+   ambiguity about which route is meant. */
+routeCardHead.addEventListener('contextmenu', e => {
+  e.preventDefault();
+  e.stopPropagation();
+  if (S.routes[S.activeRoute]) openRouteMenu(S.activeRoute, e.clientX, e.clientY);
+});
 function rememberCard() {
   if (routeCard.hidden) return;          // a hidden element measures zero; never save that
   const r = routeCard.getBoundingClientRect();
