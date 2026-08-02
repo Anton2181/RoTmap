@@ -394,24 +394,34 @@ function hexPath(cx, cy) {
     d += (i ? 'L' : 'M') + (cx + CORN[i][0]).toFixed(1) + ' ' + (cy + CORN[i][1]).toFixed(1);
   return d + 'Z';
 }
-/* Two paths that share an edge do not quite meet. Each is rasterised on its own, each covers about
+/* ---------------- on the hairlines between abutting fills ----------------
+   Two paths that share an edge do not quite meet. Each is rasterised on its own, each covers about
    half the pixels along the join, and a half-covered pixel laid over a half-covered pixel comes out
-   at three quarters rather than whole — so a hairline of whatever is behind shows between them. The
-   hex grid used to hide it, since that strokes every hex outline; with the grid off and the map
-   zoomed out far enough for those hairlines to be dense, they read as a shimmer of a grid that isn't
+   at three quarters rather than whole — so a hairline of whatever is *behind* shows between them.
+   The hex grid used to hide it, since that strokes every hex outline; with the grid off and the map
+   zoomed out far enough for the hairlines to be dense, they read as a shimmer of a grid that is not
    there.
 
-   The geometry is not at fault and there is nothing to close up: every one of the 24,834 shared
-   corners on this map rounds to the same coordinate from both sides. What is wanted is for each patch
-   to reach a little past its own edge — and the reach has to be in *screen* pixels rather than map
-   ones. The seam is one pixel wide however far out you are zoomed, while a stroke measured in map
-   units shrinks away to nothing at exactly the zoom where the problem shows. Hence
-   `non-scaling-stroke`, and the stroke in the fill's own colour, so all it does is close the gap.
+   The geometry is not at fault: every one of the 24,834 shared corners on this map rounds to the
+   same coordinate from both sides. So this was first fixed by having each patch bleed half a screen
+   pixel past its own edge — right in principle, and far too expensive in practice. A
+   `non-scaling-stroke` is the one kind of paint that cannot be cached: its outline is a function of
+   the current transform, so twenty-five thousand hexagon edges had to be re-stroked on every frame
+   of every pan and every zoom.
 
-   Only the layers that tile the whole map need this. The coast fills are painted over terrain that
-   has already been closed up, so a seam at their edge shows the terrain beneath rather than the
-   background — near enough their own colour to disappear. */
-const SEAM_BLEED = { 'stroke-width': 1, 'vector-effect': 'non-scaling-stroke', 'stroke-linejoin': 'round' };
+   What is cheap is putting the right colour *behind* the seam, since a hairline is only visible when
+   what shows through differs from what is in front of it. That costs nothing per frame, because it
+   is only ever geometry, decided once:
+
+     · the basemap paints every hex whole in the land colour and then paints the water over the top.
+       One path laid under another cannot leave a gap between them, so the longest boundaries on the
+       map — every coastline — have no seam to show at all.
+     · the terrain sits on that basemap, so where two of its colours meet the hairline shows the land
+       or the sea beneath rather than the page: green under green, blue under blue.
+
+   Nothing is stroked. What is left is a faint line where two *different land* terrains meet and
+   neither of them is Flatlands — a hills-and-mountains border, seen against the green underneath —
+   which is a great deal less than a black lattice over the whole map, and free. */
 
 function renderTerrain() {
   groups.terrain.innerHTML = ''; groups.grid.innerHTML = '';
@@ -429,7 +439,7 @@ function renderTerrain() {
   }
   for (const t in byT) {
     const c = TERRAIN_COLORS[t] || '#666';
-    el('path', { d: byT[t], fill: c, stroke: c, ...SEAM_BLEED }, groups.terrain);
+    el('path', { d: byT[t], fill: c, stroke: 'none' }, groups.terrain);
   }
   if (rivers && groups.sheetRivers)
     el('path', { d: rivers, fill: '#2f62c9', 'fill-opacity': 0.45, stroke: '#2f62c9', 'stroke-width': 1 }, groups.sheetRivers);
@@ -753,34 +763,55 @@ function coastSubcells() {
    an isochrone would otherwise be coloured shapes floating in a black field, and a shape without a
    shore beside it says nothing about where it is.
 
-   Split at subhex resolution like everything else, so a bay bitten out of a shore hex is water here
-   too. A hex nothing has cut is one shape, taken from the datasheet's own terrain: a bank of a major
-   river is land on both sides, so only a coastline can make a difference to this. Two batched paths
-   for the whole map — 4,000 hexes for two SVG nodes. */
+   Water is at subhex resolution like everything else, so a bay bitten out of a shore hex is water
+   here too. A hex nothing has cut is one shape, taken from the datasheet's own terrain: a bank of a
+   major river is land on both sides, so only a coastline makes a difference to this.
+
+   It is built in layers laid completely over one another rather than tiled edge to edge, which is
+   what makes it seam-free: two paths that tile a surface between them leave a hairline everywhere
+   they meet — here, every coastline on the map — while a path laid wholly over another cannot.
+
+   The land is therefore one **rectangle** over the whole map, not four thousand hexagons. Under the
+   water and under the off-map filler it is never seen, and where it *is* seen it is a single flat
+   colour, so the hexagons were twenty-five thousand edges to rasterise on every frame for a result
+   one rect gives exactly. The water goes over it, then the off-map filler over that. This is also
+   the solid backdrop the terrain above needs, which is what keeps *its* seams from showing the page
+   — so it has to stay drawn even when Terrain is covering all of it. All the more reason for it to
+   be cheap. */
 function renderBase(sub = coastSubcells()) {
   const g = groups.base;
   if (!g) return;
   g.innerHTML = '';
-  let land = '', sea = '';
+  let sea = '', off = '';
+  /* The rect spans the hex *centres*, which is the largest rectangle that fits inside the grid. A
+     hex grid does not fill its own bounding box — the rows are staggered and the hexagons are
+     pointed, so the outline is a sawtooth — and a rect drawn to that box hangs out past the map in
+     every notch, which showed as a green fringe all round the edge. Between two neighbouring centres
+     in a row the hexagons meet exactly, so the centre-to-centre rectangle is covered everywhere.
+
+     What it gives up is backing for the outer half-ring of hexes, whose seams can show the page. That
+     ring is ocean and off-map filler nearly all the way round, both of which are painted here as
+     whole shapes rather than relying on the backdrop, so there is next to nothing left to see. */
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (const idS in S.hexes) {
     const h = +idS, t = S.hexes[idS].t;
-    if (t === 'N/A') continue;                       // off-map filler, not anywhere at all
+    const [cx, cy] = hexCenter(h);
+    x0 = Math.min(x0, cx); x1 = Math.max(x1, cx);
+    y0 = Math.min(y0, cy); y1 = Math.max(y1, cy);
+    if (t === 'N/A') { off += hexPath(cx, cy); continue; }   // not anywhere at all, and drawn as such
     const cells = sub.get(h);
     if (cells?.regions.length) {
-      for (const r of cells.regions) {
-        const d = regionShape(h, r);
-        if (r.sea && !r.river) sea += d; else land += d;
-      }
-    } else {
-      const [cx, cy] = hexCenter(h);
-      if (RULES.WATER.has(t)) sea += hexPath(cx, cy); else land += hexPath(cx, cy);
-    }
+      for (const r of cells.regions) if (r.sea && !r.river) sea += regionShape(h, r);
+    } else if (RULES.WATER.has(t)) sea += hexPath(cx, cy);
   }
-  // Bled like the terrain above it, and for the same reason: two paths tiling the whole map between
-  // them leave a hairline everywhere they meet, which here is every coastline.
-  const L = TERRAIN_COLORS.Flatlands, W = TERRAIN_COLORS.Ocean;
-  if (land) el('path', { d: land, fill: L, stroke: L, 'fill-rule': 'evenodd', ...SEAM_BLEED }, g);
-  if (sea)  el('path', { d: sea,  fill: W, stroke: W, 'fill-rule': 'evenodd', ...SEAM_BLEED }, g);
+  // Rounded inwards, so rounding cannot push an edge back out into a notch.
+  if (x0 < x1) {
+    const rx = Math.ceil(x0), ry = Math.ceil(y0);
+    el('rect', { x: rx, y: ry, width: Math.floor(x1) - rx, height: Math.floor(y1) - ry,
+                 fill: TERRAIN_COLORS.Flatlands, stroke: 'none' }, g);
+  }
+  if (sea) el('path', { d: sea, fill: TERRAIN_COLORS.Ocean, 'fill-rule': 'evenodd', stroke: 'none' }, g);
+  if (off) el('path', { d: off, fill: TERRAIN_COLORS['N/A'], stroke: 'none' }, g);
 }
 function renderCoasts(sub = coastSubcells()) {
   groups.coast.innerHTML = ''; groups.coastSea.innerHTML = '';
