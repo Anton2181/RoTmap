@@ -3003,6 +3003,18 @@ function removeIsoOrigin(i) {
   if (S.iso.active >= S.iso.origins.length) S.iso.active = S.iso.origins.length - 1;
   computeRoute();
 }
+// Emptying the panel, reachable from the panel's own button and from the map's right-click menu, so
+// the two can never drift apart. No confirmation, for the reason clearAllRoutes gives: it is one
+// Ctrl+Z from being back, and a modal that stops the work to ask about something already undoable is
+// friction pretending to be safety.
+function clearAllIsoOrigins() {
+  if (!S.iso.origins.length) return;
+  pushUndoRoutes();
+  S.iso.origins = []; S.iso.active = -1; S.iso.origin = null;
+  S.iso.data = []; S.iso.parts = []; S.iso.own = null; S.iso.best = null; S.isoPick = false;
+  document.getElementById('isoPick').classList.remove('on');
+  computeRoute();
+}
 function addIsoOrigin() {
   migrateIso();
   pushUndoRoutes();
@@ -4422,14 +4434,7 @@ document.getElementById('isoPick').onclick = () => {
   if (S.isoPick) closeSheet();
 };
 document.getElementById('isoAdd').onclick = addIsoOrigin;
-document.getElementById('isoClear').onclick = () => {
-  if (!S.iso.origins.length) return;
-  pushUndoRoutes();
-  S.iso.origins = []; S.iso.active = -1; S.iso.origin = null;
-  S.iso.data = []; S.iso.parts = []; S.iso.own = null; S.iso.best = null; S.isoPick = false;
-  document.getElementById('isoPick').classList.remove('on');
-  computeRoute();
-};
+document.getElementById('isoClear').onclick = clearAllIsoOrigins;
 /* One box, two questions. "Max days" in the spread modes is how far out to bother looking, and seven
    is a comfortable answer; in relief mode the same box is the budget a siege gives you, and four is
    the working figure. Carrying one number between them would mean a mode switch silently answering
@@ -4859,6 +4864,55 @@ function markMenu(h) {
 function hexMenu(h, pt, wp) {
   return box => {
     ctxHead(box, hexTitle(h));
+    /* Origins, while the Isochrone panel is the open one. A left-click on the map already moves the
+       selected origin, which is the fast path and the one worth keeping — but it is the *only* path,
+       so making a second origin, or getting rid of one, meant leaving the map for the panel. These
+       are the same three things the origin list offers, put where you are already pointing.
+
+       They go above the route entries rather than instead of them: which panel is open says what you
+       are most likely to want, not what you are allowed to want, and a route you were building does
+       not stop existing because you opened another panel. */
+    if (UI.pane === 'iso') {
+      migrateIso();
+      const ri = pt ? regionAt(h, pt) : 0;
+      // The origin standing on the subhex under the cursor, or failing that any origin in this hex —
+      // a marker half a hex away is still the one you meant, and the entry says which half it is on.
+      let at = S.iso.origins.findIndex(og => og.h === h && (og.ri | 0) === ri);
+      const exact = at >= 0;
+      if (!exact) at = S.iso.origins.findIndex(og => og.h === h);
+      const sel = activeIsoOrigin();
+      let any = false;
+      if (at >= 0) {
+        const og = S.iso.origins[at];
+        const where = !exact && isSplit(h) ? ' · other subhex' : '';
+        ctxItem(box, `Remove origin<span class="arw">${escHtml(og.name)}${where}</span>`,
+                () => { closeCtx(); removeIsoOrigin(at); });
+        any = true;
+      }
+      // Moving the selected one is what a left-click does; it earns a row only when that would
+      // actually change something, which it would not if the selected origin is already standing here.
+      if (sel && sel.h !== h && at !== S.iso.active) {
+        ctxItem(box, `Move here<span class="arw">${escHtml(sel.name)}</span>`, () => {
+          closeCtx();
+          placeIsoOrigin(h, ri);
+          document.getElementById('isoPick').classList.remove('on');
+          computeRoute();
+        });
+        any = true;
+      }
+      ctxItem(box, `New origin here<span class="arw">${escHtml(freeIsoName())}</span>`, () => {
+        closeCtx();
+        pushUndoRoutes();
+        S.iso.origins.push(newIsoOrigin(h, ri));
+        S.iso.active = S.iso.origins.length - 1;
+        computeRoute();
+      });
+      any = true;
+      if (S.iso.origins.length)
+        ctxItem(box, `Clear all origins<span class="arw">${S.iso.origins.length}</span>`,
+                () => { closeCtx(); clearAllIsoOrigins(); }, 'danger');
+      if (any) ctxSep(box);
+    }
     // A hex a route stops in means that waypoint, not the end of the route: offer to take that one
     // off, and say which it is, since a middle waypoint disappearing is otherwise a surprise.
     const act = S.routes[S.activeRoute];

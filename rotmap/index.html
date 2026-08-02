@@ -143,39 +143,59 @@
         </div>
         <div id="isoList"></div>
         <div id="isoLegend"></div>
-        <p class="hint">While this panel is open, <b>clicking the map moves the selected origin</b> — no
-        waypoints are placed. Elsewhere, <b>Shift</b>+click does the same. With more than one origin
-        each area is <b>outlined in its own colour</b>, and contested ground goes to whichever origin
-        reaches it in fewer days. Each origin marches under <b>its own column</b>, set below.</p>
-        <p class="hint">Shading is by <b>subhex</b>, not by hex: where a coast or a major river has cut
-        a hex in two, each half is asked separately and only the half that can actually be reached is
-        shaded. A bay a fleet can enter no longer lights up the shore an army can't march to.</p>
+        <details class="hint">
+          <summary>How the isochrone works</summary>
+          While this panel is open, <b>clicking the map moves the selected origin</b> — no waypoints
+          are placed. Elsewhere, <b>Shift</b>+click does the same. <b>Right-click</b> a hex to make a
+          new origin there, move the selected one, remove the one standing on it, or clear the lot —
+          the same three things this list offers, put where you are already pointing. With more than one origin each area
+          is <b>outlined in its own colour</b>, and contested ground goes to whichever origin reaches
+          it in fewer days; hovering a hex names the runner-up and says by how much it lost. Click an
+          origin's swatch to recolour it, double-click its name to rename; its <b>⋯</b> menu (or a
+          right-click on the row) will move it, duplicate it, or copy and paste its column. Each
+          origin marches under <b>its own column</b>, set below — so the line between two of them
+          moves if you change either force.
+          <p>Shading is by <b>subhex</b>, not by hex: where a coast or a major river has cut a hex in
+          two, each half is asked separately and only the half that can actually be reached is shaded.
+          A bay a fleet can enter no longer lights up the shore an army can't march to. With
+          <b>Start as fleet</b> off, water is left out of the shading altogether — a fleetless column
+          has no billet at sea — though it may still secure ships and cross to land beyond, which is
+          why a strait can show as a gap between two shaded shores.</p>
+        </details>
       </div>
 
       <div id="isoSettingsSlot"></div>
 
+      <!-- Why the column controls have gone. One line, and it stays visible: a fold would hide the
+           answer to the question the missing boxes have just raised. -->
       <div class="group" id="isoNotArmy" hidden>
-        <p class="hint">A message and a rumour travel as the crow flies, so the column and the
-        conditions make no difference to them.</p>
-        <p class="hint">Travel-time shading from one hex. <b>Army</b> marches under the column and conditions of the
-        <b>active route</b>, set over on the Routes panel — change route and the shading changes with
-        it; <b>message</b> and <b>rumour</b> travel as the crow flies, ignoring terrain.
-</p>
+        <p class="hint">No column here — a message and a rumour travel as the crow flies, so nothing
+        about the force that carries them changes the answer.</p>
       </div>
 
       <!-- Shown only in relief mode, where the origin means something quite different from the
            other three: it is the place being besieged, not the force setting out. -->
       <div class="group" id="isoReliefNote" hidden>
-        <p class="hint">The origin is the <b>hex under siege</b>. What is shaded is every hex you could
-        station a force in and still have it arrive in time: word of the siege reaches the force as the
-        crow flies, then the column marches back over the roads, under the column and conditions set
-        below. A hex is shaded by the <b>total</b> — a 1-day rumour and a 3-day march is a 4.</p>
-        <p class="hint"><b>Each leg is billed in whole days, and then they are added.</b> Word arriving in
-        the afternoon still costs that day, and the column forms up and sets out on the next one; so
-        half a day of riding and half a day of marching are two days here, not one. The march is
-        costed <b>inwards</b>, in the direction it is actually made: a hex is paid for by the step
-        that enters it, so relieving a fortress in the mountains pays the mountain on the way in, and
-        the force sets out under the column of the hex it is standing in.</p>
+        <p class="hint">The origin is the <b>hex under siege</b>; what is shaded is where you could
+        station a force and still have it arrive in time.</p>
+        <details class="hint">
+          <summary>How siege relief works</summary>
+          Two journeys in opposite directions, not one. Word of the siege reaches the force as the
+          crow flies, at the speed set above; then the column marches back over the roads, under the
+          column and conditions set below. A hex is shaded by the <b>total</b> — a 1-day rumour and a
+          3-day march is a 4 — and hovering it breaks that back out into its two legs, with the
+          unrounded figures in brackets, since which leg is eating the budget is what you can do
+          something about. A hex held back by the march wants a road; one held back by the news wants
+          a courier posted rather than a garrison moved.
+          <p><b>Each leg is billed in whole days, and then they are added.</b> Word arriving in the
+          afternoon still costs that day, and the column forms up and sets out on the next one; so
+          half a day of riding and half a day of marching are two days here, not one, and nothing but
+          the besieged hex itself can come in under two.</p>
+          <p>The march is costed <b>inwards</b>, in the direction it is actually made. A hex is paid
+          for by the step that enters it, so relieving a fortress in the mountains pays the mountain
+          on the way in — a march solved outward from the siege would never pay it at all — and the
+          force sets out under the column of the hex it is standing in.</p>
+        </details>
         <details class="hint"><summary>How long you actually have</summary>
         <p>The clock does not stop when the walls do. Taking a stronghold in hand after it falls costs
         <b>5 in-game days</b> for a fortress — <b>1 IRL day</b> — while a town takes <b>1d6 × 5</b>
@@ -369,7 +389,7 @@
         <label class="chk" title="This force may spend the month getting ships it does not have: +7 IRL days at a coastal or major-river port, boarding folded in. It governs nothing else — a force that already has ships boards on their account, not on this one. Turn it off for a column that will never commandeer a fleet."><input type="checkbox" id="embark" checked> Allow securing a fleet</label>
         <label class="chk" title="This force owns ships already, so it never spends the month securing them: boarding costs the 1-day re-embark, wherever it stands and whatever the box above says. On land the ships are simply waiting in its harbour — it does not begin afloat. It begins afloat only where standing afloat is a real choice, which is a major-river subhex; on a sea subhex it is afloat regardless, and on land it cannot be. With this off, the isochrone leaves sea subhexes out of the shading altogether — without ships there is nothing at sea to hold."><input type="checkbox" id="fleet"> Start as fleet</label>
         <label class="chk" title="Trade routes are used by default. They run end to end only, with no stops in between."><input type="checkbox" id="noTrade"> Avoid trade routes</label>
-        <label class="field" style="margin-top:var(--s3)"><span>Weather</span><select id="weather">
+        <label class="field"><span>Weather</span><select id="weather">
           <option value="clear">Clear / light rain / hot</option>
           <option value="heavy_rain">Heavy rain (bad)</option>
           <option value="storm">Storm (very bad)</option>

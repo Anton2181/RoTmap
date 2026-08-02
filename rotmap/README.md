@@ -42,6 +42,14 @@ Each drawn feature type has its own **Layers** toggle — Roads, Rivers (major),
 
 Coast fills sit directly on top of the terrain — they *are* terrain, just at subhex resolution — so the Layers panel lists them (and the coast lines) right under Terrain. The fills are split around the rivers in the draw order: land subhex fills, then the thematic ref scans, then the river layers, then sea subhex fills, then the **Classic map**, then the coast lines. The Classic map is deliberately above *both* halves of the coast fills, because it's the basemap you trace shorelines from and an opaque sea subhex painted over it hides the very coast you're following. The consequence is forced: since the sea fills sit above the rivers, a scan above the fills is also above the drawn rivers. Coast lines, roads, trade routes, the hex grid and strongholds all stay above it. A river drawn across a split hex therefore stays visible over the land half and slides under the open water rather than being painted over. Both halves share the single "Coast fills" toggle.
 
+Origins are made and unmade from the map as well as from the panel. While the Isochrone panel is
+open, **right-clicking a hex** offers a new origin there, moving the selected one to it, removing the
+one already standing on it, and clearing them all — the entries adapt to what is actually under the
+cursor, so there is no "remove" on bare ground and no "move here" on the hex the selected origin is
+already on. They sit **above** the route entries rather than replacing them: which panel is open says
+what you are most likely to want, not what you are allowed to want, and a route you were building
+does not stop existing because you opened another panel.
+
 ## The isochrone speaks in subhexes
 
 Everywhere else on the map, a hex a coastline or a major river has cut in two is *two places* that

@@ -138,6 +138,12 @@ input[type=range] {
 
 .hint { margin: var(--s3) 0 0; color: var(--ink-3); font-size: var(--f2); line-height: 1.5; }
 .hint b { color: var(--ink-2); font-weight: 600; }
+/* A note script fills in only sometimes — the Data panel's status line is empty until something is
+   fetched — must not hold a margin open while it has nothing to say. */
+.hint:empty { display: none; }
+/* A fold that sits loose in a panel rather than inside a group has no rule above it to separate it
+   from the group before, so it takes the group's own spacing instead of the stacking gap. */
+.pane > details.hint { margin-top: var(--s5); }
 
 /* Long explanations fold away. They matter once, when you are learning the
    tool, and then never again — but they should still be there. */
@@ -239,8 +245,18 @@ body.panel-shut #panel { display: none; }
   font-size: var(--f1); font-weight: 600; text-transform: uppercase; letter-spacing: .07em;
   color: var(--ink-3);
 }
-.group > * + .btnrow, .group > * + .fields, .group > * + .field { margin-top: var(--s3); }
+/* Anything stacked in a group is given the same air as whatever came before it. This used to be an
+   allowlist of three followers — btnrow, fields, field — which meant everything else was spaced only
+   by luck, and several things weren't: the origin list sat flush against the buttons above it and
+   read as a fourth button, the legend sat flush against the list, and the token list had the same
+   problem as the origin list. A rule about *adjacency* rather than about particular elements has no
+   such gaps left to find, and nothing new can open one. */
+.group > * + * { margin-top: var(--s3); }
+/* Two exceptions, both of things that are one control rather than two. A run of checkboxes is a
+   single block of switches and wants to read as one; a heading belongs to what follows it, and
+   carries its own margin below. */
 .group > .chk + .chk { margin-top: 0; }
+.group > h2 + * { margin-top: 0; }
 
 /* ------------------------------------------------------- floating surfaces */
 
@@ -422,10 +438,16 @@ body.colsizing { cursor: col-resize; user-select: none; }
 .forwhom { color: var(--ink-2); text-transform: none; letter-spacing: 0; font-weight: 500; }
 .forwhom::before { content: '· '; color: var(--ink-3); }
 
-/* Route list -------------------------------------------------------------- */
-/* The list needs air under the buttons above it, or the first route reads as a fourth button. */
-#routeList { margin-top: var(--s4); }
-#routeList:has(.emptynote) { margin-top: var(--s3); }
+/* Lists of things -------------------------------------------------------- */
+/* Routes, isochrone origins and tokens are the same object three times: a clickable list sitting
+   directly under a row of buttons. Each wants more air than the ordinary stacking gap, or its first
+   row reads as one more button — which is exactly what the origin list did. An empty list is only a
+   grey line of prose and needs no such separation. */
+#routeList, #isoList, #tokenList { margin-top: var(--s4); }
+#routeList:has(.emptynote), #isoList:has(.emptynote), #tokenList:has(.emptynote) { margin-top: var(--s3); }
+/* A container script empties rather than hides would otherwise keep its own margin and open a gap
+   with nothing in it — the isochrone legend does this whenever there are no origins placed. */
+#isoList:empty, #isoLegend:empty, #tokenList:empty, #routeList:empty { display: none; }
 
 .rtitem, .tokitem {
   display: flex; align-items: center; gap: var(--s3);
@@ -475,6 +497,9 @@ body.colsizing { cursor: col-resize; user-select: none; }
 .srnone { color: var(--ink-3); font-size: var(--f2); padding: var(--s2) 0; }
 
 /* Isochrone legend -------------------------------------------------------- */
+/* A legend under a list of origins is a change of subject, not the next row, so it takes the wider
+   gap the lists themselves take rather than the ordinary stacking one. */
+#isoLegend { margin-top: var(--s4); }
 .isochip {
   display: inline-flex; align-items: center; gap: var(--s1);
   margin: 2px var(--s3) 2px 0;
