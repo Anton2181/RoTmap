@@ -432,10 +432,15 @@ function renderTerrain() {
   let all = '', rivers = '';
   for (const idS in S.hexes) {
     const id = +idS, v = S.hexes[idS], t = v.t;
+    // The sheet's grid is three columns wider than the world it describes, and those columns are
+    // filled with "N/A" — not sea, not land, not anywhere. They were drawn as a dark band down the
+    // right-hand edge, which made them look like part of the map that happened to be unlit. Nothing
+    // is drawn for them now, so the map simply ends where it ends.
+    if (t === 'N/A') continue;
     const [cx, cy] = hexCenter(id);
     const p = hexPath(cx, cy);
     byT[t] = (byT[t] || '') + p;
-    if (t !== 'N/A') all += p;
+    all += p;
     if (v.r) rivers += p; // "River" flagged in the datasheet
   }
   for (const t in byT) {
@@ -778,7 +783,11 @@ function coastSubcells() {
    for a result the boundary gives exactly. The water goes over it, then the off-map filler over that.
    This is also the solid backdrop the terrain above needs, which is what keeps *its* seams from
    showing the page — so it stays drawn even when Terrain is covering all of it, which is all the more
-   reason for it to be cheap. */
+   reason for it to be cheap.
+
+   The sheet pads its grid three columns wider than the world it describes and fills them with "N/A".
+   None of it is drawn: not here, not by the terrain, and not by the outline, which traces the real
+   map rather than the whole grid. The map ends where the map ends. */
 /* The outline of the whole grid, as closed loops: every hex side with no hex behind it, stitched end
    to end. A staggered hex grid is not a rectangle — its edge is a sawtooth, and the water drawn over
    this is hex-shaped, so a straight-edged backdrop showed as a green step wherever the two disagreed.
@@ -796,9 +805,12 @@ let gridOutline = null;
 function gridOutlineD() {
   if (gridOutline !== null) return gridOutline;
   const K = p => p[0].toFixed(1) + ' ' + p[1].toFixed(1);
+  const real = h => S.hexes[h] && S.hexes[h].t !== 'N/A';   // the map, as against the sheet's padding
   const next = new Map();                    // corner -> the corners a boundary side leads to
   for (const idS in S.hexes) {
-    const h = +idS, [cx, cy] = hexCenter(h);
+    const h = +idS;
+    if (!real(h)) continue;
+    const [cx, cy] = hexCenter(h);
     /* Which of the six sides have a hex behind them, asked of the neighbours themselves. Asking the
        map instead — what hex lies across this side — is what a first attempt did, and it is wrong at
        exactly the edge this function is about: past the last column there is no hex there, and
@@ -809,6 +821,7 @@ function gridOutlineD() {
        neighbour names its own side by where it sits. */
     const interior = new Set();
     for (const n of neighbors(h)) {
+      if (!real(n)) continue;                // padding is not behind anything; this side is an edge
       const [nx, ny] = hexCenter(n);
       const mx = (nx - cx) / 2, my = (ny - cy) / 2;
       let bi = 0, bd = Infinity;
@@ -849,11 +862,11 @@ function renderBase(sub = coastSubcells()) {
   const g = groups.base;
   if (!g) return;
   g.innerHTML = '';
-  let sea = '', off = '';
+  let sea = '';
   for (const idS in S.hexes) {
     const h = +idS, t = S.hexes[idS].t;
+    if (t === 'N/A') continue;               // the sheet's padding: not anywhere, and drawn as nothing
     const [cx, cy] = hexCenter(h);
-    if (t === 'N/A') { off += hexPath(cx, cy); continue; }   // not anywhere at all, and drawn as such
     const cells = sub.get(h);
     if (cells?.regions.length) {
       for (const r of cells.regions) if (r.sea && !r.river) sea += regionShape(h, r);
@@ -862,7 +875,6 @@ function renderBase(sub = coastSubcells()) {
   el('path', { d: gridOutlineD(), fill: TERRAIN_COLORS.Flatlands, 'fill-rule': 'evenodd',
                stroke: 'none' }, g);
   if (sea) el('path', { d: sea, fill: TERRAIN_COLORS.Ocean, 'fill-rule': 'evenodd', stroke: 'none' }, g);
-  if (off) el('path', { d: off, fill: TERRAIN_COLORS['N/A'], stroke: 'none' }, g);
 }
 function renderCoasts(sub = coastSubcells()) {
   groups.coast.innerHTML = ''; groups.coastSea.innerHTML = '';
