@@ -213,6 +213,7 @@ try { Object.assign(UI, JSON.parse(localStorage.getItem(UI_LS)) || {}); } catch 
 let CORN = [], EDGE = [], SUB = []; // offsets from center: corners, edge mids, sub-centres
 function initGeom() {
   const G = S.G;
+  gridOutline = null;                               // traced from the grid; a new grid needs a new one
   CORN.length = 0; EDGE.length = 0; SUB.length = 0; // idempotent
   for (let i = 0; i < 6; i++) {
     const a = Math.PI / 180 * (60 * i - 30);
@@ -771,45 +772,95 @@ function coastSubcells() {
    what makes it seam-free: two paths that tile a surface between them leave a hairline everywhere
    they meet — here, every coastline on the map — while a path laid wholly over another cannot.
 
-   The land is therefore one **rectangle** over the whole map, not four thousand hexagons. Under the
-   water and under the off-map filler it is never seen, and where it *is* seen it is a single flat
-   colour, so the hexagons were twenty-five thousand edges to rasterise on every frame for a result
-   one rect gives exactly. The water goes over it, then the off-map filler over that. This is also
-   the solid backdrop the terrain above needs, which is what keeps *its* seams from showing the page
-   — so it has to stay drawn even when Terrain is covering all of it. All the more reason for it to
-   be cheap. */
+   The land is therefore the grid's own outline, filled — see gridOutlineD, which traces it once. Not
+   four thousand hexagons: under the water and the off-map filler it is never seen, and where it *is*
+   seen it is a single flat colour, so those were twenty-five thousand edges to rasterise every frame
+   for a result the boundary gives exactly. The water goes over it, then the off-map filler over that.
+   This is also the solid backdrop the terrain above needs, which is what keeps *its* seams from
+   showing the page — so it stays drawn even when Terrain is covering all of it, which is all the more
+   reason for it to be cheap. */
+/* The outline of the whole grid, as closed loops: every hex side with no hex behind it, stitched end
+   to end. A staggered hex grid is not a rectangle — its edge is a sawtooth, and the water drawn over
+   this is hex-shaped, so a straight-edged backdrop showed as a green step wherever the two disagreed.
+
+   It is also the cheap way to fill the grid. Four thousand hexagons is a quarter of a megabyte of
+   path for a shape whose boundary is a few hundred points, and every one of those hexagons has to be
+   rasterised on every frame for a result the boundary alone gives exactly. The grid's shape cannot
+   change without initGeom, which is where this is dropped, so it is worked out once and kept.
+
+   The stitching is safe because the corners are: adjacent hexes emit identical coordinates for the
+   corners they share — all 24,834 of them agree — so matching an endpoint is an equality test and not
+   a search for something near enough. Sides are emitted in the winding every hexagon is built with,
+   so following them from any starting point walks the loop in order. */
+let gridOutline = null;
+function gridOutlineD() {
+  if (gridOutline !== null) return gridOutline;
+  const K = p => p[0].toFixed(1) + ' ' + p[1].toFixed(1);
+  const next = new Map();                    // corner -> the corners a boundary side leads to
+  for (const idS in S.hexes) {
+    const h = +idS, [cx, cy] = hexCenter(h);
+    /* Which of the six sides have a hex behind them, asked of the neighbours themselves. Asking the
+       map instead — what hex lies across this side — is what a first attempt did, and it is wrong at
+       exactly the edge this function is about: past the last column there is no hex there, and
+       `nearestHex` answers with the nearest one it can find, which is often a hex in the row above.
+       That reads as an interior side, drops it from the boundary, and leaves the chain in pieces.
+
+       The midpoint between two adjacent centres is the midpoint of the side they share, so a
+       neighbour names its own side by where it sits. */
+    const interior = new Set();
+    for (const n of neighbors(h)) {
+      const [nx, ny] = hexCenter(n);
+      const mx = (nx - cx) / 2, my = (ny - cy) / 2;
+      let bi = 0, bd = Infinity;
+      for (let i = 0; i < 6; i++) {
+        const dd = (EDGE[i][0] - mx) ** 2 + (EDGE[i][1] - my) ** 2;
+        if (dd < bd) { bd = dd; bi = i; }
+      }
+      interior.add(bi);
+    }
+    for (let i = 0; i < 6; i++) {
+      if (interior.has(i)) continue;
+      const a = [cx + CORN[i][0], cy + CORN[i][1]];
+      const b = [cx + CORN[(i + 1) % 6][0], cy + CORN[(i + 1) % 6][1]];
+      const k = K(a);
+      if (!next.has(k)) next.set(k, []);
+      next.get(k).push(K(b));
+    }
+  }
+  let d = '';
+  for (const start of next.keys()) {
+    const outs = next.get(start);
+    while (outs.length) {
+      let cur = outs.pop();
+      d += 'M' + start + 'L' + cur;
+      for (let guard = next.size + 8; guard-- && cur !== start;) {
+        const on = next.get(cur);
+        if (!on || !on.length) break;       // an open chain, which a closed grid cannot produce
+        cur = on.pop();
+        d += 'L' + cur;
+      }
+      d += 'Z';
+    }
+  }
+  return (gridOutline = d);
+}
+
 function renderBase(sub = coastSubcells()) {
   const g = groups.base;
   if (!g) return;
   g.innerHTML = '';
   let sea = '', off = '';
-  /* The rect spans the hex *centres*, which is the largest rectangle that fits inside the grid. A
-     hex grid does not fill its own bounding box — the rows are staggered and the hexagons are
-     pointed, so the outline is a sawtooth — and a rect drawn to that box hangs out past the map in
-     every notch, which showed as a green fringe all round the edge. Between two neighbouring centres
-     in a row the hexagons meet exactly, so the centre-to-centre rectangle is covered everywhere.
-
-     What it gives up is backing for the outer half-ring of hexes, whose seams can show the page. That
-     ring is ocean and off-map filler nearly all the way round, both of which are painted here as
-     whole shapes rather than relying on the backdrop, so there is next to nothing left to see. */
-  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (const idS in S.hexes) {
     const h = +idS, t = S.hexes[idS].t;
     const [cx, cy] = hexCenter(h);
-    x0 = Math.min(x0, cx); x1 = Math.max(x1, cx);
-    y0 = Math.min(y0, cy); y1 = Math.max(y1, cy);
     if (t === 'N/A') { off += hexPath(cx, cy); continue; }   // not anywhere at all, and drawn as such
     const cells = sub.get(h);
     if (cells?.regions.length) {
       for (const r of cells.regions) if (r.sea && !r.river) sea += regionShape(h, r);
     } else if (RULES.WATER.has(t)) sea += hexPath(cx, cy);
   }
-  // Rounded inwards, so rounding cannot push an edge back out into a notch.
-  if (x0 < x1) {
-    const rx = Math.ceil(x0), ry = Math.ceil(y0);
-    el('rect', { x: rx, y: ry, width: Math.floor(x1) - rx, height: Math.floor(y1) - ry,
-                 fill: TERRAIN_COLORS.Flatlands, stroke: 'none' }, g);
-  }
+  el('path', { d: gridOutlineD(), fill: TERRAIN_COLORS.Flatlands, 'fill-rule': 'evenodd',
+               stroke: 'none' }, g);
   if (sea) el('path', { d: sea, fill: TERRAIN_COLORS.Ocean, 'fill-rule': 'evenodd', stroke: 'none' }, g);
   if (off) el('path', { d: off, fill: TERRAIN_COLORS['N/A'], stroke: 'none' }, g);
 }
