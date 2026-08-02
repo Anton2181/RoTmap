@@ -21,6 +21,32 @@ const TERRAIN_COLORS = {
    kept clear of the terrain beneath them: no mid-green (Flatlands), no tan (Hills), no grey-brown
    (Mountains), no soft mid-blue (Sea and Lake). The last two are dark on purpose and take white ink,
    which inkOn() works out rather than being told. */
+/* The stronghold marker, in the two sizes it comes in — written as the ratio they are meant to read
+   as, 9 to 13, rather than as two numbers that happen to sit near it. That is what the eye does with
+   them: a marker is large *compared with* the ones beside it. Stating the relation instead of the
+   pair is what keeps it true, this having twice been retuned by moving one number and finding the
+   other no longer said what it had.
+
+   Two things are deliberately not on this scale. The **rim** keeps its own weight: an outline is a
+   line, and a line drawn thicker to go round a larger circle stops being an edge and becomes a band.
+   The difference in rim weight between the two sizes is there to tell them apart at a glance, not to
+   grow with whatever it encloses. And the **name** keeps its own size, being a label on the map
+   rather than part of the symbol, and must stay readable at every zoom; it is given a fixed clearance
+   above the rim rather than an offset of its own, so it goes on clearing the disc whatever the disc
+   does next. */
+const SH_R = 5.1, SH_R_MAJOR = SH_R * 13 / 9;
+const SH_NAME_GAP = 4.7;   // clear air between the top of the rim and the name's baseline
+// How far a marker reaches from its point. Drawing asks so it knows how big to draw; hit-testing asks
+// so it knows what you have clicked on. One answer, or the symbol and its target drift apart.
+const shRadius = m => m?.major ? SH_R_MAJOR : SH_R;
+/* How much of the white disc the fortress square reaches across, corner to corner. A fraction rather
+   than a gap in pixels, so the buffer stays in proportion when the markers are resized — which they
+   have been, twice. */
+const SH_FORT_FILL = 0.8;
+// The square inside a fortress marker. Dark enough to hold its own against the white disc it sits in
+// at four pixels across, and far enough from the port ring's blue that the two never read as the same
+// statement about a place.
+const FORT_FILL = '#6b3fbf';
 const PALETTE = ['#ffd93d', '#ffa23d', '#ff6b5e', '#ff5e9c', '#ef7bff',
                  '#b18cff', '#8c9bff', '#4fc3ff', '#3fe0d0', '#4fe08a',
                  '#b8e838', '#eceff3', '#98a3b3', '#6b4fd0', '#b3283c'];
@@ -480,11 +506,28 @@ function renderLabels() {
     // rather than as two different symbols. The stroke thickens with it, or the bigger circle would
     // look fainter than the small one beside it, and the name lifts clear of the wider rim.
     const major = !!m?.major;
-    const r = major ? 5.8 : 3.4;
+    const r = shRadius(m);
+    // The rim keeps its own weight and does not grow with the disc — see SH_R.
+    const sw = major ? (port ? 2.3 : 1.9) : (port ? 1.7 : 1.2);
     el('circle', { cx, cy, r, fill: '#fff', stroke: port ? '#2f86c9' : '#14181e',
-                   'stroke-width': major ? (port ? 2.3 : 1.9) : (port ? 1.7 : 1.2) }, groups.labels);
+                   'stroke-width': sw }, groups.labels);
+    /* A fortress is an ordinary marker with a square set inside it — the same circle at the same
+       size, so it takes its place in the run of degrees rather than starting a second scale, and the
+       square says what kind of place it is without saying how big.
+
+       Inscribed against the *inner* edge of the ring rather than against the circle's radius: the
+       stroke is painted centred on r, so corners taken out to r would sit half-buried in it. And then
+       held short of even that by SH_FORT_FILL, because a square whose corners just reach the rim
+       touches it at four points and the whole thing reads as one blob rather than as a shape inside a
+       ring. What is wanted is a square with white all the way round it. Half the side of a square
+       inscribed in a circle is that circle's radius over root two. */
+    if (m?.fort) {
+      const a = Math.max(1, (r - sw / 2) * SH_FORT_FILL / Math.SQRT2);
+      el('rect', { x: cx - a, y: cy - a, width: 2 * a, height: 2 * a,
+                   fill: FORT_FILL, stroke: 'none' }, groups.labels);
+    }
     if (name) el('text', {
-      x: cx, y: cy - (major ? 9 : 6.5), 'text-anchor': 'middle', 'font-size': 10.5, fill: '#fff',
+      x: cx, y: cy - r - SH_NAME_GAP, 'text-anchor': 'middle', 'font-size': 10.5, fill: '#fff',
       stroke: '#14181e', 'stroke-width': 2.4, 'paint-order': 'stroke', 'font-family': 'system-ui,sans-serif',
     }, groups.labels).textContent = name;
   };
@@ -2010,10 +2053,14 @@ function removeStronghold(h, ri) {
   else delete S.features.strongholds[h];
   return wasImplicit || (sheet && !rest.some(x => !x.removed));
 }
-/* Three states rather than two: no stronghold, an ordinary one, a major one — for one subhex at a time.
-   "None" goes through removeStronghold rather than around it, so that setting a datasheet hex to none
-   and back to major again still works. Major is purely how large the marker is drawn; nothing in the
-   movement rules reads it. */
+/* Four states rather than two: no stronghold, an ordinary one, a fortress, a major one — for one
+   subhex at a time. "None" goes through removeStronghold rather than around it, so that setting a
+   datasheet hex to none and back to major again still works.
+
+   The three that exist are mutually exclusive, and the two flags they are stored in are kept that way
+   here rather than trusted to callers: `major` is purely how large the marker is drawn and `fort` is
+   purely the square inside it, so nothing stops a marker carrying both, and a marker that did would
+   be claiming to be two classes at once. Nothing in the movement rules reads either. */
 function setStrongholdType(h, ri, kind) {
   pushUndo();
   if (kind === 'none') removeStronghold(h, ri);
@@ -2021,9 +2068,13 @@ function setStrongholdType(h, ri, kind) {
     const m = shEnsure(h, ri);
     delete m.removed;                  // naming a type (re)adds one that had been erased
     if (kind === 'major') m.major = true; else delete m.major;
+    if (kind === 'fortress') m.fort = true; else delete m.fort;
   }
   commitFeatures();
 }
+// What class a marker is, as one word — the menu's current-value flag, the tooltip and anything else
+// that has to say it all ask here, so they can never disagree about a marker carrying both flags.
+const shKindOf = m => !m ? 'none' : m.major ? 'major' : m.fort ? 'fortress' : 'ordinary';
 // A sensible spot for a marker that is being created rather than placed by hand: the middle of the
 // subhex it belongs to. Given as {x, y} so it can be spread straight into a new marker.
 function shPointFor(h, ri) {
@@ -2035,19 +2086,29 @@ function shPointFor(h, ri) {
    datasheet stronghold with no marker of its own. Returns the subhex as well as the hex, because with
    several markers in a hex "the nearest stronghold" is no longer answered by naming the hex. */
 function nearestStronghold(wx, wy, thr) {
-  let bs = null, bri = 0, bsd = thr;
+  let bs = null, bri = 0, bsd = Infinity, bOn = false;
   const consider = (id, m) => {
     if (m.removed) return;
     const [cx, cy] = shPoint(id, m);
     const d = Math.hypot(wx - cx, wy - cy);
-    if (d < bsd) { bsd = d; bs = +id; bri = shRegion(id, m); }
+    /* Inside the marker's own disc is on the marker, whatever the grab radius says. The two used to
+       agree by accident: the grab radius shrinks in world units as you zoom in, while a marker does
+       not, and the largest marker happened to stay just inside it. Half again as large it does not,
+       so at high zoom you could click the visible edge of a keep and erase the road behind it. */
+    const on = d <= shRadius(m);
+    if (!on && d >= thr) return;
+    // One you are standing on beats one you are merely near; among equals, the nearer.
+    if (on === bOn ? d < bsd : on) { bsd = d; bs = +id; bri = shRegion(id, m); bOn = on; }
   };
   for (const id in S.features.strongholds) for (const m of shList(id)) consider(id, m);
   const nh = nearestHex(wx, wy);
   // A datasheet stronghold the drawing has never touched has no marker to iterate, so it is offered
   // separately — but only if nothing in this hex already stands for it.
   if (nh && S.hexes[nh]?.s && !shList(nh).length) consider(nh, {});
-  return { id: bs, ri: bri, d: bsd };
+  // Reported as nil distance when the cursor is inside the marker, because callers weigh this against
+  // the nearest drawn line and being on top of a thing is as near as it gets. Beyond the disc but
+  // within the grab radius, the true distance, so the old tie-breaking against lines is untouched.
+  return { id: bs, ri: bri, d: bOn ? 0 : bsd, on: bOn };
 }
 /* Port = a stronghold standing on, or bordering, navigable water: open sea, a drawn major river, or
    the sea part of a coast-crossed hex. Sea- and river-side strongholds are ports by default so you do
@@ -4379,7 +4440,7 @@ function onHover(e) {
   const hoverRi = regionAt(h, [wx, wy]);
   const hoverM = shAt(h, hoverRi);
   const name = hoverM ? shName(h, hoverM) : (S.features.labels[h] ?? S.names.hexes[h]);
-  const shKind = hoverM ? (hoverM.major ? 'major stronghold' : 'stronghold') : '';
+  const shKind = hoverM ? ({ major: 'major stronghold', fortress: 'fortress' }[shKindOf(hoverM)] || 'stronghold') : '';
   tooltip.innerHTML = `<span class="t">${name ? name + ' — ' : ''}hex ${h}${subLabel}</span><br>` +
     `${v.t}${hoverM ? ` · ${shKind} (${isPort(h, hoverRi) ? 'coastal/port' : 'inland'})` : ''}` +
     `${v.r ? ' · river (sheet)' : ''}${v.d ? ' · road (sheet)' : ''}` +
@@ -4986,10 +5047,13 @@ function hexMenu(h, pt, wp) {
       // like a bug rather than a statement about this particular bank.
       const shRi = pt ? regionAt(h, pt) : 0;
       const m = shAt(h, shRi);
-      const cur = !m ? 'none' : (m.major ? 'major' : 'ordinary');
+      const cur = shKindOf(m);
       const where = isSplit(h) ? ' · this subhex' : '';
       ctxFlyout(ctxItem(box, `Stronghold<span class="arw">${cur}${where}▸</span>`), s => {
-        for (const [kind, lbl] of [['none', 'None'], ['minor', 'Ordinary'], ['major', 'Major — larger marker']]) {
+        for (const [kind, lbl] of [['none', 'None'], ['minor', 'Ordinary'],
+                                   // Square-cornered on purpose: the swatch is the symbol, not a colour chip.
+                                   ['fortress', `<span class="sw" style="background:${FORT_FILL};border-radius:1px"></span>Fortress — square inside`],
+                                   ['major', 'Major — larger marker']]) {
           const want = kind === 'minor' ? 'ordinary' : kind;
           const it = ctxItem(s, lbl, () => { setStrongholdType(h, shRi, kind); closeCtx(); });
           if (want === cur) it.style.color = '#fff';
