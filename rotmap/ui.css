@@ -566,6 +566,12 @@ body.colsizing { cursor: col-resize; user-select: none; }
 }
 #tooltip .t { color: #fff; font-weight: 600; }
 #tooltip .rg { color: var(--ink-2); }
+/* A realm's own colour, beside its name — the readout says who holds the ground in the same terms
+   the map underneath is using, so the two can be matched without counting down a legend. */
+#tooltip .chip {
+  display: inline-block; width: 9px; height: 9px; margin-right: 5px;
+  border: 1px solid #0007; border-radius: 2px;
+}
 
 /* ------------------------------------------------------------ context menu */
 

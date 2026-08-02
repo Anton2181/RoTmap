@@ -71,16 +71,30 @@ const FSTYLE = {
 // open water, instead of being painted over wholesale. Both halves share the one "Coast fills"
 // toggle via `linked`. Everything you draw outranks the reference scans you traced it from.
 // PANEL_ORDER below decides the sidebar rows, since this interleaving no longer reads as a list.
-// `types` lists the feature types rendered into that group; `linked` shares one toggle with a
-// second group; `slave` groups are toggled by another layer and get no row of their own;
+// `types` lists the feature types rendered into that group; `linked` names the other groups that
+// share this row's switch; `slave` groups are driven by another layer and get no row of their own;
+// `op` scales a slave's opacity against its row's, so a group that was subtler than its neighbours
+// stays subtler after being folded in with them; `fixed` is never switched at all;
 // `lazy` means the group is only populated the first time it is switched on.
 const LAYERS = [
+  /* Under everything, and not switchable: land and water, and nothing else. It is not a view of the
+     map so much as the map's own outline. With Terrain off you are meant to be reading what a scan
+     or an isochrone says about the ground, and a black field with coloured shapes floating in it
+     says nothing about where the coast was — the shapes need a shore to mean anything. Painted in
+     the same two colours the terrain uses for flat ground and open ocean, so switching Terrain off
+     reads as detail being taken away rather than as a different map arriving. */
+  { id: 'base',     name: 'Land & sea',     def: 1, fixed: true },
   { id: 'terrain',  name: 'Terrain',        def: 1 },
   { id: 'coast',    name: 'Coast fills',    def: 1, linked: 'coastSea' }, // land subhex fills (+ its sea half, below)
   // Who holds what, read off the borders scan. It colours land only, so it belongs directly on top of
   // the land fills — and below everything you draw, which then reads over it the way the sidebar
   // implies. It needs no place above the sea fills, since it never paints water.
-  { id: 'borders',  name: 'Borders',        def: 0, lazy: renderBorders },
+  { id: 'borders',  name: 'Borders',        def: 0, lazy: () => loadRealmScan('borders', 'ref/Borders_clean.png') },
+  // Who holds what *now*, over the top of who holds what by right. It goes directly above Borders so
+  // that with both on, the warlord's claim is the one you see and the realm beneath shows only where
+  // no warlord has taken it — which is the comparison the pair exists to make. It leaves nine tenths
+  // of the map transparent, so most of Borders goes on showing through regardless.
+  { id: 'warlords', name: 'Warlords',       def: 0, lazy: () => loadRealmScan('warlords', 'ref/warlords.png') },
   // The thematic ref scans are underlays: over the terrain but under everything you draw, so your
   // own line always sits on top of the scan you traced it from. The Classic map is the exception —
   // see below.
@@ -89,7 +103,10 @@ const LAYERS = [
   { id: 'refNames',   name: 'Ref: names',   def: 0,   img: 'ref/Stronghold names.png' },
   { id: 'refCities',  name: 'Ref: cities/forts', def: 0, img: 'ref/citiestownsforts.png' },
   { id: 'refBorders', name: 'Ref: borders', def: 0,   img: 'ref/Borders_clean.png' },
-  { id: 'sheetRivers', name: 'Sheet: river hexes', def: 0 },
+  // Scaffolding: the datasheet's own river flag, painted per hex, for checking a drawn river against
+  // what the sheet claims. That is a question about the data, not about the world, so it goes with
+  // the tracing scans when the map is published — see `dev` below.
+  { id: 'sheetRivers', name: 'Sheet: river hexes', def: 0, dev: true },
   // Minor first, so a major river draws over the minor ones feeding into it rather than under them.
   { id: 'riverMinor', name: 'Rivers (minor)', def: 1, types: ['river_minor'] },
   { id: 'riverMajor', name: 'Rivers (major)', def: 1, types: ['river_major'] },
@@ -102,7 +119,10 @@ const LAYERS = [
   // above it, so the coast you are drawing is still visible over the scan.
   // `keep`: this one is the map itself, not a tracing aid, so it ships with the published site too.
   { id: 'refClassic', name: 'Classic map',  def: 0,   img: 'ref/classic_map.png', keep: true },
-  { id: 'coastLines', name: 'Coast lines',  def: 0.28, types: ['coast'] }, // drawn shore: reads as a grid line, so it defaults to the grid's opacity
+  // The drawn shore reads as a grid line rather than as a feature, so it sits at the grid's opacity:
+  // `def` while it has a slider of its own, `op` for when it is folded into Terrain's on the
+  // published map and would otherwise be pulled up to full strength with the fills.
+  { id: 'coastLines', name: 'Coast lines',  def: 0.28, op: 0.28, types: ['coast'] },
   { id: 'iso',      name: 'Isochrone',      def: 0.55 },
   { id: 'grid',     name: 'Hex grid',       def: 0.28 },
   { id: 'hexIds',   name: 'Hex IDs',        def: 0, lazy: renderHexIds }, // 4,230 numbers; built on first use
@@ -118,15 +138,43 @@ const LAYERS = [
 // fills/lines stay paired at the top, right under Terrain.
 // The tracing refs sit next, because they're what you flick on and off against the coast you're
 // drawing; the river/road/etc. layers you're producing come below them.
-const PANEL_ORDER = ['terrain', 'coast', 'coastLines', 'borders',
+const PANEL_ORDER = ['terrain', 'coast', 'coastLines', 'borders', 'warlords',
                      'refClassic', 'refRivers', 'refRoads', 'refNames', 'refCities', 'refBorders',
                      'sheetRivers', 'riverMajor', 'riverMinor',
                      'iso', 'grid', 'hexIds', 'roads', 'trade', 'labels', 'tokens'];
-// The tracing scans are for drawing against, not for reading, so they exist only when the app is
-// served locally — dropped from the list rather than hidden, so the published site has no trace of
-// them at all. The Classic map is exempt (`keep`): it is the map, not an aid to redrawing it.
-// Borders is not one of these either: it reads its scan once, on demand, and paints land from it.
-if (!LOCAL) for (let i = LAYERS.length - 1; i >= 0; i--) if (LAYERS[i].img && !LAYERS[i].keep) LAYERS.splice(i, 1);
+/* Two kinds of layer come out of the published build, for the same reason. The tracing scans are for
+   drawing against rather than for reading; a layer marked `dev` is scaffolding of the same sort —
+   something that answers a question about the *data* rather than about the world, and that anyone
+   reading the map would only wonder at. Both are dropped from the list rather than hidden, so the
+   published site has no trace of them: no row, no group in the SVG, nothing fetched.
+   The Classic map is exempt (`keep`): it is the map, not an aid to redrawing it. Borders is not one
+   of these either — it reads its scan once, on demand, and paints land from it. */
+if (!LOCAL) for (let i = LAYERS.length - 1; i >= 0; i--)
+  if (LAYERS[i].dev || (LAYERS[i].img && !LAYERS[i].keep)) LAYERS.splice(i, 1);
+
+/* And some rows are folded together, for the same reason and only on the published map. Several of
+   them are separate because they are separate things to *draw*, not separate things to look at:
+   terrain, the subhex fills and the drawn shoreline are one picture — the fills *are* terrain at
+   subhex resolution and the line is where they meet — and the two grades of river are one river
+   system seen at two widths. To a reader those are switches that only ever reveal part of something
+   and leave them wondering what happened to the rest. To whoever is drawing them they are exactly
+   what needs separating, so locally they stay apart.
+
+   Only the sidebar changes. The groups keep their own places in the z-order, which is why this is
+   done by handing one row the others rather than by merging the groups themselves: the coast fills
+   are split around the rivers and the two river grades stack in a particular order, and neither
+   arrangement survives being collapsed into one group. */
+const PUBLISH_MERGE = [
+  { into: 'terrain',   name: 'Terrain', with: ['coast', 'coastSea', 'coastLines'] },
+  { into: 'riverMajor', name: 'Rivers', with: ['riverMinor'] },
+];
+if (!LOCAL) for (const m of PUBLISH_MERGE) {
+  const host = LAYERS.find(L => L.id === m.into);
+  if (!host) continue;
+  host.name = m.name;
+  host.linked = m.with;
+  for (const id of m.with) { const L = LAYERS.find(x => x.id === id); if (L) L.slave = true; }
+}
 // feature type -> id of the layer group its drawn line renders into
 const TYPE_LAYER = { road: 'roads', river_major: 'riverMajor', river_minor: 'riverMinor',
                      trade: 'trade', coast: 'coastLines' };
@@ -347,7 +395,9 @@ function hexPath(cx, cy) {
   return d + 'Z';
 }
 function renderTerrain() {
-  groups.terrain.innerHTML = ''; groups.grid.innerHTML = ''; groups.sheetRivers.innerHTML = '';
+  groups.terrain.innerHTML = ''; groups.grid.innerHTML = '';
+  // Absent entirely on the published map, where the layer is dropped rather than hidden.
+  if (groups.sheetRivers) groups.sheetRivers.innerHTML = '';
   const byT = {};
   let all = '', rivers = '';
   for (const idS in S.hexes) {
@@ -360,7 +410,8 @@ function renderTerrain() {
   }
   for (const t in byT)
     el('path', { d: byT[t], fill: TERRAIN_COLORS[t] || '#666', stroke: 'none' }, groups.terrain);
-  if (rivers) el('path', { d: rivers, fill: '#2f62c9', 'fill-opacity': 0.45, stroke: '#2f62c9', 'stroke-width': 1 }, groups.sheetRivers);
+  if (rivers && groups.sheetRivers)
+    el('path', { d: rivers, fill: '#2f62c9', 'fill-opacity': 0.45, stroke: '#2f62c9', 'stroke-width': 1 }, groups.sheetRivers);
   el('path', { d: all, fill: 'none', stroke: GRID.stroke, 'stroke-width': GRID.width }, groups.grid);
   const hi = LAYERS.find(L => L.id === 'hexIds'); // keep IDs in sync after a sheet refetch
   if (hi?._built) renderHexIds();
@@ -376,17 +427,51 @@ function renderTerrain() {
 // hex: two pieces of land in one hex, either side of a strait or a river, need not be held by the
 // same realm and are asked separately. Lazy — nothing is fetched until the layer is switched on.
 // Painted opaque; the layer's own opacity slider is there if you want terrain showing through.
-async function renderBorders() {
+/* A realm scan: an image that says, in flat colour, who holds what. There are two of them and they
+   are read identically — the pixels are sampled per subhex and the land is repainted in whatever
+   colour most of the samples agree on — so the machinery below is written once and keyed by which
+   layer asked for it. They differ only in what they are of, and in how much of the map they bother
+   to speak for: the Warlords scan leaves nine tenths of it transparent, which the reading handles
+   without being told, since unclaimed ground is exactly what a transparent pixel means. */
+/* The Warlords scan's legend, keyed by the colour the scan actually uses. Sampled from the legend
+   image rather than read off it by eye, so these are the exact values in the file and a lookup can
+   be an equality test instead of a nearest-match.
+
+   The scan holds one colour more than the legend does — #00ff21, a bright green over about a third
+   of a per cent of the map. Rather than guess whose it is, an unnamed colour is reported as unnamed,
+   with its value, which is at least a true statement and points at what needs adding here. */
+const WARLORD_NAMES = {
+  '#b542a0': 'Legion XIV',
+  '#cca32a': 'Legion XIII',
+  '#7f5741': 'Legion I',
+  '#b51530': 'Legion III',
+  '#ff8d4e': 'Legion IX',
+  '#2c367f': 'Legion II',
+  '#a48966': 'Legion V',
+  '#842a4b': 'Legion VI',
+  '#007f46': 'Legion VII',
+  '#6ab5d8': 'Blue Scarves',
+};
+const rgbKey = hex => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16)).join(',');
+const WARLORD_BY_RGB = new Map(Object.entries(WARLORD_NAMES).map(([hex, n]) => [rgbKey(hex), n]));
+const rgbHex = c => '#' + c.split(',').map(n => (+n).toString(16).padStart(2, '0')).join('');
+
+const realmScans = new Map();   // layer id -> { d, w, h } decoded pixels
+// layer id -> Map("hex:region" -> "r,g,b"). Kept from the paint so the readout can answer for the
+// subhex under the cursor without sampling the image again, which would mean holding the pixels of
+// every scan for the sake of one lookup at a time.
+const realmCols = new Map();
+async function loadRealmScan(id, src) {
   const img = new Image();
-  img.src = 'ref/Borders_clean.png';
+  img.src = src;
   try { await img.decode(); } catch { return; }
   const cv = document.createElement('canvas');
   cv.width = img.naturalWidth; cv.height = img.naturalHeight;
   const ctx = cv.getContext('2d', { willReadFrequently: true });
   ctx.drawImage(img, 0, 0);
-  try { borderScan = { d: ctx.getImageData(0, 0, cv.width, cv.height).data, w: cv.width, h: cv.height }; }
+  try { realmScans.set(id, { d: ctx.getImageData(0, 0, cv.width, cv.height).data, w: cv.width, h: cv.height }); }
   catch { return; } // tainted, which happens on file://
-  paintBorders();
+  paintRealms(id);
 }
 // The outline of one piece of a hex — the whole hexagon where a coastline hasn't split it, and the
 // piece's own polygon (plus any islands it left behind) where one has. Realm fills are painted with
@@ -399,22 +484,30 @@ function regionShape(hx, r) {
 // The scan is decoded once and kept; everything below is cheap enough to redo whenever the land
 // changes shape, which it does every time a coastline is drawn — and region indices shift with it,
 // so nothing here may be cached against them.
-let borderScan = null;
-function paintBorders() {
-  const g = groups.borders;
-  if (!g || !borderScan) return;
+// Repaint every scan that has been loaded, or just the one named. Both are redone whenever the land
+// changes shape, since region indices move with it and nothing here may be cached against them.
+function paintRealms(only) {
+  for (const id of realmScans.keys()) if (!only || id === only) paintRealm(id);
+}
+function paintRealm(id) {
+  const g = groups[id], scan = realmScans.get(id);
+  if (!g || !scan) return;
   g.innerHTML = '';
   if (!S.adj) deriveAdj();
-  const { d: data, w, h: hh } = borderScan;
+  const { d: data, w, h: hh } = scan;
   const sx = w / S.G.image_width, sy = hh / S.G.image_height;
-  // The scan's realm colours are semi-transparent washes. Composite each onto white here, so what
-  // gets painted is the solid colour the wash reads as and the land can be filled opaquely.
+  // A scan's realm colours may be semi-transparent washes (the Borders one's are; the Warlords one is
+  // flat and opaque). Composite each onto white here, so what gets painted is the solid colour the
+  // wash reads as and the land can be filled opaquely. An already-opaque pixel comes through
+  // unchanged, so the one path serves both.
   const at = (x, y) => {
     const px = Math.round(x * sx), py = Math.round(y * sy);
     if (px < 0 || py < 0 || px >= w || py >= hh) return null;
     const i = (py * w + px) * 4, a = data[i + 3] / 255;
     if (a < 40 / 255) return null; // unclaimed ground is left transparent in the scan
-    if (data[i] === 0x56 && data[i + 1] === 0x56 && data[i + 2] === 0x56) return null; // the border line itself
+    // The dividing line a scan draws between its realms is not a realm. Only the Borders scan has one
+    // — the Warlords scan's palette holds no grey at all — so the test simply never fires there.
+    if (data[i] === 0x56 && data[i + 1] === 0x56 && data[i + 2] === 0x56) return null;
     const over = k => Math.round(data[i + k] * a + 255 * (1 - a));
     return `${over(0)},${over(1)},${over(2)}`;
   };
@@ -469,6 +562,7 @@ function paintBorders() {
     }
   }
   for (const [k, c] of inherited) cols.set(k, c);
+  realmCols.set(id, cols);   // what the readout answers from
   const byColour = new Map();
   for (const [key, c] of cols) {
     const [hs, ris] = key.split(':'), r = regionsOf(+hs)[+ris];
@@ -620,9 +714,40 @@ function coastSubcells() {
   }
   return out;
 }
-function renderCoasts() {
+/* The map with everything taken off it: which ground is land and which is water, in the two colours
+   the terrain palette uses for flat ground and open ocean. It is under every other layer and cannot
+   be switched off, because it is what the rest of them are drawn *on* — with Terrain off, a scan or
+   an isochrone would otherwise be coloured shapes floating in a black field, and a shape without a
+   shore beside it says nothing about where it is.
+
+   Split at subhex resolution like everything else, so a bay bitten out of a shore hex is water here
+   too. A hex nothing has cut is one shape, taken from the datasheet's own terrain: a bank of a major
+   river is land on both sides, so only a coastline can make a difference to this. Two batched paths
+   for the whole map — 4,000 hexes for two SVG nodes. */
+function renderBase(sub = coastSubcells()) {
+  const g = groups.base;
+  if (!g) return;
+  g.innerHTML = '';
+  let land = '', sea = '';
+  for (const idS in S.hexes) {
+    const h = +idS, t = S.hexes[idS].t;
+    if (t === 'N/A') continue;                       // off-map filler, not anywhere at all
+    const cells = sub.get(h);
+    if (cells?.regions.length) {
+      for (const r of cells.regions) {
+        const d = regionShape(h, r);
+        if (r.sea && !r.river) sea += d; else land += d;
+      }
+    } else {
+      const [cx, cy] = hexCenter(h);
+      if (RULES.WATER.has(t)) sea += hexPath(cx, cy); else land += hexPath(cx, cy);
+    }
+  }
+  if (land) el('path', { d: land, fill: TERRAIN_COLORS.Flatlands, 'fill-rule': 'evenodd', stroke: 'none' }, g);
+  if (sea)  el('path', { d: sea,  fill: TERRAIN_COLORS.Ocean,     'fill-rule': 'evenodd', stroke: 'none' }, g);
+}
+function renderCoasts(sub = coastSubcells()) {
   groups.coast.innerHTML = ''; groups.coastSea.innerHTML = '';
-  const sub = coastSubcells(); // fresh (features may have changed since last deriveAdj)
   for (const [h, cells] of sub) {
     const tSelf = S.hexes[h].t;
     if (tSelf === 'N/A') continue;
@@ -1027,7 +1152,11 @@ function featPathD(pts) {
 }
 function renderFeatures() {
   for (const id of ['roads', 'trade', 'coastLines', 'riverMajor', 'riverMinor']) groups[id].innerHTML = '';
-  renderCoasts();
+  // Both read the same split of the map, and working it out is a flood fill per cut hex — so it is
+  // done once here rather than once in each of them.
+  const sub = coastSubcells();   // fresh: features may have changed since the last deriveAdj
+  renderBase(sub);
+  renderCoasts(sub);
   for (const f of S.features.features) {
     const st = FSTYLE[f.type];
     const a = { d: featPathD(f.pts), fill: 'none', stroke: st.stroke, 'stroke-width': st.width,
@@ -1135,7 +1264,7 @@ function saveLocal() {
     `Autosaved locally — ${S.features.features.length} features.`;
 }
 // computeRoute rebuilds S.adj, so the borders repaint picks up the coastline that was just drawn.
-function commitFeatures() { renderFeatures(); renderLabels(); saveLocal(); computeRoute(); paintBorders(); }
+function commitFeatures() { renderFeatures(); renderLabels(); saveLocal(); computeRoute(); paintRealms(); }
 
 /* ---------------- snapping ---------------- */
 // A hidden layer is not a snap target: if a feature's type layer is toggled off, new lines
@@ -4357,6 +4486,21 @@ function snapMarker(p) {
                  'stroke-width': close ? 1.8 : 1 }, groups.hover);
 }
 
+/* Who holds the subhex under the cursor, according to the Warlords scan — but only while that layer
+   is actually switched on. The scan is read lazily, on the first toggle, so before then there is
+   nothing to say; after it has been switched off again there is nothing you are looking at, and a
+   readout describing a layer you cannot see is a puzzle rather than an answer. Both states are
+   covered: no scan means never opened, `display: none` means closed again. */
+function warlordAt(h, ri) {
+  const g = groups.warlords;
+  if (!g || g.style.display === 'none' || !realmScans.has('warlords')) return '';
+  const c = realmCols.get('warlords')?.get(h + ':' + (ri | 0));
+  if (!c) return '';
+  const name = WARLORD_BY_RGB.get(c);
+  return `<br><span class="rg"><span class="chip" style="background:rgb(${c})"></span>` +
+         (name ? escHtml(name) : `unnamed colour ${rgbHex(c)}`) + '</span>';
+}
+
 /* What the isochrone has to say about the subhex under the cursor — the subhex, because the two
    halves of a split hex are different ground and may well have different answers, or one of them no
    answer at all. With one origin that is simply how long the march takes.
@@ -4445,6 +4589,7 @@ function onHover(e) {
     `${v.t}${hoverM ? ` · ${shKind} (${isPort(h, hoverRi) ? 'coastal/port' : 'inland'})` : ''}` +
     `${v.r ? ' · river (sheet)' : ''}${v.d ? ' · road (sheet)' : ''}` +
     (v.g ? `<br><span class="rg">${v.g}</span>` : '') +   // the region it belongs to, from the sheet
+    warlordAt(h, hoverRi) +                               // and who holds it, while that layer is up
     isoTip(h, hoverRi);
   tooltip.hidden = false;
   const wr = svg.parentElement.getBoundingClientRect();
@@ -4616,7 +4761,8 @@ function buildLayerUI() {
   const rows = PANEL_ORDER.map(id => byId[id]).filter(Boolean)
     .concat(LAYERS.filter(L => !PANEL_ORDER.includes(L.id))); // anything new falls in at the end
   for (const L of rows) {
-    if (L.slave) continue; // toggled by another layer (via `linked`), no row of its own
+    // Driven by another layer (via `linked`), or never switched at all — either way, no row.
+    if (L.slave || L.fixed) continue;
     const row = document.createElement('div');
     row.className = 'layer';
     row.innerHTML = `<label><input type="checkbox" ${L.def > 0 ? 'checked' : ''}> ${L.name}</label>
@@ -4627,10 +4773,15 @@ function buildLayerUI() {
     const apply = () => {
       if (chk.checked && L.lazy && !L._built) { L.lazy(); L._built = true; } // build on first use
       if (chk.checked && L._img && !L._img.getAttribute('href')) L._img.setAttribute('href', L.img); // fetch on first use
-      for (const id of [L.id, L.linked].filter(Boolean)) {
+      for (const id of [L.id, ...[L.linked || []].flat()]) {
         const g = groups[id];
+        if (!g) continue;
         g.style.display = chk.checked ? '' : 'none';
-        g.style.opacity = rng.value;
+        // A group folded into someone else's row may still want to sit at its own weight against the
+        // others in it — the drawn shoreline is a grid line, not a feature — so it scales the row's
+        // opacity rather than taking it whole. Only when folded in: a layer holding its own slider
+        // is already at the weight its own `def` set, and would otherwise be discounted twice.
+        g.style.opacity = rng.value * (id === L.id ? 1 : byId[id]?.op ?? 1);
         // CSS filter, so it costs nothing and never touches the underlying geometry or colours
         g.style.filter = L._inv ? 'invert(1)' : '';
       }
