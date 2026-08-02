@@ -1064,10 +1064,14 @@ function migrateFeatures(f) {
   if (!f.strongholds) f.strongholds = {};
   for (const id in f.strongholds) {
     const v = f.strongholds[id];
-    if (!Array.isArray(v)) f.strongholds[id] = v ? [v] : [];
-    // A hex whose only marker was a tombstone still needs the tombstone; an empty list means nothing
-    // was ever there and the key is just noise.
-    if (!f.strongholds[id].length) delete f.strongholds[id];
+    let list = Array.isArray(v) ? v : v ? [v] : [];
+    /* A tombstone sitting beside a live marker is meaningless and gets swept up. The datasheet flag is
+       covered by any marker at all, so there is nothing there for a tombstone to suppress — it can only
+       be debris from a briefly-shipped rule that matched the flag against the marker's *subhex*, under
+       which a marker dragged clear of its hex centre grew a phantom twin that then had to be erased.
+       A hex whose only entry is a tombstone keeps it: there, it is doing real work. */
+    if (list.some(m => !m.removed)) list = list.filter(m => !m.removed);
+    if (list.length) f.strongholds[id] = list; else delete f.strongholds[id];
   }
   // Names move from the hex onto the marker, once. A hex with a label but no marker keeps the label
   // where it is — it is a named place rather than a stronghold, and renderLabels still draws it.
@@ -1621,23 +1625,22 @@ const shRegion = (h, m) => {
    Two sources feed this, and keeping them straight is most of the work. A *marker* is something the
    drawing put there: a placed position, a type, a name, or a tombstone. The *datasheet* stronghold has
    none of that — it is a bare flag on the hex, standing at the hex centre, so it belongs to whichever
-   subhex the centre falls in. It shows up here as a synthetic entry marked `_sheet`, unless something
-   already occupies its subhex: a marker standing there *is* that stronghold, and a tombstone there is
-   how it gets erased.
+   subhex the centre falls in. It shows up here as a synthetic entry marked `_sheet`.
+
+   The flag counts only while the hex holds no markers at all. That rule is not obvious and is worth
+   stating plainly, because the obvious alternative is wrong: matching the flag against the marker's
+   *subhex* looks more precise, and it means that any marker ever dragged clear of its hex centre —
+   across a coastline, over to the near bank — stops covering the flag and a phantom second stronghold
+   appears beside it out of nowhere. Historically one marker was the one stronghold in its hex, wherever
+   it had been dragged to, and that is what the flag has to keep meaning. Once anything is in the hex,
+   everything in the hex is explicit; shEnsure makes the flag explicit before it lets anything join it.
 
    The synthetic entry is a throwaway, so nothing may write to it. shEnsure exists for that. */
 function shEntries(h) {
-  const out = [], taken = new Set();
-  for (const m of shList(h)) {
-    const ri = shRegion(h, m);
-    taken.add(ri);
-    if (!m.removed) out.push({ m, ri });
-  }
-  if (S.hexes[h]?.s) {
-    const ri = shRegion(h, {});
-    if (!taken.has(ri)) out.push({ m: { _sheet: true }, ri });
-  }
-  return out;
+  const list = shList(h);
+  if (list.length) return list.filter(m => !m.removed).map(m => ({ m, ri: shRegion(h, m) }));
+  if (S.hexes[h]?.s) return [{ m: { _sheet: true }, ri: shRegion(h, {}) }];
+  return [];
 }
 // The stronghold standing in subhex ri, if any. The first match wins: two in one subhex is not the
 // intended shape, and picking the earlier is at least stable.
@@ -1648,13 +1651,18 @@ function shAt(h, ri) {
    goes through here — otherwise editing a datasheet stronghold would mutate the synthetic entry above
    and the change would vanish on the next render with nothing to show it had ever been made. */
 function shEnsure(h, ri) {
-  const cur = shAt(h, ri);
-  if (cur && !cur._sheet) return cur;
-  // A marker taking over from the datasheet's stronghold stands where that stood: the hex centre, which
-  // is what an absent x/y means. One for an empty subhex needs a position of its own, or it would land
-  // in the centre's subhex rather than the one asked for.
-  const m = cur?._sheet ? {} : shPointFor(h, ri);
-  S.features.strongholds[h] = [...shList(h).filter(x => shRegion(h, x) !== (ri | 0)), m];
+  // Where the datasheet's own stronghold stands, while it is still only a flag.
+  const sheetRi = (S.hexes[h]?.s && !shList(h).length) ? shRegion(h, {}) : null;
+  // Anything joining an empty datasheet hex has to make that stronghold explicit first, or the flag
+  // would stop counting the moment the newcomer arrived and the original would silently disappear.
+  if (sheetRi !== null && sheetRi !== (ri | 0)) S.features.strongholds[h] = [{}];
+  const cur = shList(h).find(x => shRegion(h, x) === (ri | 0));
+  if (cur) return cur;                 // may be a tombstone; the caller clears `removed`
+  // A marker taking over from the datasheet's stronghold stands where that stood — the hex centre,
+  // which is what an absent position means. One for an empty subhex needs a position of its own, or it
+  // would land in the centre's subhex rather than the one asked for.
+  const m = sheetRi === (ri | 0) ? {} : shPointFor(h, ri);
+  S.features.strongholds[h] = [...shList(h), m];
   return m;
 }
 // Every hex that could be drawing a stronghold or a name: one with markers, one the datasheet fortifies,
@@ -1947,14 +1955,15 @@ function removeStronghold(h, ri) {
     else delete S.features.strongholds[h];
     return sheet;
   }
+  const wasImplicit = sheet && !shList(h).length;   // erasing the flag itself, never materialised
   const rest = shList(h).filter(x => shRegion(h, x) !== (ri | 0));
-  // A tombstone is only needed where the datasheet's own stronghold stands: it is the only thing that
-  // would otherwise come back on the next reload, having never had a marker to delete.
-  const sheetHere = sheet && shRegion(h, {}) === (ri | 0);
-  if (sheetHere) rest.push({ removed: true });
+  // A tombstone is needed only when the hex is left with nothing: the datasheet flag counts again the
+  // moment the hex is empty, so without one the stronghold would be back on the next reload. While any
+  // other marker remains, the flag is already fully accounted for by the markers.
+  if (sheet && !rest.some(x => !x.removed)) rest.push({ removed: true });
   if (rest.length) S.features.strongholds[h] = rest;
   else delete S.features.strongholds[h];
-  return sheetHere;
+  return wasImplicit || (sheet && !rest.some(x => !x.removed));
 }
 /* Three states rather than two: no stronghold, an ordinary one, a major one — for one subhex at a time.
    "None" goes through removeStronghold rather than around it, so that setting a datasheet hex to none
@@ -3145,25 +3154,68 @@ function removeWaypoint(ri, wi) {
    The same rule as the table decides what earns a place: shuffling about inside one hex is bookkeeping
    the solver needs, and only appears if it cost something — which is exactly what makes embarking and
    disembarking show up as stages of their own, between hexes rather than attached to one. */
-function stepsToText(ri) {
+/* Two readings of the same march, because an order and a note to yourself want different things.
+
+   The *detailed* one is the readout in a line: every hex with the ground it crosses and what the step
+   cost, plus embarking and disembarking as stages of their own, under a summary line. That is what goes
+   into written orders, where a ford nobody mentioned is a problem.
+
+   The *simple* one is the chain of hex numbers, plus the moments the column is not marching at all.
+   Taking ship is a week standing still and getting off again is a day, and a list of hexes that passes
+   over them in silence reads as a much shorter journey than it is — so those keep their place, named
+   and costed, while everything about the ground underfoot is dropped. */
+function stepsToText(ri, simple) {
   const rt = S.routes[ri], r = lastResults[ri];
   if (!rt || !r || r.fail || !r.steps?.length) return null;
   const parts = [];
   let prevH = null;
   r.steps.forEach((st, j) => {
     const sameHex = st.h === prevH; prevH = st.h;
+    if (simple) {
+      if (!sameHex) { parts.push(String(st.h)); return; }
+      // A stage inside a hex is not another place to march to, so it only earns a place by costing
+      // something — which is exactly what distinguishes embarking from shuffling over a bridge.
+      if (j > 0 && st.irl >= 0.005) parts.push(stageLabel(st));
+      return;
+    }
     if (j > 0 && sameHex && st.irl < 0.005) return;
     const terr = terrainLabel(st.h, st.ri, st.sea).toLowerCase();
     if (j === 0) parts.push(`${st.h} (${terr}, start)`);
     else if (sameHex) parts.push(st.note || 'in hex');       // a stage, not a hex: embark, disembark
     else parts.push(`${st.h} (${terr}${st.note ? ', ' + st.note : ''})`);
   });
+  if (simple) return parts.join(' -> ');
   const game = r.irl * RULES.GAME_DAYS_PER_IRL;
   const miles = Math.round(r.miles ?? r.hexes * RULES.HEX_MILES);
   // The summary goes on its own line so it can be deleted with one keystroke by anyone who only
   // wanted the chain — and so its numbers stay off the line the importer reads.
   return `${rt.name} — ${r.irl.toFixed(1)} IRL days (${game.toFixed(0)} in-game), ` +
          `${r.hexes} hexes ≈ ${miles} mi\n` + parts.join(' -> ');
+}
+/* A pause named plainly, for the simple chain. The solver's own notes say how the cost was arrived at
+   — "secure ships +7d" is a month of shipwrighting, "re-embark +1d" is going back aboard after a
+   landing — but an order only needs to know the column stops and for how long, so both come out as
+   Embark. Anything else that costs time without moving keeps its own note rather than being flattened
+   into a word that might not be true of it. */
+function stageLabel(st) {
+  const note = st.note || '';
+  // Anything else that costs time without moving is a halt. Repeating the solver's own note here would
+  // print its "+7d" alongside the duration and say the same thing twice in two different notations —
+  // and in practice nothing but embarking and disembarking ever reaches this line.
+  const what = /^(secure ships|re-embark)/.test(note) ? 'Embark'
+             : /^disembark/i.test(note) ? 'Disembark'
+             : 'Halt';
+  // Whole days stay whole: "7 days", not "7.0 days". A fraction is worth a decimal, and nothing here
+  // is ever finer than that.
+  const d = st.irl;
+  const n = Number.isInteger(d) ? String(d) : d.toFixed(1);
+  return `${what} (${n} day${d === 1 ? '' : 's'})`;
+}
+// Both buttons and both menu entries end up here, so the "nothing to copy" case is stated once.
+function copySteps(ri, simple) {
+  const t = stepsToText(ri, simple);
+  if (t) copyText(t, simple ? 'Hexes' : 'March');
+  else toast('Nothing to copy — no solved march on that route', true);
 }
 
 /* Hex numbers back out of pasted text, in the order they appear. Everything else is ignored, so a line
@@ -3267,12 +3319,10 @@ function openRouteMenu(i, x, y) {
     ctxHead(box, `<b>${escHtml(rt.name)}</b> — ${rt.wps.length} waypoint${rt.wps.length === 1 ? '' : 's'}`);
     ctxItem(box, 'Duplicate route', () => { closeCtx(); cloneRoute(i); });
     ctxSep(box);
-    ctxItem(box, 'Copy hexes', () => {
-      closeCtx();
-      const t = stepsToText(i);
-      if (t) copyText(t, 'March');
-      else toast('Nothing to copy — that route has no solved march', true);
-    });
+    ctxItem(box, 'Copy hexes — simple<span class="arw">948 -&gt; 949</span>',
+            () => { closeCtx(); copySteps(i, true); });
+    ctxItem(box, 'Copy hexes — detailed<span class="arw">with terrain</span>',
+            () => { closeCtx(); copySteps(i, false); });
     // Replaces this route's waypoints, not the selected route's — the menu was opened on a particular
     // row and that is the route it should act on.
     ctxItem(box, 'Paste hexes', async () => {
@@ -4146,11 +4196,8 @@ document.getElementById('clearRoute').onclick = clearAllRoutes;
 document.getElementById('copyArmy').onclick = () => copyText(armyToText(activeSettings()), 'Column');
 document.getElementById('pasteArmy').onclick = async () => applyArmyText(await pasteText('a column'));
 // Copy/paste the march. Both act on the active route, which is the one the card is describing.
-document.getElementById('copySteps').onclick = () => {
-  const t = stepsToText(S.activeRoute);
-  if (t) copyText(t, 'March');
-  else toast('Nothing to copy — no solved march on the active route', true);
-};
+document.getElementById('copySimple').onclick = () => copySteps(S.activeRoute, true);
+document.getElementById('copyDetailed').onclick = () => copySteps(S.activeRoute, false);
 document.getElementById('pasteSteps').onclick = async () => applyHexList(await pasteText('a list of hexes'));
 // Same as right-clicking the map, for touchscreens, which have no second button. Two buttons do it:
 // one in the sheet beside its siblings, one floating on the map for when the sheet is shut.

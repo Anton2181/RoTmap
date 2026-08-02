@@ -304,7 +304,8 @@
   <!-- Outside #routeOut on purpose: that div is rewritten wholesale on every recompute, and these
        two buttons would go with it. -->
   <div class="btnrow" id="routeStepsIO">
-    <button class="btn" type="button" id="copySteps" title="Copy this march as one line of hexes and terrain, ready to paste into orders.">Copy hexes</button>
+    <button class="btn" type="button" id="copySimple" title="Copy just the hex numbers: 948 -> 949 -> 950. Nothing else, and nothing to delete.">Copy simple</button>
+    <button class="btn" type="button" id="copyDetailed" title="Copy the whole march — every hex with its terrain, fords, ferries and where the column takes ship — under a summary line. This is what goes into written orders.">Copy detailed</button>
     <button class="btn" type="button" id="pasteSteps" title="Read hex numbers out of pasted text and make them this route's waypoints. Everything else in the text is ignored.">Paste hexes</button>
   </div>
 </div>
