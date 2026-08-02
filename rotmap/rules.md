@@ -62,7 +62,28 @@ Light infantry detachments move at normal (road) speed off-road and ignore the m
 - Harassment (2× enemy light cavalry in range): halve speed & forgo actions, or take 1%/5-day casualties.
 - Rest: morale +1 per 15 in-game days [3 IRL]; ending early −2 morale.
 - Messengers: 48 mi/day (friendly), 36 (hostile). News: 30 mi/day overland, 180 coastal.
+- Taking a fallen stronghold in hand: a **fortress** 5 in-game days [1 IRL day], a **town** 1d6 × 5 [1–6 IRL days], a **city** 2d6 × 5 [2–12 IRL days]. The walls falling is therefore not the end of the clock — a relief force that arrives inside that window arrives in time.
 - Scouting: own + adjacent hex (light cav +1–2); −1 hex bad weather, −2 very bad.
 - Wagons off-road: allowed, growing breakdown chance the longer off-road.
+
+## Relieving a siege
+
+The isochrone's **Siege relief** spread answers where a force has to be stationed to save a place
+that is being besieged. It is two journeys in opposite directions, not one:
+
+- **x** — word of the siege reaching the force, as the crow flies, at rumour (90 mi/IRL day) or
+  courier (240) speed.
+- **y** — the force marching from where it stands *back to* the besieged hex, pathfound under its
+  own column and the weather.
+
+Each leg is billed in **whole IRL days and separately**, then added: orders are issued in whole days,
+and these are two orders — news lands during a day, and the column forms up and sets out on the next.
+So the smallest possible answer for any hex but the besieged one is 2 days, and half a day of riding
+plus half a day of marching is 2, not 1.
+
+The march is costed **inward**. This matters: a hex is paid for by the step that enters it, so a
+march solved outward from the siege never pays for the besieged hex itself and pays instead for
+wherever it stops. On a fortress in the mountains that is a whole day at half pace, always in the
+player's favour, and on exactly the terrain fortresses are built on.
 
 Calculator caveats: night marches, harassment, morale effects and wagon breakdown are not modeled; embark assumed possible at any stronghold hex adjacent to water.

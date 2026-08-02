@@ -120,7 +120,7 @@ const S = {
      `origins` each carry a hex, a colour and a column of their own; `data` is one reach map per origin,
      index for index; `own` and `best` are what falls out of comparing them — which origin reaches each
      hex first, and how soon. An origin with h === null has been made but not yet placed. */
-  iso: { origins: [], active: -1, data: [], own: null, best: null }, isoPick: false,
+  iso: { origins: [], active: -1, data: [], parts: [], own: null, best: null }, isoPick: false,
   coastPickFor: null,
   dragErase: null, needRecompute: false,
   vb: { x: 0, y: 0, w: 4401, h: 2037 },
@@ -2615,10 +2615,140 @@ function optColor(b, n) {
   const t = n <= 1 ? 0 : b / (n - 1);
   return `hsl(${Math.round(130 - 130 * t)},72%,${Math.round(51 - 8 * t)}%)`;
 }
-// An army-mode idea only: a straight-line spread has no orders in it to round up.
+// An army-mode idea only: a straight-line spread has no orders in it to round up, and relief already
+// bills every leg in whole days, so there is nothing left over for the optimizer to shade.
 function isoOptimizing() {
-  return (document.getElementById('isoMode')?.value || 'army') === 'army'
-      && !!document.getElementById('isoOpt')?.checked;
+  return isoMode() === 'army' && !!document.getElementById('isoOpt')?.checked;
+}
+function isoMode() { return document.getElementById('isoMode')?.value || 'army'; }
+function isoRelief() { return isoMode() === 'relief'; }
+
+/* ---------------- relief: how far out a force can be stationed and still save the place ----------
+   A siege begins somewhere. Word of it has to reach an army before that army can march, so the
+   question a commander actually asks is not "how far can my men get in four days" but "how far away
+   can I station them and still have them arrive in four" — and the answer is a different shape from
+   an ordinary isochrone, because the two legs run in opposite directions over different ground.
+   News crosses the map as the crow flies; the column has to use the roads.
+
+   For a candidate hex H and the besieged hex T:
+       x = word of the siege travelling from T out to H   (straight line, RULES.SPREAD)
+       y = the column marching from H back to T           (pathfound, under H's own column)
+   and H is worth garrisoning when x + y is inside the budget.
+
+   Both legs are billed in whole days, and separately. Orders are issued in whole days — the same
+   fact the optimizer above is built on — and these are two orders rather than one: the news lands
+   during a day, and the column forms up and sets out on the next. Rounding the sum instead would
+   let half a day of riding and half a day of marching share a day they cannot share, and would put
+   a ring of hexes in the shading that in play would arrive to find the gates already open.
+
+   The march has to be solved *inward*, and that is not the same problem as the outward one this map
+   solves everywhere else. A hex is paid for by the step that enters it, so a march out of the siege
+   never pays for the besieged hex and pays instead for wherever it stops — the exact opposite of the
+   march coming back. Read outward, a fortress in the mountains costs its relief nothing to enter and
+   the error is a whole day at half pace, always in the player's favour, on precisely the hex a
+   fortress is most likely to be standing on. So the search below runs the movement graph backwards.
+
+   Backwards, but only once, and only over the ground it needs. The reverse of a move is not
+   something `expand` can produce, so the incoming edges of a node are recovered by expanding its
+   possible predecessors — the six neighbouring hexes, its own hex, and the far end of any trade
+   route touching it — and keeping whichever of their moves land on it. Every hex is expanded at most
+   once and only when the search actually reaches it, so the work stays in proportion to the area
+   covered rather than to the map. */
+function reliefMarch(toH, toRi, o, maxD) {
+  const inE = new Map();                 // node key -> [[predecessor key, cost], ...]
+  const filed = new Set();               // hexes whose outgoing moves have been filed as in-edges
+  // Every state a column could actually stand in here. `forcedAf` pins afloat on pure land and pure
+  // sea; only a river region is genuinely a choice. Afloat is never on a road, so those combinations
+  // are skipped rather than expanded into moves nothing can reach.
+  const fileHex = p => {
+    if (filed.has(p)) return;
+    filed.add(p);
+    const rs = regionsOf(p);
+    const gs = new Set([0]);
+    for (const v of S.adj.hexRoadGroup.get(p)?.values() || []) gs.add(v | 0);
+    for (let ri = 0; ri < rs.length && ri < MAX_REGIONS; ri++) {
+      const f = forcedAf(rs[ri]);
+      for (const [af, sh] of STATES) {
+        if (f !== null && af !== f) continue;
+        for (const g of gs) {
+          if (af && g) continue;
+          const from = sk(p, ri, af, sh, g);
+          for (const mv of expand(p, ri, af, sh, g, o)) {
+            const k = sk(mv.toH, mv.toRi, mv.af, mv.ships, mv.g);
+            let a = inE.get(k);
+            if (!a) inE.set(k, a = []);
+            a.push([from, mv.irl]);
+          }
+        }
+      }
+    }
+  };
+  const ensure = h => {
+    fileHex(h);
+    for (const n of neighbors(h)) fileHex(n);
+    for (const l of S.adj.tradeByHex.get(h) || []) fileHex(l.a === h ? l.b : l.a);
+  };
+  /* Seeded with every state the besieged subhex can be occupied in, because arriving is arriving:
+     a column that marches in and one that lands in from the river have both relieved the place. What
+     it cannot do is count a fleet sitting in the water as an arrival — that state is only seeded when
+     the besieged subhex is itself navigable, which `forcedAf` decides. */
+  const dist = new Map(), heap = [];
+  const rs0 = regionsOf(toH), f0 = forcedAf(rs0[toRi | 0] || rs0[0]);
+  const gs0 = new Set([0]);
+  for (const v of S.adj.hexRoadGroup.get(toH)?.values() || []) gs0.add(v | 0);
+  for (const [af, sh] of STATES) {
+    if (f0 !== null && af !== f0) continue;
+    for (const g of gs0) {
+      if (af && g) continue;
+      const k = sk(toH, toRi | 0, af, sh, g);
+      if (!dist.has(k)) { dist.set(k, 0); hpush(heap, [0, k, toH]); }
+    }
+  }
+  while (heap.length) {
+    const [d, k, h] = hpop(heap);
+    if (d > (dist.get(k) ?? Infinity)) continue;
+    if (d > maxD) continue;
+    ensure(h);                                   // in-edges of everything in this hex, computed once
+    for (const [from, irl] of inE.get(k) || []) {
+      const nd = d + irl;
+      if (nd < (dist.get(from) ?? Infinity)) { dist.set(from, nd); hpush(heap, [nd, from, from >>> SK_H]); }
+    }
+  }
+  /* Read off per hex, from the state a force *stationed* there would set out in — the same start
+     state a route from that hex would take, so a garrison is costed as a garrison rather than as
+     whatever state the search happened to pass through. Road group 0: an army standing in a hex is
+     not yet on any road, and picks one up with its first step. */
+  const best = new Map();
+  for (const [key] of dist) {
+    const h = key >>> SK_H;
+    if (best.has(h)) continue;
+    let bd = Infinity;
+    regionsOf(h).forEach((r, ri) => {
+      if (ri >= MAX_REGIONS) return;
+      const [af0, sh0] = startState(h, ri, o);
+      const v = dist.get(sk(h, ri, af0, sh0, 0));
+      if (v !== undefined && v < bd) bd = v;
+    });
+    if (bd <= maxD) best.set(h, bd);
+  }
+  return best;
+}
+
+function reliefAll(fromNode, o, newsSpeed, maxD) {
+  // Neither leg is searched past the whole budget: a hex that is more than maxD days out of earshot
+  // cannot be redeemed by standing next door, and vice versa.
+  const news = spreadAll(fromNode, newsSpeed, maxD);
+  const march = reliefMarch(fromNode.h, fromNode.ri | 0, o, maxD);
+  const best = new Map(), parts = new Map();
+  for (const [h, m] of march) {
+    const x = news.get(h);
+    if (x === undefined) continue;              // out of earshot — nobody there ever hears of it
+    const xd = optDays(x), yd = optDays(m), tot = xd + yd;
+    if (tot > maxD) continue;
+    best.set(h, tot);
+    parts.set(h, { newsD: xd, marchD: yd, news: x, march: m });
+  }
+  return { best, parts };
 }
 
 /* ---------------- several origins, and the ground between them ----------------
@@ -2850,17 +2980,24 @@ function renderIso() {
   if (!S.iso.own || !S.iso.own.size) return;
   const maxD = +document.getElementById('isoMax').value || 7;
   const opt = isoOptimizing();
-  // Both modes shade the same way — bucket every hex, batch each bucket into one path — and differ
-  // only in what the bucket means and what the chip beside it should say.
-  const band = opt ? 1 : (+document.getElementById('isoBand').value || 1);
-  const n = opt ? OPT_BUCKETS : Math.max(1, Math.ceil(maxD / band));
+  const relief = isoRelief();
+  // All three modes shade the same way — bucket every hex, batch each bucket into one path — and
+  // differ only in what the bucket means and what the chip beside it should say. Relief needs no
+  // band at all: its figures are already whole days, so one band per day is the only honest cut,
+  // and a half-day band would draw stripes across a number that never lands inside one.
+  const band = opt || relief ? 1 : (+document.getElementById('isoBand').value || 1);
+  const n = opt ? OPT_BUCKETS : relief ? maxD + 1 : Math.max(1, Math.ceil(maxD / band));
   const color = opt ? optColor : isoColor;
   // The epsilon is not decoration: 4 − 3.2 lands a hair under 0.8 while 2 − 1.2 lands a hair over,
   // so without it two costs that waste the same 0.8 of a day would be shaded differently. Nudging
   // down puts every exact boundary in the kinder bucket, and the chip labels read that way too.
   const bucket = opt ? d => Math.max(0, Math.min(n - 1, Math.floor(optWaste(d) * n - 1e-9)))
+                     : relief ? d => Math.max(0, Math.min(n - 1, Math.round(d)))
                      : d => Math.min(n - 1, Math.floor(d / band));
+  // "≤ 2 d" would be a lie in relief mode: these are exact whole-day totals, and a hex in the 2 band
+  // takes two days, not up to two.
   const label = opt ? b => `${(b / n).toFixed(1)}–${((b + 1) / n).toFixed(1)} d`
+                    : relief ? b => `${b} d`
                     : b => `≤ ${((b + 1) * band).toFixed(band < 1 ? 1 : 0)} d`;
   // Shaded by the time its *own* origin takes to reach it — `best` is already the winner's figure and
   // already inside maxD, so a hex belongs to exactly one band whoever holds it.
@@ -2897,10 +3034,11 @@ function renderIso() {
   });
   // Waste is not a distance, and five chips reading "0.4–0.6 d" would be taken for one if left
   // unlabelled beside the band legend they replace.
-  if (opt) {
+  if (opt || relief) {
     const cap = document.createElement('div');
     cap.className = 'isocap';
-    cap.textContent = 'Day thrown away by rounding the order up:';
+    cap.textContent = relief ? 'Days from the siege beginning to relief arriving — word out, then march back:'
+                             : 'Day thrown away by rounding the order up:';
     lg.appendChild(cap);
   }
   for (let b = 0; b < n; b++) {
@@ -2909,10 +3047,12 @@ function renderIso() {
     div.innerHTML = `<span class="sw" style="background:${color(b, n)}"></span>${label(b)}`;
     lg.appendChild(div);
   }
-  if (opt) {
+  if (opt || relief) {
     const foot = document.createElement('div');
     foot.className = 'isocap dim';
-    foot.textContent = 'Green halts spend their last day almost to the hour; red ones have just bought a day they barely use.';
+    foot.textContent = relief
+      ? 'Every shaded hex arrives inside the budget; the greener ones arrive with days in hand, and the reddest spend the whole of it.'
+      : 'Green halts spend their last day almost to the hour; red ones have just bought a day they barely use.';
     lg.appendChild(foot);
   }
 }
@@ -2933,15 +3073,25 @@ function computeRoute() {
   // that now depends on which panel is open, and the readout below must describe the route whatever
   // panel that happens to be.
   const o = armyOpts(S.routes[S.activeRoute]?.set);
-  const isoMode = document.getElementById('isoMode')?.value || 'army';
+  const mode = isoMode();
   const isoMax = +document.getElementById('isoMax').value || 7;
+  const newsSpeed = RULES.SPREAD[document.getElementById('isoNews')?.value || 'rumour'] || RULES.SPREAD.rumour;
   // One reach map per origin, each under its own column. Straight-line spreads ignore the column
-  // entirely, so for those the two origins differ only in where they stand.
-  S.iso.data = S.iso.origins.map(og =>
-    og.h == null ? null
-    : isoMode === 'message' ? spreadAll(og, RULES.SPREAD.message, isoMax)
-    : isoMode === 'rumour' ? spreadAll(og, RULES.SPREAD.rumour, isoMax)
-    : dijkstraAll(og, armyOpts(og.set), isoMax));
+  // entirely, so for those the two origins differ only in where they stand. Relief keeps its two
+  // legs alongside the total, because the total on its own does not say which of them is the
+  // constraint — and that is the whole of what you do about it.
+  S.iso.parts = [];
+  S.iso.data = S.iso.origins.map((og, i) => {
+    if (og.h == null) return null;
+    if (mode === 'relief') {
+      const r = reliefAll(og, armyOpts(og.set), newsSpeed, isoMax);
+      S.iso.parts[i] = r.parts;
+      return r.best;
+    }
+    return mode === 'message' ? spreadAll(og, RULES.SPREAD.message, isoMax)
+         : mode === 'rumour' ? spreadAll(og, RULES.SPREAD.rumour, isoMax)
+         : dijkstraAll(og, armyOpts(og.set), isoMax);
+  });
   assignIsoOwners(isoMax);
   renderIso();
   const results = [];
@@ -4022,6 +4172,23 @@ function isoTip(h) {
   const i = S.iso.own.get(h), d = S.iso.best.get(h);
   const og = S.iso.origins[i];
   const many = placedOrigins() > 1;
+  // In relief mode the total is the least of it. Which leg eats the budget is what you can act on:
+  // a march-bound hex wants a road or a shorter stretch of one, a news-bound hex wants a courier
+  // posted rather than a garrison moved, and the raw figures in brackets say how near the whole-day
+  // billing came to costing a day it never used.
+  const p = isoRelief() ? S.iso.parts?.[i]?.get(h) : null;
+  if (p) {
+    let r = `<br>${d} IRL d to relieve ${many ? escHtml(og?.name || 'the siege') : 'the siege'}` +
+            `<br><span class="rg">word ${p.newsD} d (${p.news.toFixed(1)}) + march ${p.marchD} d (${p.march.toFixed(1)})</span>`;
+    // With several sieges on the map a hex belongs to the one it can save soonest — but a hex that
+    // covers two of them is the one you actually want, so say what else it reaches and at what price.
+    if (many) {
+      const up = isoRunnerUp(h);
+      if (up) r += `<br><span class="rg">also relieves ${escHtml(S.iso.origins[up.i]?.name || 'the other')}` +
+                   ` in ${up.d} d — ${up.d - d} d later</span>`;
+    }
+    return r;
+  }
   let s = `<br>${d.toFixed(1)} IRL d from ${many ? escHtml(og?.name || 'origin') : 'origin'}`;
   // With the optimizer shading, the true cost alone is the least interesting of the three numbers:
   // what is being paid, and what of it is wasted, are the point.
@@ -4177,12 +4344,31 @@ document.getElementById('isoClear').onclick = () => {
   if (!S.iso.origins.length) return;
   pushUndoRoutes();
   S.iso.origins = []; S.iso.active = -1; S.iso.origin = null;
-  S.iso.data = []; S.iso.own = null; S.iso.best = null; S.isoPick = false;
+  S.iso.data = []; S.iso.parts = []; S.iso.own = null; S.iso.best = null; S.isoPick = false;
   document.getElementById('isoPick').classList.remove('on');
   computeRoute();
 };
-for (const id of ['isoBand', 'isoMax', 'isoMode', 'isoOpt'])
-  document.getElementById(id).addEventListener('change', () => { updateIsoSettingsShown(); computeRoute(); });
+/* One box, two questions. "Max days" in the spread modes is how far out to bother looking, and seven
+   is a comfortable answer; in relief mode the same box is the budget a siege gives you, and four is
+   the working figure. Carrying one number between them would mean a mode switch silently answering
+   a question you didn't ask — so each mode keeps its own, and keeps whatever you last set it to. */
+const ISO_MAX_DEFAULT = { army: 7, message: 7, rumour: 7, relief: 4 };
+const isoMaxFor = { ...ISO_MAX_DEFAULT };
+let isoLastMode = 'army';
+for (const id of ['isoBand', 'isoMax', 'isoMode', 'isoOpt', 'isoNews'])
+  document.getElementById(id).addEventListener('change', () => {
+    const box = document.getElementById('isoMax');
+    if (id === 'isoMax') isoMaxFor[isoLastMode] = +box.value || ISO_MAX_DEFAULT[isoLastMode];
+    if (id === 'isoMode') {
+      const m = isoMode();
+      if (m !== isoLastMode) {
+        isoMaxFor[isoLastMode] = +box.value || isoMaxFor[isoLastMode];
+        isoLastMode = m;
+        box.value = isoMaxFor[m];
+      }
+    }
+    updateIsoSettingsShown(); computeRoute();
+  });
 // No confirmation. It is one Ctrl+Z away from being back, and a modal that stops the work to ask
 // about something already undoable is friction pretending to be safety.
 function clearAllRoutes() {
@@ -5350,11 +5536,23 @@ function placeSettings(pane) {
 // answering a question nobody asked.
 function updateIsoSettingsShown() {
   const iso = UI.pane === 'iso';
-  const army = (document.getElementById('isoMode')?.value || 'army') === 'army';
+  const mode = isoMode();
+  const army = mode === 'army', relief = mode === 'relief';
+  // Relief marches one of its two legs, so it wants the column just as much as army mode does —
+  // it is only the two pure straight-line spreads that have nothing to do with it.
+  const column = army || relief;
   const slot = document.getElementById('isoSettingsSlot');
   const note = document.getElementById('isoNotArmy');
-  if (slot) slot.hidden = iso && !army;
-  if (note) note.hidden = !(iso && !army);
+  if (slot) slot.hidden = iso && !column;
+  if (note) note.hidden = !(iso && !column);
+  const rNote = document.getElementById('isoReliefNote');
+  if (rNote) rNote.hidden = !(iso && relief);
+  const newsWrap = document.getElementById('isoNewsWrap');
+  if (newsWrap) newsWrap.hidden = !relief;
+  // "Max days" is a limit on how far to look; in relief mode the same box is the budget itself —
+  // the whole question, not a bound on the answer — and calling it the same thing hides that.
+  const maxLbl = document.getElementById('isoMaxLbl');
+  if (maxLbl) maxLbl.textContent = relief ? 'Days to relieve' : 'Max days';
   // Nothing to round in a straight line, so the optimizer goes away with the column controls. And
   // while it is on the colours no longer mean bands at all — the band box would be asking for an
   // answer nothing reads, so it is dimmed rather than left looking live.
@@ -5362,6 +5560,9 @@ function updateIsoSettingsShown() {
   if (optWrap) optWrap.hidden = !army;
   const bandWrap = document.getElementById('isoBandWrap');
   if (bandWrap) {
+    // Gone in relief mode rather than dimmed: relief totals are whole days by construction, so there
+    // is no band to choose — one per day is the only cut that isn't a lie about the numbers.
+    bandWrap.hidden = relief;
     const off = isoOptimizing();
     bandWrap.classList.toggle('off', off);
     bandWrap.title = off ? 'Not used while the optimizer is shading by wasted day.' : '';

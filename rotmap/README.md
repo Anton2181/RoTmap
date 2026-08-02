@@ -42,6 +42,38 @@ Each drawn feature type has its own **Layers** toggle — Roads, Rivers (major),
 
 Coast fills sit directly on top of the terrain — they *are* terrain, just at subhex resolution — so the Layers panel lists them (and the coast lines) right under Terrain. The fills are split around the rivers in the draw order: land subhex fills, then the thematic ref scans, then the river layers, then sea subhex fills, then the **Classic map**, then the coast lines. The Classic map is deliberately above *both* halves of the coast fills, because it's the basemap you trace shorelines from and an opaque sea subhex painted over it hides the very coast you're following. The consequence is forced: since the sea fills sit above the rivers, a scan above the fills is also above the drawn rivers. Coast lines, roads, trade routes, the hex grid and strongholds all stay above it. A river drawn across a split hex therefore stays visible over the land half and slides under the open water rather than being painted over. Both halves share the single "Coast fills" toggle.
 
+## Relieving a siege
+
+The Isochrone panel's fourth spread, **Siege relief**, turns the usual question inside out. An
+ordinary isochrone asks how far a force can get; this one asks what a defender actually needs to know:
+*how far away can I station this force and still have it arrive in time*. The origin is the hex
+**being besieged**, and every shaded hex is somewhere you could quarter troops, shaded by how many
+days they would take to get back — word of the siege travelling out to them as the crow flies
+(rumour, 90 mi a day, or a courier at 240), and then the column marching in over the roads.
+
+Each leg is billed in **whole days, and separately**, then added. Orders are issued in whole days,
+and these are two orders rather than one — the news lands during a day and the column sets out on
+the next — so a rumour that takes three hours and a march that takes six still cost two days between
+them, and no hex but the besieged one can come in under two. The default budget is **4 days**;
+hovering a hex breaks the total back out into its two legs, with the unrounded figures in brackets,
+because which leg is eating the budget is what you can do something about. A hex held back by the
+march wants a road; one held back by the news wants a courier posted, not a garrison moved.
+
+The march is costed **inward**, in the direction it is actually made, which is not the same
+calculation as the outward one every other mode does. A hex is paid for by the step that enters it,
+so a march solved outward from the siege never pays for the besieged hex — and on a fortress in the
+mountains that is a whole day at half pace, unpaid, on precisely the ground fortresses stand on. So
+this mode runs the movement graph backwards, recovering each node's incoming moves from its possible
+predecessors and expanding each hex at most once, which keeps the work in proportion to the area
+covered rather than to the map.
+
+Several origins are several sieges, and a hex goes to whichever one it can save soonest; the tooltip
+names the other and says how much later it would arrive, since a hex that covers two sieges is
+usually the hex you want. How long you really have is a judgement the map cannot make for you — but
+the walls falling is not the end of it, since taking a stronghold in hand costs the besieger 5
+in-game days for a fortress (1 IRL day), 1d6 × 5 for a town (1–6) and 2d6 × 5 for a city (2–12).
+The panel's "How long you actually have" note keeps that table within reach of the box.
+
 ## Movement semantics
 
 - Route lines visually trace the drawn feature they use: a road step follows the road's drawn path, and a sailing step follows a drawn river's path where one connects the two hexes (open-sea and off-road steps go centre-to-centre).
