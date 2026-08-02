@@ -89,7 +89,12 @@ const LAYERS = [
   // Who holds what, read off the borders scan. It colours land only, so it belongs directly on top of
   // the land fills — and below everything you draw, which then reads over it the way the sidebar
   // implies. It needs no place above the sea fills, since it never paints water.
-  { id: 'borders',  name: 'Borders',        def: 0, lazy: () => loadRealmScan('borders', 'ref/Borders_clean.png') },
+  // The Borders map draws the warlords' doing over the realms' own claims, so it needs that scan as
+  // well — read here whether or not the Warlords layer is ever switched on.
+  { id: 'borders',  name: 'Borders',        def: 0, lazy: async () => {
+      await loadRealmScan('warlords', 'ref/warlords.png');
+      await loadRealmScan('borders', 'ref/Borders_clean.png');
+    } },
   // Who holds what *now*, over the top of who holds what by right. It goes directly above Borders so
   // that with both on, the warlord's claim is the one you see and the realm beneath shows only where
   // no warlord has taken it — which is the comparison the pair exists to make. It leaves nine tenths
@@ -167,6 +172,7 @@ if (!LOCAL) for (let i = LAYERS.length - 1; i >= 0; i--)
 const PUBLISH_MERGE = [
   { into: 'terrain',   name: 'Terrain', with: ['coast', 'coastSea', 'coastLines'] },
   { into: 'riverMajor', name: 'Rivers', with: ['riverMinor'] },
+  { into: 'roads',      name: 'Roads',  with: ['trade'] },
 ];
 if (!LOCAL) for (const m of PUBLISH_MERGE) {
   const host = LAYERS.find(L => L.id === m.into);
@@ -494,12 +500,24 @@ const rgbKey = hex => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16)).join
 const WARLORD_BY_RGB = new Map(Object.entries(WARLORD_NAMES).map(([hex, n]) => [rgbKey(hex), n]));
 const rgbHex = c => '#' + c.split(',').map(n => (+n).toString(16).padStart(2, '0')).join('');
 
+/* The Borders scan paints the empire in two shades of purple — the pale one and the strong one — and
+   those two are what "held by the empire" looks like on that map. Sampled from the scan itself rather
+   than guessed: they are far and away its two commonest washes, at 11% and 7% of the map.
+
+   The warlords are then laid over it. A legion holding ground the empire's map does not already show
+   as one of those two is still the empire's ground, in the sense that map is drawing — so it takes
+   the pale shade. The Blue Scarves are the exception, being nobody's subject: they keep their own
+   colour and appear on the Borders map as a realm in their own right. */
+const EMPIRE_LIGHT = '218,133,255', EMPIRE_DARK = '199,69,209';
+const BORDERS_INDEPENDENT = new Set(['106,181,216']);   // Blue Scarves
+
 const realmScans = new Map();   // layer id -> { d, w, h } decoded pixels
 // layer id -> Map("hex:region" -> "r,g,b"). Kept from the paint so the readout can answer for the
 // subhex under the cursor without sampling the image again, which would mean holding the pixels of
 // every scan for the sake of one lookup at a time.
 const realmCols = new Map();
 async function loadRealmScan(id, src) {
+  if (realmScans.has(id)) { paintRealms(); return; }   // already read; just make sure it is on screen
   const img = new Image();
   img.src = src;
   try { await img.decode(); } catch { return; }
@@ -509,7 +527,7 @@ async function loadRealmScan(id, src) {
   ctx.drawImage(img, 0, 0);
   try { realmScans.set(id, { d: ctx.getImageData(0, 0, cv.width, cv.height).data, w: cv.width, h: cv.height }); }
   catch { return; } // tainted, which happens on file://
-  paintRealms(id);
+  paintRealms();     // all of them: Borders is drawn partly from the Warlords scan
 }
 // The outline of one piece of a hex — the whole hexagon where a coastline hasn't split it, and the
 // piece's own polygon (plus any islands it left behind) where one has. Realm fills are painted with
@@ -522,6 +540,23 @@ function regionShape(hx, r) {
 // The scan is decoded once and kept; everything below is cheap enough to redo whenever the land
 // changes shape, which it does every time a coastline is drawn — and region indices shift with it,
 // so nothing here may be cached against them.
+/* The warlords, laid over the realms' own map. Ground a legion holds that the Borders scan does not
+   already show as the empire's takes the paler of the empire's two shades — it is being held *from*
+   the empire, and this map is about who holds what by right. The Blue Scarves are not that: they are
+   independent, so they are drawn in their own colour instead of being coloured in as anyone's.
+
+   Applied after the inheritance pass, so a spit that took its realm from the land beside it can still
+   be overruled by a legion sitting on it, and left out of the Warlords layer's own paint, which goes
+   on saying exactly what its scan says. */
+function overlayWarlords(cols) {
+  const w = realmCols.get('warlords');
+  if (!w) return;
+  for (const [k, c] of w) {
+    if (BORDERS_INDEPENDENT.has(c)) { cols.set(k, c); continue; }
+    const cur = cols.get(k);
+    if (cur !== EMPIRE_LIGHT && cur !== EMPIRE_DARK) cols.set(k, EMPIRE_LIGHT);
+  }
+}
 // Repaint every scan that has been loaded, or just the one named. Both are redone whenever the land
 // changes shape, since region indices move with it and nothing here may be cached against them.
 function paintRealms(only) {
@@ -611,6 +646,14 @@ function paintRealm(id) {
     }
   }
   for (const [k, c] of inherited) cols.set(k, c);
+  if (id === 'borders') overlayWarlords(cols);
+  // Hand-painted last, so it beats the scan, the inheritance and the warlords overlay alike. That is
+  // the point of it: it is there for the places all three of them get wrong.
+  for (const h in S.features.realms?.[id] || {})
+    for (const ri in S.features.realms[id][h]) {
+      const c = S.features.realms[id][h][ri];
+      if (c === 'none') cols.delete(h + ':' + ri); else cols.set(h + ':' + ri, c);
+    }
   realmCols.set(id, cols);   // what the readout answers from
   const byColour = new Map();
   for (const [key, c] of cols) {
@@ -804,6 +847,94 @@ function setRegionTerrain(h, ri, t) {
   commitFeatures();
 }
 const hasSubTerrain = h => !!S.features.subTerrain?.[h];
+
+/* Painting a realm on by hand. The two scans are pictures of a moment and go out of date the way any
+   picture does; rather than repaint a PNG to move one hex, an override is kept per layer, per subhex,
+   and applied over whatever the scan said. It lives in the features file with everything else drawn
+   by hand, so it exports, imports and undoes like the rest of it.
+
+   Keyed by subhex, and so subject to the same caveat as subTerrain: region indices move when a
+   coastline is redrawn, and an override on a hex you then cut in two may end up on the other half. */
+function setRealmAt(layer, h, ri, colour) {
+  pushUndo();
+  const all = S.features.realms || (S.features.realms = {});
+  const byHex = all[layer] || (all[layer] = {});
+  const byRi = byHex[h] || (byHex[h] = {});
+  if (!colour) {                             // back to whatever the scan says
+    delete byRi[ri | 0];
+    if (!Object.keys(byRi).length) delete byHex[h];
+  } else byRi[ri | 0] = colour;
+  commitFeatures();
+}
+const realmOverride = (layer, h, ri) => S.features.realms?.[layer]?.[h]?.[ri | 0] || null;
+
+/* The Realm tool's palette. Not a list kept by hand — the choices are the colours that layer actually
+   uses, read off the paint, most-used first. Whatever realms are on the map are what you can paint
+   with, and a realm added to a scan turns up here without anyone editing a table. Warlord colours are
+   named; the Borders scan's washes have no names, so they go by their own colour.
+
+   "Rub out" is a real choice rather than the absence of one, and is stored as such: an override of
+   `none` means *this subhex holds nobody*, which is different from having no override, where the scan
+   is left to speak. Without it there would be no way to clear ground the scan claims. */
+let realmPaint = null;              // the colour the tool is loaded with, or 'none', or null
+/* Reaching for the tool is as good as asking for the layer. Read the scan if it has not been read, so
+   there is a palette to choose from and something on screen to paint against — and redraw the picker
+   when it arrives, since reading a scan is a round trip and the palette comes from what it paints. */
+function ensureRealmLayer() {
+  const L = LAYERS.find(x => x.id === document.getElementById('realmLayer')?.value);
+  if (!L) return;
+  if (!L._built) { L._built = true; Promise.resolve(L.lazy?.()).then(renderRealmPicker); }
+}
+function renderRealmPicker() {
+  const wrap = document.getElementById('realmPick');
+  if (!wrap) return;
+  const on = S.mode === 'draw' && S.tool === 'realm';
+  wrap.hidden = !on;
+  if (!on) return;
+  const layer = document.getElementById('realmLayer').value;
+  const box = document.getElementById('realmSwatches');
+  box.innerHTML = '';
+  const counts = new Map();
+  for (const c of realmCols.get(layer)?.values() || []) counts.set(c, (counts.get(c) || 0) + 1);
+  const cols = [...counts].sort((a, b) => b[1] - a[1]).map(([c]) => c);
+  if (!cols.length) {
+    box.innerHTML = '<div class="emptynote">Switch that layer on once, so its colours are known.</div>';
+    return;
+  }
+  if (realmPaint === null) realmPaint = cols[0];
+  const add = (val, label, css) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'realmsw' + (realmPaint === val ? ' on' : '');
+    b.title = label;
+    b.innerHTML = `<span class="sw" style="background:${css}"></span>${escHtml(label)}`;
+    b.onclick = () => { realmPaint = val; renderRealmPicker(); };
+    box.appendChild(b);
+  };
+  for (const c of cols) add(c, WARLORD_BY_RGB.get(c) || rgbHex(c), `rgb(${c})`);
+  add('none', 'Nobody', 'repeating-linear-gradient(45deg,#333 0 4px,#555 4px 8px)');
+}
+/* Sweeping lays the colour down and leaves it there. A drag crosses the same subhex several times as
+   the hand wavers, and the click behaviour — same colour again lifts it — would flicker it on and off
+   under the cursor. So the sweep only ever sets. */
+function paintRealmDrag(wx, wy) {
+  const h = nearestHex(wx, wy);
+  if (!h || S.hexes[h].t === 'N/A' || !realmPaint) return;
+  const layer = document.getElementById('realmLayer').value;
+  const ri = regionAt(h, [wx, wy]);
+  if (realmOverride(layer, h, ri) === realmPaint) return;
+  setRealmAt(layer, h, ri, realmPaint);
+}
+// Painting one subhex. Same colour again lifts it, so the tool rubs out by being used twice — and a
+// colour that only matches what the scan already said is stored anyway, since the scan may change.
+function paintRealmAt(wx, wy) {
+  const h = nearestHex(wx, wy);
+  if (!h || S.hexes[h].t === 'N/A' || !realmPaint) return;
+  const layer = document.getElementById('realmLayer').value;
+  const ri = regionAt(h, [wx, wy]);
+  if (realmOverride(layer, h, ri) === realmPaint) setRealmAt(layer, h, ri, null);
+  else setRealmAt(layer, h, ri, realmPaint);
+}
 // What to call a region in a readout: its own terrain, or the fact that it is the other kind of
 // ground from the hex it sits in.
 function terrainLabel(h, ri, sea) {
@@ -1444,6 +1575,7 @@ function migrateFeatures(f) {
   if (!f.features) f.features = [];
   if (!f.labels) f.labels = {};
   if (!f.strongholds) f.strongholds = {};
+  if (!f.realms) f.realms = {};        // hand-painted realm colours, per scan layer
   for (const id in f.strongholds) {
     const v = f.strongholds[id];
     let list = Array.isArray(v) ? v : v ? [v] : [];
@@ -4232,8 +4364,10 @@ svg.addEventListener('pointerdown', e => {
       return;
     }
   }
-  if (e.button === 0 && S.mode === 'draw' && S.tool === 'erase') {
-    S.dragErase = { undoPushed: false };
+  if (e.button === 0 && S.mode === 'draw' && (S.tool === 'erase' || S.tool === 'realm')) {
+    // Realm shares the eraser's drag: both are "apply this to whatever I sweep over", and both want
+    // the whole sweep to be one press of Ctrl+Z.
+    S.dragErase = { undoPushed: false, paint: S.tool === 'realm' };
     svg.setPointerCapture(e.pointerId);
     return;
   }
@@ -4289,7 +4423,7 @@ svg.addEventListener('pointermove', e => {
   }
   if (S.dragErase && (e.buttons & 1) && Math.hypot(e.clientX - downPos[0], e.clientY - downPos[1]) > tapSlop(e)) {
     const [wx, wy, s] = toWorld(e);
-    eraseWholeAt(wx, wy, s);
+    if (S.dragErase.paint) paintRealmDrag(wx, wy); else eraseWholeAt(wx, wy, s);
     return;
   }
   onHover(e);
@@ -4406,6 +4540,7 @@ svg.addEventListener('dblclick', e => {
 });
 
 function drawClick(wx, wy, scale, e) {
+  if (S.tool === 'realm') { paintRealmAt(wx, wy); return; }
   if (S.tool === 'erase') {
     const thr = 8 / scale * 1.5 + 3;
     // strongholds (custom placements/flags AND datasheet ones) — nearest marker wins over lines
@@ -4848,6 +4983,7 @@ function setMode(m) {
   if (groups.tokens) groups.tokens.style.pointerEvents = m === 'draw' ? 'none' : '';
   svg.classList.toggle('routing', m === 'route');
   if (m !== 'draw' && S.drawing) finishDrawing();
+  renderRealmPicker();
 }
 document.getElementById('toolBtns').addEventListener('click', e => {
   const b = e.target.closest('button'); if (!b) return;
@@ -4855,6 +4991,15 @@ document.getElementById('toolBtns').addEventListener('click', e => {
   S.coastPickFor = null;
   S.tool = b.dataset.tool;
   document.querySelectorAll('#toolBtns button').forEach(x => x.classList.toggle('on', x === b));
+  // Reaching for the tool is as good as asking for the layer: read the scan if it has not been, so
+  // there is a palette to choose from and something on screen to paint against.
+  if (S.tool === 'realm') ensureRealmLayer();
+  renderRealmPicker();
+});
+document.getElementById('realmLayer')?.addEventListener('change', () => {
+  realmPaint = null;                       // a colour from one scan means nothing on the other
+  ensureRealmLayer();
+  renderRealmPicker();
 });
 document.querySelector('#toolBtns button').classList.add('on');
 

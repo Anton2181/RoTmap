@@ -265,7 +265,17 @@
           <button class="btn" type="button" data-tool="coast">Coast</button>
           <button class="btn" type="button" data-tool="stronghold">Stronghold</button>
           <button class="btn" type="button" data-tool="label">Label</button>
+          <button class="btn" type="button" data-tool="realm">Realm</button>
           <button class="btn" type="button" data-tool="erase">Erase</button>
+        </div>
+        <!-- Only while the Realm tool is up. Built by script from the colours each scan actually
+             uses, so the palette is whatever realms are on the map rather than a list to keep. -->
+        <div id="realmPick" hidden>
+          <label class="field"><span>Paint on</span><select id="realmLayer">
+            <option value="warlords">Warlords</option>
+            <option value="borders">Borders</option>
+          </select></label>
+          <div id="realmSwatches"></div>
         </div>
         <div class="btnrow">
           <button class="btn" type="button" id="undoBtn">Undo</button>
@@ -305,6 +315,12 @@
         </details>
         <details class="hint">
           <summary>Stronghold and Label</summary>
+          <b>Realm</b>: paint who holds a subhex, on the Borders or the Warlords layer. The palette is
+          whatever colours that scan actually uses, commonest first, named where the names are known —
+          so a realm added to a scan turns up here on its own. Click to paint, <b>drag to sweep</b>,
+          and click the same colour again to lift it and let the scan speak. <b>Nobody</b> clears
+          ground the scan claims, which nothing else can do. A hand-painted subhex beats the scan, the
+          spit inheritance and the warlords overlay alike, and travels in your features JSON.
           <b>Stronghold</b>: click to place or restore the marker within its hex; <b>Shift</b>+click
           toggles coastal/port — a blue ring means a port, where embarking and disembarking are
           possible. A hex's right-click menu sets the <b>class</b>: ordinary, <b>fortress</b> (the same

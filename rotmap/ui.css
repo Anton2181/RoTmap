@@ -727,3 +727,21 @@ body.colsizing { cursor: col-resize; user-select: none; }
   .fields { grid-template-columns: 1fr; }
   .tools { grid-template-columns: 1fr; }
 }
+
+/* Realm painting (local only) ---------------------------------------------- */
+/* The tool's palette: whichever colours the chosen scan actually uses, as a grid of chips. Two to a
+   row, because a warlord's name has to fit beside its colour and a column of one would run the panel
+   twice as long as the tools above it. */
+#realmPick { margin-top: var(--s3); }
+#realmSwatches { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s2); margin-top: var(--s3); }
+.realmsw {
+  display: flex; align-items: center; gap: var(--s2);
+  padding: 5px var(--s2); min-width: 0;
+  background: var(--bg-raise); color: var(--ink-2);
+  border: 1px solid transparent; border-radius: var(--r1);
+  font: inherit; font-size: var(--f2); text-align: left; cursor: pointer;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.realmsw:hover { background: var(--bg-hover); color: var(--ink); }
+.realmsw.on { border-color: var(--accent); color: #fff; }
+.realmsw .sw { flex: 0 0 13px; width: 13px; height: 13px; border: 1px solid #0007; border-radius: 3px; }
