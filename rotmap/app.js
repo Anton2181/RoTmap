@@ -192,6 +192,11 @@ const S = {
   mode: 'view', tool: 'road',
   G: null, hexes: null, names: { hexes: {}, floating: [] },
   features: { version: 1, features: [], labels: {}, strongholds: {} },
+  /* The commanderies, read off the three tier scans by tools/build-commanderies.py: a flat list of
+     { tier, hexes }, each one contiguous. They carry no names — a commandery is named for the
+     settlement it holds, and that name is derived from the live stronghold data (see below), so a
+     stronghold renamed on the map renames its commandery with it. */
+  commanderies: [],
   drawing: null, undoStack: [],
   routes: [], activeRoute: -1,
   tokens: [], tokenPick: false,   // counters dropped on hexes; tokenPick = next tap places one
@@ -608,42 +613,62 @@ function paintRealm(id) {
       if (best) cols.set(hx + ':' + ri, best);
     }
   }
-  // Land the scan doesn't speak for. Its washes stop at the coastline *it* was drawn with, so a spit
-  // or headland that your own coast puts further out falls outside every wash and comes back blank.
-  // Such a piece takes the realm of the land it adjoins — land it could be walked to, by the same
-  // region adjacency the marching rules use, not merely land in a neighbouring hex, since a spit
-  // faces plenty of hexes across water and taking a realm from one of those strands a piece of it
-  // out at sea. Collected before being applied, so nothing inherits from an inheritance and creeps
-  // inland a ring at a time, and land with no claimed neighbour simply stays unclaimed.
+  /* Land the scan doesn't speak for. Its washes stop at the coastline *it* was drawn with, so a spit
+     or headland that your own coast puts further out falls outside every wash and comes back blank.
+     Such a piece takes the realm of the land it adjoins — land it could be walked to, by the same
+     region adjacency the marching rules use, not merely land in a neighbouring hex, since a spit
+     faces plenty of hexes across water and taking a realm from one of those strands a piece of it
+     out at sea.
+
+     Run to a fixed point, because a spit's nearest held ground is often another spit. The shore the
+     drawn coast carves out runs as a *chain* of these fragments, and a single pass could only ever
+     reach the first link: hex 1965's sliver adjoined exactly two pieces of land, both of them Legion
+     VI's in the finished map, but one of those was itself a blank the same pass was about to fill —
+     so at voting time it counted as neutral ground rather than as the neighbour it turned out to be,
+     one vote against one, and the sliver stayed grey between two red hexes. Each round sees what the
+     last one settled and the loop stops when a round settles nothing.
+
+     Iterating cannot creep inland, because the only candidates are the pieces of a *split* hex —
+     S.adj.sub holds exactly the hexes a drawn coast or major river cuts, so a whole unsplit hex of
+     genuinely neutral ground is never up for inheritance in any round. What spreads is confined to
+     the shoreline the drawing itself created, which is what this pass is for. */
   const inherited = new Map();
-  for (const [hx, cells] of S.adj.sub) {
-    const rs = cells.regions;
-    for (let ri = 0; ri < rs.length; ri++) {
-      if (rs[ri].sea || cols.has(hx + ':' + ri)) continue;
-      // Unclaimed neighbours vote too, for staying unclaimed. Counting only the claimed ones made a
-      // single claimed edge decisive however much neutral ground the piece also touched — one vote
-      // beating nothing, because nothing was allowed to speak — so a spit adjoining one realm and
-      // two stretches of nobody's land came out as that realm's. Neutral is a real answer about a
-      // piece of ground, not the absence of one.
-      const votes = new Map();
-      let neutral = 0;
-      for (const n of neighbors(hx)) {
-        if (!S.hexes[n] || S.hexes[n].t === 'N/A') continue;
-        const nrs = regionsOf(n);
-        for (let rj = 0; rj < nrs.length; rj++) {
-          if (nrs[rj].sea || !regionsMeet(hx, ri, n, rj)) continue;
-          const c = cols.get(n + ':' + rj);
-          if (c) votes.set(c, (votes.get(c) || 0) + 1); else neutral++;
+  const held = k => cols.get(k) || inherited.get(k);
+  for (;;) {
+    // Collected per round rather than applied as they are found, so within a round nothing inherits
+    // from an inheritance and the result does not depend on the order the pieces are walked in.
+    const round = new Map();
+    for (const [hx, cells] of S.adj.sub) {
+      const rs = cells.regions;
+      for (let ri = 0; ri < rs.length; ri++) {
+        if (rs[ri].sea || held(hx + ':' + ri)) continue;
+        // Unclaimed neighbours vote too, for staying unclaimed. Counting only the claimed ones made a
+        // single claimed edge decisive however much neutral ground the piece also touched — one vote
+        // beating nothing, because nothing was allowed to speak — so a spit adjoining one realm and
+        // two stretches of nobody's land came out as that realm's. Neutral is a real answer about a
+        // piece of ground, not the absence of one.
+        const votes = new Map();
+        let neutral = 0;
+        for (const n of neighbors(hx)) {
+          if (!S.hexes[n] || S.hexes[n].t === 'N/A') continue;
+          const nrs = regionsOf(n);
+          for (let rj = 0; rj < nrs.length; rj++) {
+            if (nrs[rj].sea || !regionsMeet(hx, ri, n, rj)) continue;
+            const c = held(n + ':' + rj);
+            if (c) votes.set(c, (votes.get(c) || 0) + 1); else neutral++;
+          }
         }
+        let best = null, bn = 0;
+        for (const [c, n] of votes) if (n > bn) { bn = n; best = c; }
+        // Strictly more than the neutral ground, so a tie leaves it unclaimed: land is inherited when
+        // most of what it adjoins is held, not merely when something adjoining it is. A piece whose
+        // only land neighbour is claimed still inherits — there is nothing there to object — which is
+        // the case this pass was written for.
+        if (best && bn > neutral) round.set(hx + ':' + ri, best);
       }
-      let best = null, bn = 0;
-      for (const [c, n] of votes) if (n > bn) { bn = n; best = c; }
-      // Strictly more than the neutral ground, so a tie leaves it unclaimed: land is inherited when
-      // most of what it adjoins is held, not merely when something adjoining it is. A piece whose
-      // only land neighbour is claimed still inherits — there is nothing there to object — which is
-      // the case this pass was written for.
-      if (best && bn > neutral) inherited.set(hx + ':' + ri, best);
     }
+    if (!round.size) break;                       // terminates: every round that runs again adds one
+    for (const [k, c] of round) inherited.set(k, c);
   }
   for (const [k, c] of inherited) cols.set(k, c);
   if (id === 'borders') overlayWarlords(cols);
@@ -1606,7 +1631,13 @@ function saveLocal() {
     `Autosaved locally — ${S.features.features.length} features.`;
 }
 // computeRoute rebuilds S.adj, so the borders repaint picks up the coastline that was just drawn.
-function commitFeatures() { renderFeatures(); renderLabels(); saveLocal(); computeRoute(); paintRealms(); }
+// `commanderiesChanged` because a commandery is named for the settlement inside it: erasing, adding,
+// renaming or reclassifying a stronghold can rename the commandery around it, and the search rows and
+// the readout have to say the new name rather than the one cached before the edit.
+function commitFeatures() {
+  commanderiesChanged();
+  renderFeatures(); renderLabels(); saveLocal(); computeRoute(); paintRealms(); renderSearch();
+}
 
 /* ---------------- snapping ---------------- */
 // A hidden layer is not a snap target: if a feature's type layer is toggled off, new lines
@@ -2546,6 +2577,73 @@ function setStrongholdType(h, ri, kind) {
 // What class a marker is, as one word — the menu's current-value flag, the tooltip and anything else
 // that has to say it all ask here, so they can never disagree about a marker carrying both flags.
 const shKindOf = m => !m ? 'none' : m.major ? 'major' : m.fort ? 'fortress' : 'ordinary';
+/* ---------------- commanderies ----------------
+
+   The administrative division under the region: three tiers of them — core, province, frontier —
+   read off ref/{core,provinces,frontier}_commanderies.png into data/commanderies.json by
+   tools/build-commanderies.py. A hex belongs to at most one, and plenty of hexes belong to none.
+
+   Where a region is a claim the datasheet makes per hex, a commandery is a *set* of hexes, so the
+   two are stored the other way round from each other and the index below is what makes them ask-able
+   in the same way. Both end up answering "what is this hex part of" and "which hexes is that", which
+   is all the readout and the search need.
+
+   A commandery has no name of its own: it is named for the settlement inside it, the grandest one it
+   holds — a major city over a fortress over an ordinary stronghold, ties going to the lowest hex id
+   so the answer does not depend on iteration order. That is derived here rather than baked into the
+   file, so a stronghold renamed with the Draw tools renames its commandery too, and a hex that is
+   given its first stronghold can give a nameless commandery a name. */
+const COMM_RANK = { major: 0, fortress: 1, ordinary: 2 };
+let commIndex = null;     // hex -> index into S.commanderies
+let commSeats = null;     // index -> { h, name, kind } | null, the settlement it is named for
+
+// Dropped whenever the strongholds or the hand-written labels might have moved under us; the next
+// question rebuilds it. Cheap enough (a few hundred lookups) that nothing tries to be cleverer.
+function commanderiesChanged() { commIndex = null; commSeats = null; }
+
+function commanderyBuild() {
+  commIndex = new Map();
+  commSeats = S.commanderies.map((c, i) => {
+    for (const h of c.hexes) commIndex.set(h, i);
+    let best = null;
+    for (const h of c.hexes) {                    // ascending, so ties fall to the lowest hex
+      const list = shList(h).filter(m => !m.removed);
+      // A datasheet stronghold with no marker of its own still counts, and counts as ordinary —
+      // the sheet says one is there, not what kind.
+      for (const m of (list.length ? list : (S.hexes[h]?.s ? [{}] : []))) {
+        const name = shName(h, m);
+        if (!name) continue;
+        const kind = shKindOf(m);
+        if (!best || COMM_RANK[kind] < COMM_RANK[best.kind]) best = { h, name, kind };
+      }
+    }
+    return best;
+  });
+}
+// The commandery a hex is in, as { i, tier, name, hexes }, or null. `name` is null for one holding no
+// named settlement at all — possible in principle, and better said than silently blanked.
+function commanderyAt(h) {
+  if (!commIndex) commanderyBuild();
+  const i = commIndex.get(+h);
+  if (i === undefined) return null;
+  return { i, tier: S.commanderies[i].tier, name: commSeats[i]?.name ?? null,
+           seat: commSeats[i]?.h ?? null, hexes: S.commanderies[i].hexes };
+}
+// Every named commandery, for the search. Unnamed ones are left out: there would be nothing to type.
+function commanderyList() {
+  if (!commIndex) commanderyBuild();
+  const out = [];
+  S.commanderies.forEach((c, i) => {
+    if (commSeats[i]) out.push({ i, tier: c.tier, name: commSeats[i].name, hexes: c.hexes.length });
+  });
+  return out;
+}
+const commanderySize = i => S.commanderies[i]?.hexes.length || 0;
+function commanderyName(i) {
+  if (!commIndex) commanderyBuild();
+  return commSeats?.[i]?.name ?? null;
+}
+
 // A sensible spot for a marker that is being created rather than placed by hand: the middle of the
 // subhex it belongs to. Given as {x, y} so it can be spread straight into a new marker.
 function shPointFor(h, ri) {
@@ -4918,8 +5016,14 @@ function onHover(e) {
     if (hl) {
       el('path', { d: hl.map((q, i) => (i ? 'L' : 'M') + q[0].toFixed(1) + ' ' + q[1].toFixed(1)).join('') + 'Z',
                    fill: sea ? 'rgba(93,143,196,.35)' : 'rgba(127,174,90,.35)', stroke: '#fff', 'stroke-width': 1.4, opacity: 0.95 }, groups.hover);
-      subLabel = ' · ' + (sea ? 'sea' : 'land') + ' subhex';
-      if (!sea && S.features.subTerrain?.[h]?.[ri]) subLabel += ` (${S.features.subTerrain[h][ri]})`;
+      // Which piece of a split hex the cursor is on is a fact about how the map is *built*, not about
+      // the world — the highlight already shows it, and on the published map it reads as jargon. It
+      // is drawn either way; only the words are held back. Same for the sheet's river and road flags
+      // below: they are there to check the drawing against the data, which is a local job.
+      if (LOCAL) {
+        subLabel = ' · ' + (sea ? 'sea' : 'land') + ' subhex';
+        if (!sea && S.features.subTerrain?.[h]?.[ri]) subLabel += ` (${S.features.subTerrain[h][ri]})`;
+      }
     } else { const [cx, cy] = hexCenter(h); el('path', { d: hexPath(cx, cy), fill: 'none', stroke: '#fff', 'stroke-width': 1, opacity: 0.8 }, groups.hover); }
   } else {
     const [cx, cy] = hexCenter(h);
@@ -4931,12 +5035,24 @@ function onHover(e) {
   const hoverRi = regionAt(h, [wx, wy]);
   const hoverM = shAt(h, hoverRi);
   const name = hoverM ? shName(h, hoverM) : (S.features.labels[h] ?? S.names.hexes[h]);
-  const shKind = hoverM ? ({ major: 'major stronghold', fortress: 'fortress' }[shKindOf(hoverM)] || 'stronghold') : '';
+  /* What kind of place it is, as one phrase: "Coastal Major City", "Inland Fortress". Whether it can
+     be reached by ship is the first thing anyone wants of a stronghold on a map with a fleet on it,
+     so it leads rather than trailing in a bracket — and a bracket after a bracketed hex number was
+     one pair too many. Coastal and inland are both said; neither is the assumption. */
+  const shKind = hoverM
+    ? (isPort(h, hoverRi) ? 'Coastal ' : 'Inland ') +
+      ({ major: 'Major City', fortress: 'Fortress' }[shKindOf(hoverM)] || 'Stronghold')
+    : '';
+  // The two ways the map divides the same ground: the region, geographic, from the sheet; and under
+  // it the commandery, administrative, from the scans. A line each — they are different answers, and
+  // side by side the longer pairs ran past the width of the readout.
+  const cm = commanderyAt(h);
   tooltip.innerHTML = `<span class="t">${name ? name + ' — ' : ''}hex ${h}${subLabel}</span><br>` +
-    `${v.t}${hoverM ? ` · ${shKind} (${isPort(h, hoverRi) ? 'coastal/port' : 'inland'})` : ''}` +
-    `${v.r ? ' · river (sheet)' : ''}${v.d ? ' · road (sheet)' : ''}` +
-    (v.g ? `<br><span class="rg">${v.g}</span>` : '') +   // the region it belongs to, from the sheet
-    warlordAt(h, hoverRi) +                               // and who holds it, while that layer is up
+    `${v.t}${hoverM ? ` · ${shKind}` : ''}` +
+    (LOCAL ? `${v.r ? ' · river (sheet)' : ''}${v.d ? ' · road (sheet)' : ''}` : '') +
+    (v.g ? `<br><span class="rg">${escHtml(v.g)}</span>` : '') +
+    (cm?.name ? `<br><span class="cm">${escHtml(cm.name)} commandery <i>(${cm.tier})</i></span>` : '') +
+    warlordAt(h, hoverRi) +                               // who holds it, while that layer is up
     isoTip(h, hoverRi);
   tooltip.hidden = false;
   const wr = svg.parentElement.getBoundingClientRect();
@@ -5106,6 +5222,7 @@ document.getElementById('refetchBtn').onclick = async () => {
       hexes[+r[ix('Hexcode')]] = h;
     }
     S.hexes = hexes;
+    commanderiesChanged();   // the sheet's own stronghold flags feed the naming
     renderTerrain(); renderLabels(); S.adj = null; renderSearch(); computeRoute();
     info.textContent = `Fetched ${Object.keys(hexes).length} hexes from the sheet (in-memory; data/terrain.json unchanged).`;
   } catch (err) { info.textContent = 'Fetch failed: ' + err; }
@@ -5823,6 +5940,10 @@ async function boot() {
   const T = await (await fetch('data/terrain.json')).json();
   S.G = T.grid; S.hexes = T.hexes;
   try { S.names = await (await fetch('data/strongholds.json')).json(); } catch {}
+  // Shipped with the map and never edited from it, so unlike the drawing it is simply read: a missing
+  // or broken file costs the commandery readout and its search rows and nothing else.
+  try { S.commanderies = (await (await fetch('data/commanderies.json')).json()).commanderies || []; }
+  catch { S.commanderies = []; }
   initGeom();
   buildScaffold();
   if (adaptiveView()) coverView(); else applyViewBox();
@@ -5961,12 +6082,23 @@ function searchPlaces(raw) {
     const rank = score(fold(rg.name));
     if (rank !== null) hits.push({ region: rg.name, name: rg.name, hexes: rg.hexes, rank });
   }
+  // A commandery answers to the name of the settlement it is named for, which is also a place in its
+  // own right — so searching "Cašman" turns up both the town and the commandery around it, one row
+  // each. That is the point: they are different answers to the same word. The commandery sorts just
+  // below the town of the same name, since the tie-break on equal rank is the name and these two are
+  // equal there too — so the order is settled by the pass order above, place first.
+  for (const cm of commanderyList()) {
+    const rank = score(fold(cm.name));
+    if (rank !== null) hits.push({ comm: cm.i, name: cm.name, tier: cm.tier, hexes: cm.hexes, rank });
+  }
   hits.sort((a, b) => a.rank - b.rank || a.name.localeCompare(b.name));
   const seen = new Set();
   // Two places in one hex are two answers, so the dedupe key has to carry the subhex — otherwise
   // searching for the one on the far bank would silently return the one on the near bank instead.
   return hits.filter(x => {
-    const k = x.region ?? (x.h + ':' + (x.ri ?? ''));
+    const k = x.region != null ? 'r:' + x.region
+            : x.comm != null ? 'c:' + x.comm
+            : x.h + ':' + (x.ri ?? '');
     return !seen.has(k) && seen.add(k);
   }).slice(0, SEARCH_MAX);
 }
@@ -5979,9 +6111,13 @@ let searchHits = [], searchSel = 0;
    A plain click selects one thing and drops everything else; shift-click adds to what is already
    there, or takes that one back out. Selected rows stay in the list even once the box is empty, so a
    selection made three searches ago can still be found and switched off. */
-let sel = [];      // [{ region } | { h }] in the order they were chosen
-// Carries the subhex, so selecting the keep on one bank does not light up the town on the other.
-const selKey = it => (it.region != null ? 'r:' + it.region : 'h:' + it.h + ':' + (it.ri ?? ''));
+let sel = [];      // [{ region } | { comm } | { h }] in the order they were chosen
+// Carries the subhex, so selecting the keep on one bank does not light up the town on the other. A
+// commandery is keyed by its index rather than its name, since the name is derived and can change
+// under a selection — and two commanderies could in principle be named for the same word.
+const selKey = it => it.region != null ? 'r:' + it.region
+                   : it.comm != null ? 'c:' + it.comm
+                   : 'h:' + it.h + ':' + (it.ri ?? '');
 const inSel = it => sel.some(s => selKey(s) === selKey(it));
 const regionSize = name => {
   let n = 0;
@@ -5994,6 +6130,12 @@ const regionSize = name => {
 function searchRows() {
   const pinned = sel.map(it => it.region != null
     ? { region: it.region, name: it.region, hexes: regionSize(it.region) }
+    // Named from the live data for the same reason a place's row is: rename the seat and the pinned
+    // commandery renames with it. One whose only settlement has been erased keeps its row and loses
+    // its name, rather than vanishing out of a selection nobody dropped.
+    : it.comm != null
+    ? { comm: it.comm, name: commanderyName(it.comm) || 'commandery',
+        tier: S.commanderies[it.comm]?.tier, hexes: commanderySize(it.comm) }
     // Rebuilt from the marker where there is one, so a renamed stronghold's pin renames with it.
     : { h: it.h, ri: it.ri, name: (it.ri != null && shAt(it.h, it.ri) ? shName(it.h, shAt(it.h, it.ri)) : null)
                                   || S.features.labels[it.h] || S.names.hexes[it.h] || '' });
@@ -6019,13 +6161,21 @@ function renderSearch() {
     const nm = document.createElement('span'), meta = document.createElement('span');
     nm.className = 'nm'; meta.className = 'meta';
     nm.textContent = hit.name || 'hex ' + hit.h;          // textContent: names are data, not markup
+    // The capital's commandery is one hex, so the count has to be able to say so in English.
+    const nhex = n => `${n} hex${n === 1 ? '' : 'es'}`;
     if (hit.region != null) {
-      meta.textContent = `region · ${hit.hexes} hexes`;
+      meta.textContent = `region · ${nhex(hit.hexes)}`;
+    } else if (hit.comm != null) {
+      // The tier is what tells two commanderies apart at a glance, and it is the thing you are most
+      // likely to have been looking for, so it leads.
+      meta.textContent = `${hit.tier} commandery · ${nhex(hit.hexes)}`;
     } else {
       const t = S.hexes[hit.h]?.t;
       meta.textContent = hit.h + (t ? ' · ' + t : '');
     }
-    const item = hit.region != null ? { region: hit.region } : { h: hit.h };
+    const item = hit.region != null ? { region: hit.region }
+               : hit.comm != null ? { comm: hit.comm }
+               : { h: hit.h };
     d.title = inSel(hit) ? 'Click to deselect · shift-click to remove from the selection'
                          : 'Click to select · shift-click to add to the selection';
     d.onclick = e => pick(item, e.shiftKey);
@@ -6075,21 +6225,23 @@ function clearSelection() {
 // Named entry points, one thing at a time — what the search rows and anything else should call.
 const goToPlace = h => pick({ h }, false);
 const goToRegion = name => pick({ region: name }, false);
+const goToCommandery = i => pick({ comm: i }, false);
 
 /* Move the map to what was picked without touching how far in you are: a search is for finding
    something, not for deciding how closely you wanted to look at it. */
 function panToSelection(item) {
   let cx, cy;
-  if (item.region != null) {
+  if (item.region != null || item.comm != null) {
+    const ids = item.comm != null ? S.commanderies[item.comm]?.hexes || []
+                                  : Object.keys(S.hexes).filter(id => S.hexes[id].g === item.region);
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (const id in S.hexes) {
-      if (S.hexes[id].g !== item.region) continue;
+    for (const id of ids) {
       const [hx, hy] = hexCenter(+id);
       x0 = Math.min(x0, hx); x1 = Math.max(x1, hx);
       y0 = Math.min(y0, hy); y1 = Math.max(y1, hy);
     }
     if (x0 === Infinity) return;
-    cx = (x0 + x1) / 2; cy = (y0 + y1) / 2;   // the middle of the region, however much of it fits
+    cx = (x0 + x1) / 2; cy = (y0 + y1) / 2;   // the middle of it, however much of it fits
   } else {
     // Pans to the marker the row stands for, so picking the far-bank place goes to the far bank rather
     // than to whichever stronghold in the hex happened to be listed first.
@@ -6123,14 +6275,31 @@ function regionPath(name) {
   }
   return d;
 }
+// Same shape, from the other direction: a commandery already knows its hexes, so there is nothing to
+// scan for. Off-map filler is skipped here too, though a commandery should never contain any.
+function commanderyPath(i) {
+  let d = '';
+  for (const id of S.commanderies[i]?.hexes || []) {
+    if (S.hexes[id]?.t === 'N/A') continue;
+    const [cx, cy] = hexCenter(+id);
+    d += hexPath(cx, cy);
+  }
+  return d;
+}
+/* Regions wash gold and commanderies cyan, because the two overlap everywhere and one of each can be
+   lit at once: with a single colour, selecting a commandery inside a selected region would read as
+   the region having grown a brighter patch rather than as a second, smaller thing. */
+const AREA_TINT = { region: ['rgba(255,215,110,.28)', '#ffd76e'],
+                    comm:   ['rgba(95,208,255,.26)',  '#5fd0ff'] };
 function renderSelection(justKey) {
   groups.selRegion.innerHTML = '';
   groups.selHex.innerHTML = '';
   sel.forEach((it, i) => {
-    if (it.region == null) return;
-    const d = regionPath(it.region);
+    if (it.region == null && it.comm == null) return;
+    const d = it.comm != null ? commanderyPath(it.comm) : regionPath(it.region);
     if (!d) return;
-    el('path', { d, fill: 'rgba(255,215,110,.28)', 'fill-rule': 'evenodd',
+    const [wash, edge] = AREA_TINT[it.comm != null ? 'comm' : 'region'];
+    el('path', { d, fill: wash, 'fill-rule': 'evenodd',
                  stroke: 'none', 'pointer-events': 'none' }, groups.selRegion);
     // An edge round the outside makes the extent legible where the ground under the wash is already
     // patchy. Rather than working out the union of a few hundred hexagons, the same shape is stroked
@@ -6143,11 +6312,11 @@ function renderSelection(justKey) {
                               x: 0, y: 0, width: S.G.image_width, height: S.G.image_height }, groups.selRegion);
     el('rect', { x: 0, y: 0, width: S.G.image_width, height: S.G.image_height, fill: '#fff' }, mask);
     el('path', { d, fill: '#000', 'fill-rule': 'evenodd' }, mask);
-    el('path', { d, fill: 'none', stroke: '#ffd76e', 'stroke-width': 5, 'stroke-linejoin': 'round',
+    el('path', { d, fill: 'none', stroke: edge, 'stroke-width': 5, 'stroke-linejoin': 'round',
                  mask: `url(#${id})`, 'pointer-events': 'none' }, groups.selRegion);
   });
   for (const it of sel) {
-    if (it.region != null) continue;
+    if (it.region != null || it.comm != null) continue;
     const [cx, cy] = hexCenter(it.h);
     const a = { d: hexPath(cx, cy), fill: 'rgba(255,215,110,.18)', stroke: '#ffd76e', 'stroke-width': 3,
                 'stroke-linejoin': 'round', 'pointer-events': 'none' };
@@ -6168,7 +6337,9 @@ searchInput.addEventListener('keydown', e => {
     renderSearch();
   } else if (e.key === 'Enter') {
     const hit = searchHits[searchSel];
-    if (hit) pick(hit.region != null ? { region: hit.region } : { h: hit.h }, e.shiftKey);
+    if (hit) pick(hit.region != null ? { region: hit.region }
+                : hit.comm != null ? { comm: hit.comm }
+                : { h: hit.h }, e.shiftKey);
   } else if (e.key === 'Escape') {
     searchInput.value = ''; clearSelection(); renderSearch(); searchInput.blur();
   }

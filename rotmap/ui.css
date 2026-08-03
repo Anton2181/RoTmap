@@ -572,6 +572,11 @@ body.colsizing { cursor: col-resize; user-select: none; }
 }
 #tooltip .t { color: #fff; font-weight: 600; }
 #tooltip .rg { color: var(--ink-2); }
+/* The commandery gets a line under the region and has to be told apart from it at a glance, so it
+   wears the colour its selection wash does. The tier is the quieter half of the line: a qualifier on
+   the name, not a second fact about the hex. */
+#tooltip .cm { color: #9adcff; }
+#tooltip .cm i { color: var(--ink-3); font-style: normal; }
 /* A realm's own colour, beside its name — the readout says who holds the ground in the same terms
    the map underneath is using, so the two can be matched without counting down a legend. */
 #tooltip .chip {
