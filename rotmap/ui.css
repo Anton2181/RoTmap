@@ -523,6 +523,11 @@ body.colsizing { cursor: col-resize; user-select: none; }
 
 /* Draw tools -------------------------------------------------------------- */
 .tools { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s2); }
+/* Erase is last and there is an odd number of tools either way — nine locally, three published — so
+   left to itself it sat alone in half of the bottom row with a gap beside it. It takes the whole row
+   instead, which squares the block off and suits the one tool that is not a thing you draw with. The
+   span survives the single-column layout below 820px, where `1 / -1` is simply the one column. */
+.tools button[data-tool="erase"] { grid-column: 1 / -1; }
 
 /* ------------------------------------------------------------------- map */
 
@@ -537,6 +542,9 @@ body.colsizing { cursor: col-resize; user-select: none; }
 #map text { user-select: none; -webkit-user-select: none; pointer-events: none; }
 #map.drawing { cursor: crosshair; }
 #map.routing { cursor: pointer; }
+/* An armed dropper outranks the drawing cursor: the next click lifts a colour rather than laying one,
+   and the pointer is the only thing on screen that can say so once your eyes are on the map. */
+#map.picking { cursor: copy; }
 
 /* A selection stays lit until you click it off. The hex just picked blinks a few times first, to
    catch the eye — the animation doesn't hold its last frame, so the outline is simply there again
@@ -733,7 +741,7 @@ body.colsizing { cursor: col-resize; user-select: none; }
   .tools { grid-template-columns: 1fr; }
 }
 
-/* Realm painting (local only) ---------------------------------------------- */
+/* Map painting -------------------------------------------------------------- */
 /* The tool's palette: whichever colours the chosen scan actually uses, as a grid of chips. Two to a
    row, because a warlord's name has to fit beside its colour and a column of one would run the panel
    twice as long as the tools above it. */
@@ -750,3 +758,20 @@ body.colsizing { cursor: col-resize; user-select: none; }
 .realmsw:hover { background: var(--bg-hover); color: var(--ink); }
 .realmsw.on { border-color: var(--accent); color: #fff; }
 .realmsw .sw { flex: 0 0 13px; width: 13px; height: 13px; border: 1px solid #0007; border-radius: 3px; }
+/* The name is its own element because double-clicking it renames the realm, and because a long one
+   has to be the thing that ellipsises rather than pushing the chip out of the button. */
+.realmsw .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* The two that are not colours. They sit in the same grid as the swatches — they belong to the same
+   choice — but wear a dashed outline and no fill, so a row of solid chips reads as the palette and
+   these read as things to do to it. The first is pushed into column one, which starts them on a row
+   of their own however many colours the layer turned out to have. */
+.realmsw.realmact { background: none; border-style: dashed; border-color: var(--line-3); color: var(--ink-3); }
+.realmsw.realmact:nth-last-child(2) { grid-column: 1; }
+.realmsw.realmact:hover { background: var(--bg-hover); color: var(--ink); }
+/* Armed, the dropper is a mode the map is in, so it is lit the way a chosen swatch is. */
+.realmsw.realmact.armed { background: var(--bg-raise); border-style: solid; border-color: var(--accent); color: #fff; }
+/* The native colour dialog is the mechanism, the swatch above is the button: kept clickable from
+   script but out of sight, since no browser draws this control the way the panel does. */
+#realmPick { position: relative; }
+#realmCustomInput { position: absolute; left: 0; bottom: 0; width: 1px; height: 1px; opacity: 0; pointer-events: none; }

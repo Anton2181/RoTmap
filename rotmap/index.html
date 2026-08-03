@@ -257,25 +257,33 @@
     <!-- ---------------------------------------------------------- Draw -->
     <section class="pane" data-pane="draw">
       <div class="group">
+        <!-- `data-dev` marks a tool the published map drops: the ones that build the map rather than
+             annotate it. What survives is Label, Map painting and Erase — and Label is first, so it
+             is what the published panel opens on, which costs nothing to arm. Erase stays last in
+             either case, where the stylesheet gives it the whole bottom row. -->
         <div class="tools" id="toolBtns">
-          <button class="btn" type="button" data-tool="road">Road</button>
-          <button class="btn" type="button" data-tool="river_major">River (major)</button>
-          <button class="btn" type="button" data-tool="river_minor">River (minor)</button>
-          <button class="btn" type="button" data-tool="trade">Trade route</button>
-          <button class="btn" type="button" data-tool="coast">Coast</button>
-          <button class="btn" type="button" data-tool="stronghold">Stronghold</button>
+          <button class="btn" type="button" data-tool="road" data-dev>Road</button>
+          <button class="btn" type="button" data-tool="river_major" data-dev>River (major)</button>
+          <button class="btn" type="button" data-tool="river_minor" data-dev>River (minor)</button>
+          <button class="btn" type="button" data-tool="trade" data-dev>Trade route</button>
+          <button class="btn" type="button" data-tool="coast" data-dev>Coast</button>
+          <button class="btn" type="button" data-tool="stronghold" data-dev>Stronghold</button>
           <button class="btn" type="button" data-tool="label">Label</button>
-          <button class="btn" type="button" data-tool="realm">Realm</button>
+          <button class="btn" type="button" data-tool="realm">Map painting</button>
           <button class="btn" type="button" data-tool="erase">Erase</button>
         </div>
-        <!-- Only while the Realm tool is up. Built by script from the colours each scan actually
-             uses, so the palette is whatever realms are on the map rather than a list to keep. -->
+        <!-- Only while the Map painting tool is up. Built by script from the colours each scan
+             actually uses, so the palette is whatever realms are on the map rather than a list to keep. -->
         <div id="realmPick" hidden>
           <label class="field"><span>Paint on</span><select id="realmLayer">
             <option value="warlords">Warlords</option>
             <option value="borders">Borders</option>
           </select></label>
           <div id="realmSwatches"></div>
+          <!-- The native colour dialog, opened by the "Custom colour" swatch. Kept out of the flow
+               rather than styled: every browser draws this control its own way and none of them the
+               way the panel does, so the swatch is the button and this is only the mechanism. -->
+          <input type="color" id="realmCustomInput" value="#842a4b" aria-label="Custom realm colour">
         </div>
         <div class="btnrow">
           <button class="btn" type="button" id="undoBtn">Undo</button>
@@ -283,11 +291,14 @@
           <label class="btn file">Import<input type="file" id="importInput" accept=".json"></label>
         </div>
         <p class="hint" id="saveInfo">Autosaved locally.</p>
+        <p class="hint" data-pub>Everything here is <b>yours alone</b> — kept in this browser, never
+        sent anywhere and never seen by anyone else opening the map. <b>Export JSON</b> is how you
+        keep a copy or hand your painting on.</p>
       </div>
 
       <div class="group">
         <h2>Using the tools</h2>
-        <details class="hint">
+        <details class="hint" data-dev>
           <summary>Placing points</summary>
           Click to add snapped points — corners, edge midpoints, centres, sub-points, and the vertices
           of features you have already drawn, so new lines connect precisely — at most one hex ahead
@@ -295,7 +306,7 @@
           cancels, <b>Ctrl+Z</b> undoes. Hold <b>Alt</b> for free placement, or <b>E</b> to snap
           anywhere along the nearest hex edge.
         </details>
-        <details class="hint">
+        <details class="hint" data-dev>
           <summary>Coast</summary>
           Locked to a single hex: the first click picks the hex, and points snap only to that hex's
           corners, edges, centre and sub-points (hold <b>E</b> to snap anywhere along an edge). Points
@@ -306,29 +317,48 @@
           alike. <b>Shift</b>+click a coast later to re-pick its sea side.
         </details>
         <details class="hint">
-          <summary>Erase</summary>
-          Click a node to remove just it, click between nodes to cut that segment (which splits the
-          line), <b>Shift</b>+click to remove a whole line, or <b>drag</b> across the map to wipe
-          features and strongholds as you go. Clicking a stronghold marker removes it — <b>including
-          datasheet strongholds</b>, which are hidden persistently; Ctrl+Z or the Stronghold tool
-          brings them back.
+          <summary>Map painting</summary>
+          Paint who holds a subhex, on the Borders or the Warlords layer. The palette is whatever
+          colours that scan actually uses, commonest first, named where the names are known — so a
+          realm added to a scan turns up here on its own. Click to paint, <b>drag to sweep</b>, and
+          click the same colour again to lift it and let the scan speak. <b>Nobody</b> clears ground
+          the scan claims, which nothing else can do. A hand-painted subhex beats the scan, the spit
+          inheritance and the warlords overlay alike, and travels in your features JSON.
+          <br><b>Custom colour…</b> mixes one the scan never used — for a realm that did not exist
+          when the scan was drawn — opening on whatever is currently loaded, since mixing is usually
+          an adjustment. It joins the palette straight away, so it can be picked up again without
+          reopening the dialog. <b>Pick from map</b> arms the dropper: the next click loads the colour
+          under it instead of painting, reading what the map is <i>showing</i> there — an override, an
+          inherited spit and a warlord over the borders all answer alike. Ground nobody holds picks up
+          Nobody. Esc disarms.
+          <br><b>Double-click a colour's name to rename it.</b> The Warlords scan ships with a legend
+          of ten; the Borders washes have none and go by their hex code until you say otherwise. A name
+          is kept per layer and per colour, beats the legend, and shows in the hover readout as well as
+          the palette — clear the text to fall back to the legend, then to the hex. Names travel in
+          your features JSON with the paint.
         </details>
-        <details class="hint">
-          <summary>Stronghold and Label</summary>
-          <b>Realm</b>: paint who holds a subhex, on the Borders or the Warlords layer. The palette is
-          whatever colours that scan actually uses, commonest first, named where the names are known —
-          so a realm added to a scan turns up here on its own. Click to paint, <b>drag to sweep</b>,
-          and click the same colour again to lift it and let the scan speak. <b>Nobody</b> clears
-          ground the scan claims, which nothing else can do. A hand-painted subhex beats the scan, the
-          spit inheritance and the warlords overlay alike, and travels in your features JSON.
-          <b>Stronghold</b>: click to place or restore the marker within its hex; <b>Shift</b>+click
+        <details class="hint" data-dev>
+          <summary>Stronghold</summary>
+          Click to place or restore the marker within its hex; <b>Shift</b>+click
           toggles coastal/port — a blue ring means a port, where embarking and disembarking are
           possible. A hex's right-click menu sets the <b>class</b>: ordinary, <b>fortress</b> (the same
           marker with a purple square set inside the white), or major (the same marker drawn larger).
           Size is a degree and the square is a kind, so the two say different things and only one class
           holds at a time. Sea- and river-side strongholds are ports by default, and Shift+click overrides
-          that either way for the exceptions. <b>Label</b>: click any hex to name or rename it, which
-          works on datasheet strongholds too; clear the text to fall back to the datasheet name.
+          that either way for the exceptions.
+        </details>
+        <details class="hint">
+          <summary>Label</summary>
+          Click any hex to name or rename it, which works on datasheet strongholds too; clear the text
+          to fall back to the datasheet name. A commandery is named for the grandest settlement inside
+          it, so renaming the right stronghold renames the commandery around it.
+        </details>
+        <details class="hint">
+          <summary>Erase</summary>
+          Click a node to remove just it, click between nodes to cut that segment (which splits the
+          line), <b>Shift</b>+click to remove a whole line, or <b>drag</b> across the map to wipe
+          features and strongholds as you go. Clicking a stronghold marker removes it — <b>including
+          datasheet strongholds</b>, which are hidden persistently; Ctrl+Z brings them back.
         </details>
       </div>
     </section>

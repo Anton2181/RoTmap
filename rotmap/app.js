@@ -893,6 +893,30 @@ function setRealmAt(layer, h, ri, colour) {
 }
 const realmOverride = (layer, h, ri) => S.features.realms?.[layer]?.[h]?.[ri | 0] || null;
 
+/* What a realm is called. The Warlords scan ships with a legend — ten colours identified from the
+   image itself — and the Borders scan with none, so most of the palette has only ever been able to
+   go by its own hex code. A name given here is stored per layer and per colour and beats the legend,
+   which makes the legend a default rather than a fact: a legion that changes hands, a colour mixed
+   for a realm that did not exist when the scan was drawn, and every unnamed Borders wash can all be
+   told what they are. Clearing the text falls back to the legend, and then to the hex — the same way
+   clearing a stronghold's label falls back to the datasheet's name.
+
+   Keyed by colour rather than by subhex, so naming one hex of a realm names the realm. It lives in
+   the features file with everything else written by hand, and so exports, imports and undoes with the
+   rest of it. */
+const realmName = (layer, c) => S.features.realmNames?.[layer]?.[c] ?? WARLORD_BY_RGB.get(c) ?? null;
+const realmLabel = (layer, c) => realmName(layer, c) || rgbHex(c);
+function setRealmName(layer, c, name) {
+  pushUndo();
+  const all = S.features.realmNames || (S.features.realmNames = {});
+  const byColour = all[layer] || (all[layer] = {});
+  const n = (name || '').trim().slice(0, 40);
+  if (n) byColour[c] = n; else delete byColour[c];
+  if (!Object.keys(byColour).length) delete all[layer];
+  commitFeatures();
+  renderRealmPicker();
+}
+
 /* The Realm tool's palette. Not a list kept by hand — the choices are the colours that layer actually
    uses, read off the paint, most-used first. Whatever realms are on the map are what you can paint
    with, and a realm added to a scan turns up here without anyone editing a table. Warlord colours are
@@ -902,6 +926,21 @@ const realmOverride = (layer, h, ri) => S.features.realms?.[layer]?.[h]?.[ri | 0
    `none` means *this subhex holds nobody*, which is different from having no override, where the scan
    is left to speak. Without it there would be no way to clear ground the scan claims. */
 let realmPaint = null;              // the colour the tool is loaded with, or 'none', or null
+/* A colour mixed by hand belongs in the palette even before it has been laid down anywhere, or it
+   could only ever be used for one subhex: the palette is read off the paint, and a colour that is
+   nowhere on the map yet is nowhere in that reading. Kept per layer, since a colour mixed for the
+   warlords means nothing on the borders — the same reason `realmPaint` is dropped when the layer
+   changes. Once painted it turns up in the reading on its own and this copy is simply redundant. */
+const realmCustom = new Map();      // layer -> the last colour mixed by hand
+/* The dropper is armed rather than instant: it is a mode the next map click resolves, like the coast
+   tool's sea-side pick. Instant would mean a modifier, and the one modifier free here is the one
+   that erases a whole line under the eraser — too close for a tool that shares the eraser's drag. */
+let realmDropper = false;
+function setRealmDropper(on) {
+  realmDropper = !!on;
+  svg.classList.toggle('picking', realmDropper);
+  renderRealmPicker();
+}
 /* Reaching for the tool is as good as asking for the layer. Read the scan if it has not been read, so
    there is a palette to choose from and something on screen to paint against — and redraw the picker
    when it arrives, since reading a scan is a round trip and the palette comes from what it paints. */
@@ -910,34 +949,71 @@ function ensureRealmLayer() {
   if (!L) return;
   if (!L._built) { L._built = true; Promise.resolve(L.lazy?.()).then(renderRealmPicker); }
 }
+// The colours a layer actually uses, most-used first. The palette proper; the extras below are added
+// to it rather than mixed into it, so they keep their place at the bottom however the map changes.
+function realmPalette(layer) {
+  const counts = new Map();
+  for (const c of realmCols.get(layer)?.values() || []) counts.set(c, (counts.get(c) || 0) + 1);
+  return [...counts].sort((a, b) => b[1] - a[1]).map(([c]) => c);
+}
 function renderRealmPicker() {
   const wrap = document.getElementById('realmPick');
   if (!wrap) return;
   const on = S.mode === 'draw' && S.tool === 'realm';
   wrap.hidden = !on;
-  if (!on) return;
+  if (!on) { if (realmDropper) { realmDropper = false; svg.classList.remove('picking'); } return; }
   const layer = document.getElementById('realmLayer').value;
   const box = document.getElementById('realmSwatches');
   box.innerHTML = '';
-  const counts = new Map();
-  for (const c of realmCols.get(layer)?.values() || []) counts.set(c, (counts.get(c) || 0) + 1);
-  const cols = [...counts].sort((a, b) => b[1] - a[1]).map(([c]) => c);
+  const cols = realmPalette(layer);
   if (!cols.length) {
     box.innerHTML = '<div class="emptynote">Switch that layer on once, so its colours are known.</div>';
     return;
   }
   if (realmPaint === null) realmPaint = cols[0];
-  const add = (val, label, css) => {
+  const add = (val, label, css, cls) => {
     const b = document.createElement('button');
     b.type = 'button';
-    b.className = 'realmsw' + (realmPaint === val ? ' on' : '');
+    b.className = 'realmsw' + (cls ? ' ' + cls : '') + (realmPaint === val ? ' on' : '');
     b.title = label;
-    b.innerHTML = `<span class="sw" style="background:${css}"></span>${escHtml(label)}`;
-    b.onclick = () => { realmPaint = val; renderRealmPicker(); };
+    b.innerHTML = `<span class="sw" style="background:${css}"></span><span class="nm">${escHtml(label)}</span>`;
+    b.onclick = () => { realmPaint = val; setRealmDropper(false); };
     box.appendChild(b);
+    return b;
   };
-  for (const c of cols) add(c, WARLORD_BY_RGB.get(c) || rgbHex(c), `rgb(${c})`);
+  // A colour is renamed by double-clicking its name, the way a route is. The click underneath still
+  // reaches the button and loads the brush, which is no loss: you were pointing at that realm anyway.
+  const colourSwatch = c => {
+    const b = add(c, realmLabel(layer, c), `rgb(${c})`);
+    b.title = `${realmLabel(layer, c)} · ${rgbHex(c)} — double-click the name to rename`;
+    b.querySelector('.nm').ondblclick = e => {
+      e.stopPropagation();
+      const cur = realmName(layer, c) ?? '';
+      const n = prompt(`Name for ${rgbHex(c)} on the ${layer} map — rename or clear:`, cur);
+      if (n !== null && n.trim() !== cur) setRealmName(layer, c, n);
+    };
+  };
+  for (const c of cols) colourSwatch(c);
+  // A hand-mixed colour sits with the rest and is selected the same way, so it can be picked up again
+  // after a detour through another swatch without reopening the dialog. Once it has been painted
+  // somewhere the reading above already holds it, and this stops adding a duplicate.
+  const mixed = realmCustom.get(layer);
+  if (mixed && !cols.includes(mixed)) colourSwatch(mixed);
   add('none', 'Nobody', 'repeating-linear-gradient(45deg,#333 0 4px,#555 4px 8px)');
+
+  const input = document.getElementById('realmCustomInput');
+  const mix = add(Symbol('mix'), 'Custom colour…',
+                  'conic-gradient(#f43,#fd3,#4d6,#3cf,#63f,#f3b,#f43)', 'realmact');
+  mix.onclick = () => {
+    if (!input) return;
+    // Seeded with whatever is loaded, so the dialog opens on the colour you were just using rather
+    // than on black — mixing is nearly always an adjustment of something already on the map.
+    input.value = rgbHex(!realmPaint || realmPaint === 'none' ? (mixed || cols[0]) : realmPaint);
+    input.click();
+  };
+  const drop = add(Symbol('drop'), realmDropper ? 'Click the map…' : 'Pick from map',
+                   'linear-gradient(135deg,#8fa6bd,#dfe7ef)', 'realmact' + (realmDropper ? ' armed' : ''));
+  drop.onclick = () => setRealmDropper(!realmDropper);
 }
 /* Sweeping lays the colour down and leaves it there. A drag crosses the same subhex several times as
    the hand wavers, and the click behaviour — same colour again lifts it — would flicker it on and off
@@ -949,6 +1025,20 @@ function paintRealmDrag(wx, wy) {
   const ri = regionAt(h, [wx, wy]);
   if (realmOverride(layer, h, ri) === realmPaint) return;
   setRealmAt(layer, h, ri, realmPaint);
+}
+/* Lifting a colour off the map. It reads what the map is *showing* there rather than what the scan
+   alone said, because an override, an inherited spit and a warlord painted over the borders all look
+   the same to the eye and so must answer the same to the dropper. Ground nobody holds picks up
+   Nobody, which is a real brush rather than a failure to pick — the eraser of this tool.
+
+   Whatever it lifts is by construction already in the palette (that is where the palette is read
+   from), so there is nothing to remember: the swatch it selects is one that is on screen. */
+function pickRealmAt(wx, wy) {
+  const h = nearestHex(wx, wy);
+  if (!h || S.hexes[h].t === 'N/A') return setRealmDropper(false);
+  const layer = document.getElementById('realmLayer').value;
+  realmPaint = realmCols.get(layer)?.get(h + ':' + regionAt(h, [wx, wy])) || 'none';
+  setRealmDropper(false);
 }
 // Painting one subhex. Same colour again lifts it, so the tool rubs out by being used twice — and a
 // colour that only matches what the scan already said is stored anyway, since the scan may change.
@@ -1601,6 +1691,7 @@ function migrateFeatures(f) {
   if (!f.labels) f.labels = {};
   if (!f.strongholds) f.strongholds = {};
   if (!f.realms) f.realms = {};        // hand-painted realm colours, per scan layer
+  if (!f.realmNames) f.realmNames = {}; // and what those colours are called, per layer and colour
   for (const id in f.strongholds) {
     const v = f.strongholds[id];
     let list = Array.isArray(v) ? v : v ? [v] : [];
@@ -4462,7 +4553,8 @@ svg.addEventListener('pointerdown', e => {
       return;
     }
   }
-  if (e.button === 0 && S.mode === 'draw' && (S.tool === 'erase' || S.tool === 'realm')) {
+  // An armed dropper takes the click and lays nothing down, so it must not open a sweep either.
+  if (e.button === 0 && S.mode === 'draw' && (S.tool === 'erase' || (S.tool === 'realm' && !realmDropper))) {
     // Realm shares the eraser's drag: both are "apply this to whatever I sweep over", and both want
     // the whole sweep to be one press of Ctrl+Z.
     S.dragErase = { undoPushed: false, paint: S.tool === 'realm' };
@@ -4638,7 +4730,7 @@ svg.addEventListener('dblclick', e => {
 });
 
 function drawClick(wx, wy, scale, e) {
-  if (S.tool === 'realm') { paintRealmAt(wx, wy); return; }
+  if (S.tool === 'realm') { (realmDropper ? pickRealmAt : paintRealmAt)(wx, wy); return; }
   if (S.tool === 'erase') {
     const thr = 8 / scale * 1.5 + 3;
     // strongholds (custom placements/flags AND datasheet ones) — nearest marker wins over lines
@@ -4941,7 +5033,9 @@ function warlordAt(h, ri) {
   if (!g || g.style.display === 'none' || !realmScans.has('warlords')) return '';
   const c = realmCols.get('warlords')?.get(h + ':' + (ri | 0));
   if (!c) return '';
-  const name = WARLORD_BY_RGB.get(c);
+  // The same name the palette shows, so a colour renamed there is renamed here too — the readout and
+  // the swatch are the two places a realm says what it is and they must not disagree.
+  const name = realmName('warlords', c);
   return `<br><span class="rg"><span class="chip" style="background:rgb(${c})"></span>` +
          (name ? escHtml(name) : `unnamed colour ${rgbHex(c)}`) + '</span>';
 }
@@ -5075,6 +5169,7 @@ document.addEventListener('keydown', e => {
   else if (e.key === 'Escape') {
     if (!ctxEl.hidden) return closeCtx();          // first Escape dismisses the menu, next clears
     if (S.tokenPick) return setTokenPick(false);
+    if (realmDropper) return setRealmDropper(false);
     S.drawing = null; groups.edit.innerHTML = ''; clearSelection();
   }
   else if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
@@ -5091,7 +5186,6 @@ document.addEventListener('keyup', e => {
 
 /* ---------------- UI wiring ---------------- */
 function setMode(m) {
-  if (m === 'draw' && !LOCAL) m = 'route'; // no drawing on the published map
   S.mode = m;
   svg.classList.toggle('drawing', m === 'draw');
   // Drawing wants every point on the map clickable, and a counter sitting on the hex you are tracing
@@ -5114,10 +5208,35 @@ document.getElementById('toolBtns').addEventListener('click', e => {
 });
 document.getElementById('realmLayer')?.addEventListener('change', () => {
   realmPaint = null;                       // a colour from one scan means nothing on the other
+  setRealmDropper(false);                  // and neither does a dropper aimed at the one you left
   ensureRealmLayer();
   renderRealmPicker();
 });
-document.querySelector('#toolBtns button').classList.add('on');
+/* `input` rather than `change`, so dragging around the dialog's wheel repaints the swatch live and
+   you can see what you are mixing against the map behind it. The colour is armed as it is mixed —
+   closing the dialog leaves the brush loaded with whatever you settled on, which is what picking a
+   colour is for. */
+document.getElementById('realmCustomInput')?.addEventListener('input', e => {
+  const c = rgbKey(e.target.value);
+  realmCustom.set(document.getElementById('realmLayer').value, c);
+  realmPaint = c;
+  setRealmDropper(false);
+});
+/* The published map keeps the Draw panel, but only the tools that annotate the map rather than build
+   it: Label, Map painting and Erase. Someone reading it may well want to move a front line, name a
+   place the sheet never named, or take a road off their own copy — none of which touches anyone
+   else's, since it all lives in their browser. The line tools and the Stronghold tool are how the map
+   itself is made, and are dropped — buttons and their help alike — rather than hidden, along with the
+   Data panel's sheet refetch. Marked in the HTML so the two lists cannot drift apart. */
+for (const el of document.querySelectorAll(`[data-pane="draw"] [data-${LOCAL ? 'pub' : 'dev'}]`))
+  el.remove();
+// Whichever tool is left first is the one the panel opens on, so the default is read off the row
+// rather than assumed: locally that is Road, published it is Label — which arms nothing and fetches
+// nothing, unlike Map painting, whose first click is what pulls the scan down.
+{
+  const first = document.querySelector('#toolBtns button');
+  if (first) { S.tool = first.dataset.tool; first.classList.add('on'); }
+}
 
 document.getElementById('undoBtn').onclick = () => {
   if (S.drawing && S.drawing.pts.length) { S.drawing.pts.pop(); renderDrawing(); }
@@ -6369,7 +6488,7 @@ const PANE_TITLES = { find: 'Find', route: 'Routes', iso: 'Isochrone', tokens: '
                       draw: 'Draw', data: 'Data' };
 function showPane(name, opts) {
   if (!PANE_TITLES[name]) name = 'route';
-  if (!LOCAL && (name === 'draw' || name === 'data')) name = 'route';
+  if (!LOCAL && name === 'data') name = 'route';   // Draw survives publication; Data does not
   UI.pane = name;
   for (const el of document.querySelectorAll('#panelBody .pane')) el.classList.toggle('on', el.dataset.pane === name);
   for (const b of railEl.querySelectorAll('.railbtn[data-pane]')) b.classList.toggle('on', b.dataset.pane === name);
@@ -6421,9 +6540,12 @@ railEl.addEventListener('click', e => {
 document.getElementById('railShut').onclick = () => (UI.shut ? showPane(UI.pane) : closePanel());
 document.getElementById('panelClose').onclick = closePanel;
 
-// The published map has no Draw or Data panel at all — the buttons are dropped rather than hidden.
-if (LOCAL) for (const p of ['draw', 'data']) railEl.querySelector(`.railbtn[data-pane="${p}"]`).hidden = false;
-else for (const p of ['draw', 'data']) railEl.querySelector(`.railbtn[data-pane="${p}"]`).remove();
+// Draw is on both maps — trimmed to three tools when published, see the tool row above. Data is the
+// sheet refetch and the drawing reset, which are jobs for whoever maintains the map, so its button is
+// dropped rather than hidden.
+railEl.querySelector('.railbtn[data-pane="draw"]').hidden = false;
+if (LOCAL) railEl.querySelector('.railbtn[data-pane="data"]').hidden = false;
+else railEl.querySelector('.railbtn[data-pane="data"]').remove();
 
 /* Anything that floats over the map can be picked up by its header and put where it suits. One
    implementation, so the layer list and the route readout behave identically — and both remember

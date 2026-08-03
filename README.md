@@ -18,11 +18,12 @@ python -m http.server
 # then open http://localhost:8000
 ```
 
-Served from `localhost` (or `file://`, or a `.local` host) the **Draw** tools appear, which is how
-coastlines, roads, rivers, trade routes and strongholds get drawn. Anywhere else — including the
-published site — Draw is hidden and the map is read-only. Drawings live in `localStorage`; use
-**Export JSON** in the Draw panel and commit the result to `rotmap/data/features.json` to publish
-them.
+Served from `localhost` (or `file://`, or a `.local` host) the full **Draw** panel appears, which is
+how coastlines, roads, rivers, trade routes and strongholds get drawn, along with the **Data** panel.
+The published site keeps Draw but only its three annotating tools — Label, Map painting and Erase —
+and has no Data panel at all. Either way the work lives in that browser's `localStorage` and reaches
+nobody else; use **Export JSON** in the Draw panel and commit the result to
+`rotmap/data/features.json` to publish it.
 
 ## Publishing
 
