@@ -351,6 +351,11 @@ body.panel-shut #panel { display: none; }
 }
 .layer .inv:hover { border-color: var(--line-3); color: var(--ink); }
 .layer .inv.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+/* A row the Map painting tool switched on by itself. It blinks three times and settles, the same tell
+   the search gives a hex it has just found — enough to land the eye on the switch, since the next
+   question after "why did the map change" is "how do I change it back". */
+@keyframes layerflash { 0%, 100% { background: none } 50% { background: var(--accent) } }
+.layer.lit { border-radius: var(--r1); animation: layerflash .5s ease-in-out 3; }
 
 /* Route readout card ------------------------------------------------------ */
 #routeCard {
@@ -585,6 +590,10 @@ body.colsizing { cursor: col-resize; user-select: none; }
    the name, not a second fact about the hex. */
 #tooltip .cm { color: #9adcff; }
 #tooltip .cm i { color: var(--ink-3); font-style: normal; }
+/* Which of the two realm maps a line came from, said only when both are on and the pair would
+   otherwise be two chips and two names with nothing to tell them apart. Quiet, like the tier after a
+   commandery: it qualifies the name rather than adding a second fact about the hex. */
+#tooltip .qual { color: var(--ink-3); font-style: normal; }
 /* A realm's own colour, beside its name — the readout says who holds the ground in the same terms
    the map underneath is using, so the two can be matched without counting down a legend. */
 #tooltip .chip {

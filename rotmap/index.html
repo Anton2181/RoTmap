@@ -318,7 +318,10 @@
         </details>
         <details class="hint">
           <summary>Map painting</summary>
-          Paint who holds a subhex, on the Borders or the Warlords layer. The palette is whatever
+          Paint who holds a subhex, on the Borders or the Warlords layer. Reaching for the tool
+          <b>switches that layer on</b> if it was off — you cannot paint a map you cannot see. The
+          first time it does, the Layers panel opens with the row it ticked flashing, so it is clear
+          what changed and where to change it back; after that it switches the layer on quietly. The palette is whatever
           colours that scan actually uses, commonest first, named where the names are known — so a
           realm added to a scan turns up here on its own. Click to paint, <b>drag to sweep</b>, and
           click the same colour again to lift it and let the scan speak. <b>Nobody</b> clears ground
@@ -335,7 +338,10 @@
           of ten; the Borders washes have none and go by their hex code until you say otherwise. A name
           is kept per layer and per colour, beats the legend, and shows in the hover readout as well as
           the palette — clear the text to fall back to the legend, then to the hex. Names travel in
-          your features JSON with the paint.
+          your features JSON with the paint. On the readout <b>Borders speaks only where you have
+          named a wash</b> — unnamed, it would be a hex code, which tells nobody anything — plus the
+          realms that appear there in their own colour rather than the empire's, which today means the
+          Blue Scarves. Name a polity once and every hex of it answers from then on.
         </details>
         <details class="hint" data-dev>
           <summary>Stronghold</summary>

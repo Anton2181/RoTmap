@@ -941,13 +941,49 @@ function setRealmDropper(on) {
   svg.classList.toggle('picking', realmDropper);
   renderRealmPicker();
 }
-/* Reaching for the tool is as good as asking for the layer. Read the scan if it has not been read, so
-   there is a palette to choose from and something on screen to paint against — and redraw the picker
-   when it arrives, since reading a scan is a round trip and the palette comes from what it paints. */
+/* Reaching for the tool is as good as asking for the layer, and asking for it means seeing it. Read
+   the scan if it has not been read, so there is a palette to choose from — and redraw the picker when
+   it arrives, since reading a scan is a round trip and the palette comes from what it paints.
+
+   Then switch the layer *on*. Painting a map you cannot see is not a thing anyone wants to do, and
+   the old behaviour — read the scan, leave it hidden — meant the first few clicks landed invisibly
+   and the tool looked broken. It goes through the row's own checkbox rather than round the back of
+   it, so the panel never claims a layer is off while the map is painting it.
+
+   The first time that happens, say so: the Layers panel opens with the row it just ticked flashing.
+   A layer turning itself on is the kind of thing that has to be shown rather than done quietly,
+   because the next question is always "how do I turn it off again" and the answer is then on screen.
+
+   Once only, though. It is a thing to be told, not a thing to be reminded of, and a panel that
+   reopens whenever you reach for the tool — or switch scans, or come back from the eraser — is a
+   panel you spend the session closing. The showing and the switching are therefore separate: the
+   layer goes on *every* time, since painting a map you cannot see is never what anyone wanted, but
+   it is only ever pointed at once. Deliberately not saved with the UI preferences: this is orientation
+   for whoever is at the map now, and a reload is cheap enough to be worth showing again. */
+let realmLayerShown = false;
 function ensureRealmLayer() {
   const L = LAYERS.find(x => x.id === document.getElementById('realmLayer')?.value);
   if (!L) return;
   if (!L._built) { L._built = true; Promise.resolve(L.lazy?.()).then(renderRealmPicker); }
+  if (!L._chk || L._chk.checked) return;
+  L._chk.checked = true;
+  L._apply();          // `_built` is already set above, so this only reveals the group
+  if (realmLayerShown) return;
+  realmLayerShown = true;
+  openLayers();
+  flashLayerRow(L);
+}
+/* Three blinks and done, the same tell the search gives a hex it has just found. The class is dropped
+   and the row measured before it goes back on, which is what makes a second flash restart the
+   animation rather than be ignored as a no-op — and the pending cleanup is cancelled with it, or the
+   first flash's timer would arrive mid-way through the second and put it out early. */
+function flashLayerRow(L) {
+  if (!L._row) return;
+  clearTimeout(L._flash);
+  L._row.classList.remove('lit');
+  void L._row.offsetWidth;
+  L._row.classList.add('lit');
+  L._flash = setTimeout(() => L._row?.classList.remove('lit'), 1800);
 }
 // The colours a layer actually uses, most-used first. The palette proper; the extras below are added
 // to it rather than mixed into it, so they keep their place at the bottom however the map changes.
@@ -5028,16 +5064,45 @@ function snapMarker(p) {
    nothing to say; after it has been switched off again there is nothing you are looking at, and a
    readout describing a layer you cannot see is a puzzle rather than an answer. Both states are
    covered: no scan means never opened, `display: none` means closed again. */
-function warlordAt(h, ri) {
-  const g = groups.warlords;
-  if (!g || g.style.display === 'none' || !realmScans.has('warlords')) return '';
-  const c = realmCols.get('warlords')?.get(h + ':' + (ri | 0));
-  if (!c) return '';
-  // The same name the palette shows, so a colour renamed there is renamed here too — the readout and
-  // the swatch are the two places a realm says what it is and they must not disagree.
-  const name = realmName('warlords', c);
-  return `<br><span class="rg"><span class="chip" style="background:rgb(${c})"></span>` +
-         (name ? escHtml(name) : `unnamed colour ${rgbHex(c)}`) + '</span>';
+/* Who holds the ground, from whichever of the two scans are up. They answer different questions —
+   Borders is who holds it by right, Warlords who holds it now — so each gets a line of its own, and
+   when both are showing each says which map it came from. One alone needs no saying: there is
+   nothing there to confuse it with.
+
+   The two are not read equally, because they were not drawn equally. The Warlords scan ships with a
+   legend of its own, so it can name every colour it paints and admit it when it cannot. The Borders
+   scan ships with none — twenty-five washes that would otherwise read out as hex codes, which tell a
+   reader nothing at all. So Borders speaks **only where a colour has been named by hand**, with the
+   palette's double-click rename, and is silent otherwise. That silence is the default state of that
+   map and is meant to be: name a wash once and it starts answering, everywhere, for good.
+
+   The Warlords legend gets to speak for the Borders layer in exactly one case, and it is not a
+   coincidence of colour: `BORDERS_INDEPENDENT`. Every other warlord is overlaid onto that map as the
+   empire's own pale shade, because Borders is about who holds what *by right* and a legion holding
+   imperial ground is still holding imperial ground. A realm in that set is nobody's subject, so
+   `overlayWarlords` writes its own colour straight through instead — meaning the colour is on the
+   Borders map *because it is that realm*, by construction rather than by matching triple, and the
+   legend is describing it rather than guessing at it. That is the Blue Scarves. */
+function realmTip(h, ri) {
+  const found = [];
+  for (const id of ['borders', 'warlords']) {                 // by right first, then who sits on it
+    const g = groups[id];
+    if (!g || g.style.display === 'none' || !realmScans.has(id)) continue;
+    const c = realmCols.get(id)?.get(h + ':' + (ri | 0));
+    if (!c) continue;
+    // The same name the palette shows, so a colour renamed there is renamed here too — the readout
+    // and the swatch are the two places a realm says what it is and they must not disagree.
+    const legend = id === 'warlords' || BORDERS_INDEPENDENT.has(c);
+    const name = S.features.realmNames?.[id]?.[c] ?? (legend ? WARLORD_BY_RGB.get(c) : null);
+    if (!name && id === 'borders') continue;                  // an unnamed wash has nothing to say
+    found.push({ id, c, name });
+  }
+  const both = found.length > 1;
+  return found.map(({ id, c, name }) =>
+    `<br><span class="rg"><span class="chip" style="background:rgb(${c})"></span>` +
+    (name ? escHtml(name) : `unnamed colour ${rgbHex(c)}`) +
+    (both ? ` <i class="qual">${LAYERS.find(L => L.id === id)?.name || id}</i>` : '') +
+    '</span>').join('');
 }
 
 /* What the isochrone has to say about the subhex under the cursor — the subhex, because the two
@@ -5146,7 +5211,7 @@ function onHover(e) {
     (LOCAL ? `${v.r ? ' · river (sheet)' : ''}${v.d ? ' · road (sheet)' : ''}` : '') +
     (v.g ? `<br><span class="rg">${escHtml(v.g)}</span>` : '') +
     (cm?.name ? `<br><span class="cm">${escHtml(cm.name)} commandery <i>(${cm.tier})</i></span>` : '') +
-    warlordAt(h, hoverRi) +                               // who holds it, while that layer is up
+    realmTip(h, hoverRi) +                                // who holds it, while those layers are up
     isoTip(h, hoverRi);
   tooltip.hidden = false;
   const wr = svg.parentElement.getBoundingClientRect();
@@ -5382,7 +5447,9 @@ function buildLayerUI() {
     chk.onchange = apply; rng.oninput = apply;
     inv.onclick = () => { L._inv = !L._inv; inv.classList.toggle('on', L._inv); apply(); };
     list.appendChild(row);
-    L._apply = apply;
+    // Kept on the layer so something else can work the switch and have the panel agree: the Map
+    // painting tool turns its own scan on, and a checkbox that said otherwise would be a lie.
+    L._apply = apply; L._row = row; L._chk = chk;
   }
 }
 
