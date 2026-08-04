@@ -337,7 +337,10 @@
           <br><b>Custom colour…</b> mixes one the scan never used — for a realm that did not exist
           when the scan was drawn — opening on whatever is currently loaded, since mixing is usually
           an adjustment. It joins the palette straight away, so it can be picked up again without
-          reopening the dialog. <b>Pick from map</b> arms the dropper: the next click loads the colour
+          reopening the dialog. <b>Double-click a swatch</b> to take the map to that colour — to the middle
+          of the largest piece of ground it holds, panning only, never zooming. The palette is read off
+          the paint, so everything in it is somewhere; but a wash of two subhexes on a coast three screens
+          away is a colour you can select and then not find. <b>Pick from map</b> arms the dropper: the next click loads the colour
           under it instead of painting, reading what the map is <i>showing</i> there — an override, an
           inherited spit and a warlord over the borders all answer alike. Ground nobody holds picks up
           Nobody. Esc disarms.
@@ -345,8 +348,12 @@
           of ten; the Borders washes have none and go by their hex code until you say otherwise. A name
           is kept per layer and per colour, beats the legend, and shows in the hover readout as well as
           the palette — clear the text to fall back to the legend, then to the hex. Names travel in
-          your features JSON with the paint. On the readout <b>Borders speaks only where you have
-          named a wash</b> — unnamed, it would be a hex code, which tells nobody anything — plus the
+          your features JSON with the paint. <b>Give two or more colours the same name and they are
+          labelled as one polity</b> — which is how a federation is made: the name is laid once across
+          the whole of their combined ground rather than repeated on each member, and it follows the
+          shape of the union. The swatches stay separate, since you still paint with them one at a time,
+          and each says in its tooltip how many colours share its name. On the readout <b>Borders speaks
+          only where you have named a wash</b> — unnamed, it would be a hex code, which tells nobody anything — plus the
           realms that appear there in their own colour rather than the empire's, which today means the
           Blue Scarves. Name a polity once and every hex of it answers from then on.
           <br>A named realm can also be <b>written across its own ground</b>. The <b>A</b> button on the

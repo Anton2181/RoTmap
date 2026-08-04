@@ -1550,25 +1550,54 @@ let rnLastStats = null;   // what the last fit did, for the panel to report
 // Which layer keeps a name when the two of them make the same one and it comes to a tie. Warlords is
 // the upper layer and the one whose scan the shared legend belongs to, so it goes first.
 const RN_LAYER_ORDER = ['warlords', 'borders'];
-// Every label one layer *wants*, fitted but not yet placed. Placement is a separate pass because it is
-// not a per-layer question — see renderRealmNames below.
+/* Every label one layer *wants*, fitted but not yet placed. Placement is a separate pass because it is
+   not a per-layer question — see renderRealmNames below.
+
+   Grouped by **name**, not by colour, and that is the whole mechanism for a federation. Several washes
+   given the same name are one polity here: their subhexes go into one set, contiguity is worked out over
+   the union, and what comes back is a single name laid across the whole of it rather than one copy per
+   member. A confederation whose members each have their own colour on the scan — as a scan of *who
+   holds what* quite properly draws them — reads as the one thing it is.
+
+   Grouping by the name rather than by some separate notion of a group is deliberate. Naming is already
+   the mechanism: it is stored per layer and per colour, it exports and imports and undoes with the rest
+   of the hand-drawn work, and the palette already renames by double-click. So there is nothing to
+   invent and nothing new to keep in step — call three washes "The Lasiŕos Federation" and they are one.
+   The tooltip goes on answering with the federation's name over any of its members, which is the right
+   answer to "who holds this", and the palette keeps the three swatches separate, which is the right
+   answer to "what can I paint with". */
 function realmLabelCandidates(id) {
   const cols = realmCols.get(id);
   if (!cols) return [];
-  const byColour = new Map();
+  const byName = new Map();   // name -> { cells: Set, colour: Map(cell -> the wash it came from) }
   for (const [k, c] of cols) {
-    if (!realmName(id, c)) continue;               // unnamed washes have nothing to write
-    if (!byColour.has(c)) byColour.set(c, new Set());
-    byColour.get(c).add(k);
+    const name = realmName(id, c);
+    if (!name) continue;                           // unnamed washes have nothing to write
+    let g = byName.get(name);
+    if (!g) byName.set(name, g = { cells: new Set(), colour: new Map() });
+    g.cells.add(k);
+    g.colour.set(k, c);
   }
   const hexA = wholeHexArea(), out = [];
-  for (const [c, cells] of byColour) {
-    const name = realmName(id, c);
-    const adj = realmGraph(cells);
+  for (const [name, g] of byName) {
+    const adj = realmGraph(g.cells);
     const labels = [];
     for (const block of realmBlocks(adj)) {
       const lab = fitRealmLabel(block, adj, name);
-      if (lab) { lab.c = c; lab.layer = id; labels.push(lab); }
+      if (!lab) continue;
+      /* Which colour to ink it in, for the treatment that inks a name in its realm's own colour: the
+         member wash holding most of *this block*. Per block rather than per federation, because the
+         point of a federation is that its parts are elsewhere — a name on one member's ground drawn in
+         another member's colour would be pointing at the wrong place. */
+      const share = new Map();
+      for (const k of block) {
+        const c = g.colour.get(k), i = k.indexOf(':');
+        share.set(c, (share.get(c) || 0) + cellArea(regionsOf(+k.slice(0, i))[+k.slice(i + 1)]));
+      }
+      let best = null, ba = -1;
+      for (const [c, a] of share) if (a > ba) { ba = a; best = c; }
+      lab.c = best; lab.layer = id;
+      labels.push(lab);
     }
     if (!labels.length) continue;
     // A realm gets its name on each piece of itself, but not on every scrap: without the fraction a
@@ -2083,6 +2112,16 @@ const realmOverride = (layer, h, ri) => S.features.realms?.[layer]?.[h]?.[ri | 0
    rest of it. */
 const realmName = (layer, c) => S.features.realmNames?.[layer]?.[c] ?? WARLORD_BY_RGB.get(c) ?? null;
 const realmLabel = (layer, c) => realmName(layer, c) || rgbHex(c);
+/* How many colours on this layer answer to the same name as this one — 1 for an ordinary realm, more for
+   a federation. Counted over the colours the layer is actually *painting* rather than over the stored
+   names, so a name left behind on a wash the scan no longer uses does not inflate it. */
+function realmKin(layer, c) {
+  const name = realmName(layer, c);
+  if (!name) return 1;
+  const seen = new Set();
+  for (const col of realmCols.get(layer)?.values() || []) if (realmName(layer, col) === name) seen.add(col);
+  return Math.max(seen.size, 1);
+}
 function setRealmName(layer, c, name) {
   pushUndo();
   const all = S.features.realmNames || (S.features.realmNames = {});
@@ -2169,6 +2208,37 @@ function realmPalette(layer) {
   for (const c of realmCols.get(layer)?.values() || []) counts.set(c, (counts.get(c) || 0) + 1);
   return [...counts].sort((a, b) => b[1] - a[1]).map(([c]) => c);
 }
+/* Take the map to a realm colour: to the middle of the largest contiguous piece of ground that colour
+   holds, panning only. The largest piece rather than the centre of everything it holds, because a realm
+   with an island the far side of the map has a centre out at sea — the whole point of going there is to
+   land on the ground itself.
+
+   Contiguity is the same walk the labels use, so "the piece it takes you to" and "the piece its name is
+   written on" are the same piece. The colour is *sampled from the paint* rather than from the scan, so
+   hand-painted overrides count and a colour that has been rubbed out everywhere takes you nowhere,
+   which is the honest answer. */
+function panToRealm(layer, c) {
+  const cols = realmCols.get(layer);
+  if (!cols || !S.adj) return false;
+  const cells = new Set();
+  for (const [k, col] of cols) if (col === c) cells.add(k);
+  if (!cells.size) return false;
+  let best = null, bestArea = -1;
+  for (const block of realmBlocks(realmGraph(cells))) {
+    let a = 0;
+    for (const k of block) {
+      const i = k.indexOf(':');
+      a += cellArea(regionsOf(+k.slice(0, i))[+k.slice(i + 1)]);
+    }
+    if (a > bestArea) { bestArea = a; best = block; }
+  }
+  if (!best) return false;
+  let x = 0, y = 0;
+  for (const k of best) { const p = cellPoint(k); x += p[0]; y += p[1]; }
+  S.vb = { ...S.vb, x: x / best.length - S.vb.w / 2, y: y / best.length - S.vb.h / 2 };
+  applyViewBox();
+  return true;
+}
 function renderRealmPicker() {
   const wrap = document.getElementById('realmPick');
   if (!wrap) return;
@@ -2198,11 +2268,30 @@ function renderRealmPicker() {
   // reaches the button and loads the brush, which is no loss: you were pointing at that realm anyway.
   const colourSwatch = c => {
     const b = add(c, realmLabel(layer, c), `rgb(${c})`);
-    b.title = `${realmLabel(layer, c)} · ${rgbHex(c)} — double-click the name to rename`;
+    /* Colours sharing a name are one polity: the label pass groups by name, so a federation is made by
+       calling each member wash the same thing. Said in the tooltip because it is otherwise invisible —
+       the swatches stay separate, as they must for painting, and nothing else on screen shows that two
+       of them have been tied together. */
+    const kin = realmKin(layer, c);
+    b.title = `${realmLabel(layer, c)} · ${rgbHex(c)}`
+            + `\nDouble-click the swatch to go to it; double-click the name to rename.`
+            + (kin > 1 ? `\nOne of ${kin} colours under this name; they are labelled as one polity.` : '');
+    /* Double-clicking the swatch takes the map to the realm. The palette is read off the paint, so every
+       entry in it is somewhere on the map by construction — but a wash of two subhexes on a coast three
+       screens away is a colour you can select and then not find, and the question "where is this one?"
+       has no other answer. It goes to the *largest* piece and only pans, never zooms, for the same reason
+       the search only pans: you have already decided how closely you want to look.
+
+       On the swatch rather than on the whole button because the name is the rename target, and one
+       element cannot carry two double-clicks. The clicks underneath still load the brush, which is no
+       loss — you were pointing at that realm anyway. */
+    b.querySelector('.sw').ondblclick = e => { e.stopPropagation(); panToRealm(layer, c); };
     b.querySelector('.nm').ondblclick = e => {
       e.stopPropagation();
       const cur = realmName(layer, c) ?? '';
-      const n = prompt(`Name for ${rgbHex(c)} on the ${layer} map — rename or clear:`, cur);
+      const n = prompt(`Name for ${rgbHex(c)} on the ${layer} map.\n\n`
+                     + 'Give two or more colours the same name and they are labelled as one polity — '
+                     + 'which is how a federation is made. Clear the text to fall back to the legend.', cur);
       if (n !== null && n.trim() !== cur) setRealmName(layer, c, n);
     };
   };
@@ -6503,7 +6592,11 @@ document.getElementById('importInput').onchange = async e => {
 document.getElementById('resetBtn').onclick = async () => {
   if (!confirm('Discard local drawing and reload data/features.json?')) return;
   localStorage.removeItem(LS_KEY);
-  S.features = migrateFeatures(await fetchFeaturesFile() || { version: 2, features: [], labels: {}, strongholds: {} });
+  const ff = await fetchFeaturesFile();
+  // The fingerprint goes with it: what is in the browser is now this publication's file exactly, so the
+  // next boot has no reason to think it stale.
+  if (ff) try { localStorage.setItem(FEAT_SRC_LS, ff.stamp); } catch {}
+  S.features = migrateFeatures(ff?.obj || { version: 2, features: [], labels: {}, strongholds: {} });
   S.undoStack = [];
   commitFeatures();
 };
@@ -7333,13 +7426,52 @@ document.getElementById('tokImport').onchange = async e => {
 };
 
 /* ---------------- boot ---------------- */
+/* The drawing as shipped with the map, and a fingerprint of the file it came from. The fingerprint is
+   what lets a republished map reach a browser that has been here before — see chooseFeatures. */
 async function fetchFeaturesFile() {
   try {
     const r = await fetch('data/features.json');
     if (!r.ok) return null;
-    const j = await r.json();
-    return Array.isArray(j.features) ? { version: 2, labels: {}, strongholds: {}, ...j } : null;
+    const txt = await r.text();
+    const j = JSON.parse(txt);
+    if (!Array.isArray(j.features)) return null;
+    return { obj: { version: 2, labels: {}, strongholds: {}, ...j }, stamp: quickHash(txt) };
   } catch { return null; }
+}
+// Enough of a fingerprint to tell one publication of a file from the next. Not a checksum for anything
+// that matters — length plus a rolling hash, which no plausible edit survives unchanged.
+function quickHash(s) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = (h * 0x01000193) >>> 0; }
+  return s.length + '-' + h.toString(36);
+}
+/* Which drawing to open with: the browser's own copy, or the one shipped with the map.
+
+   Locally the browser's copy always wins. It is the author's working state — everything drawn since the
+   last export — and a file on disk that happens to be newer must not be allowed to throw it away.
+
+   On the **published** map that answer is wrong, and wrong in a way that hides work rather than losing
+   it. The Draw tools survive publication, so any reader who draws a line, or erases one by accident,
+   gets a copy of the whole drawing written to their browser — and from that moment the shipped file is
+   never read again in that browser. Republish the map with sixteen realms newly named and that reader
+   sees none of them, for as long as they keep the browser: the names are on the server and cannot get
+   past the copy in front of them. Which is exactly what happened.
+
+   So on the published map the browser's copy is kept only while the shipped file is *the same file it
+   was made against*. The fingerprint of that file is stored beside it; when a new publication changes
+   the fingerprint, the new file wins and the stale copy is dropped. A reader's own sketch still survives
+   any number of reloads — it is only superseded by an actual republication, which is the one event that
+   should supersede it. */
+const FEAT_SRC_LS = 'rotmap_features_src_v1';
+function chooseFeatures(ls, file) {
+  const parsed = (() => { try { return ls ? JSON.parse(ls) : null; } catch { return null; } })();
+  if (!file) return parsed;                       // nothing shipped: the local copy is all there is
+  if (!parsed) return file.obj;
+  if (LOCAL) return parsed;                       // authoring: the working state always wins
+  const seen = localStorage.getItem(FEAT_SRC_LS);
+  if (seen === file.stamp) return parsed;         // the copy was made against this same publication
+  try { localStorage.removeItem(LS_KEY); } catch {}
+  return file.obj;                                // republished since: the map's own answer wins
 }
 async function boot() {
   const T = await (await fetch('data/terrain.json')).json();
@@ -7354,9 +7486,14 @@ async function boot() {
   if (adaptiveView()) coverView(); else applyViewBox();
   { const r = svg.getBoundingClientRect(); if (r.width && r.height) wasLandscape = r.width >= r.height; }
   renderTerrain();
-  const ls = localStorage.getItem(LS_KEY);
-  if (ls) { try { S.features = JSON.parse(ls); } catch {} }
-  else { const ff = await fetchFeaturesFile(); if (ff) S.features = ff; }
+  /* The shipped file is fetched whether or not this browser has a copy of its own, because deciding
+     between the two means knowing whether the file has changed since that copy was made. One fetch of a
+     file the map needs anyway. */
+  const ff = await fetchFeaturesFile();
+  const chosen = chooseFeatures(localStorage.getItem(LS_KEY), ff);
+  if (chosen) S.features = chosen;
+  // Recorded after the choice, so from here on a local edit counts as made against *this* publication.
+  if (ff) try { localStorage.setItem(FEAT_SRC_LS, ff.stamp); } catch {}
   migrateFeatures(S.features);
   renderFeatures(); renderLabels();
   buildLayerUI();
