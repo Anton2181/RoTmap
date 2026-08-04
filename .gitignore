@@ -10,3 +10,7 @@ ravagesRP/
 Thumbs.db
 desktop.ini
 *~
+# What a FUSE mount leaves behind when a tool rewrites a file in place: the old inode, unlinked but
+# still open. They are bookkeeping rather than files, and they go when the handle closes — but while
+# they are there they are thirty entries of noise in `git status`.
+.fuse_hidden*

@@ -91,7 +91,7 @@ const LAYERS = [
   // implies. It needs no place above the sea fills, since it never paints water.
   // The Borders map draws the warlords' doing over the realms' own claims, so it needs that scan as
   // well — read here whether or not the Warlords layer is ever switched on.
-  { id: 'borders',  name: 'Borders',        def: 0, lazy: async () => {
+  { id: 'borders',  name: 'Borders',        def: 0, names: 'Realm names — the name each colour has been given, laid across the ground it holds', lazy: async () => {
       await loadRealmScan('warlords', 'ref/warlords.png');
       await loadRealmScan('borders', 'ref/Borders_clean.png');
     } },
@@ -99,7 +99,7 @@ const LAYERS = [
   // that with both on, the warlord's claim is the one you see and the realm beneath shows only where
   // no warlord has taken it — which is the comparison the pair exists to make. It leaves nine tenths
   // of the map transparent, so most of Borders goes on showing through regardless.
-  { id: 'warlords', name: 'Warlords',       def: 0, lazy: () => loadRealmScan('warlords', 'ref/warlords.png') },
+  { id: 'warlords', name: 'Warlords',       def: 0, names: 'Warlord names — the name each colour has been given, laid across the ground it holds', lazy: () => loadRealmScan('warlords', 'ref/warlords.png') },
   // The thematic ref scans are underlays: over the terrain but under everything you draw, so your
   // own line always sits on top of the scan you traced it from. The Classic map is the exception —
   // see below.
@@ -133,7 +133,17 @@ const LAYERS = [
   { id: 'hexIds',   name: 'Hex IDs',        def: 0, lazy: renderHexIds }, // 4,113 numbers, baked to images on first use
   { id: 'roads',    name: 'Roads',          def: 1, types: ['road'] },
   { id: 'trade',    name: 'Trade routes',   def: 1, types: ['trade'] },
-  { id: 'labels',   name: 'Strongholds',    def: 1 },
+  /* The markers and the names they carry are one layer with two switches. A marker says a place is
+     there and how big it is; the name says which place. Reading a crowded stretch of coast you often
+     want the first without the second — and at low zoom the names are what collides, not the discs —
+     so the names come off on their own. On by default, because a stronghold you cannot name is of
+     limited use, and the realm names are off by default for the opposite reason: they are a second
+     reading of ground the map is already colouring. */
+  // `linked: 'shNames'` is the names, which are a group of their own so they can sit below the realm
+  // lettering while the markers stay above it — see buildScaffold. Linking is what keeps them under this
+  // row's checkbox, slider and invert button despite no longer being inside its group.
+  { id: 'labels',   name: 'Strongholds',    def: 1, linked: 'shNames',
+    names: 'Stronghold names — the name beside each marker', nameDef: true },
   // Tokens are the topmost thing on the map: they are what you are currently moving about on it,
   // and they must stay grabbable over everything drawn under them.
   { id: 'tokens',   name: 'Tokens',         def: 1 },
@@ -343,6 +353,32 @@ function buildScaffold() {
   // Tokens keep their place in LAYERS (and so their sidebar row), but move above the route lines and
   // the edit/hover scratch layers: a counter you are about to grab shouldn't hide under a route.
   svg.insertBefore(groups.tokens, groups.selHex);
+  /* The top of the map is three kinds of thing, and they stack in this order for three separate reasons.
+
+     **Stronghold names**, lowest of the three. They are the names of *places*, and a polity's name is a
+     statement about a whole stretch of ground — so where the two collide the larger claim reads over the
+     smaller. A town's name is also recoverable by hovering it, which a realm's lettering is not.
+
+     **Realm names** above them, and above everything drawn: a label a road can cross is no better than
+     no label. They ride in groups of their own rather than inside the layers they belong to, because a
+     realm layer is something you *dim* — Borders is most useful at half strength with the terrain
+     showing through — and a name faded along with the wash it names is a name you cannot read. Nor
+     should lettering be inverted by a button meant for tracing scans. So they sit outside that layer's
+     slider and filter.
+
+     **Stronghold markers** above both. A disc is a point rather than a piece of text, small enough that
+     lettering over it hides the very thing it marks, and it is the thing you click.
+
+     The stronghold names are a top-level group for this reason alone — they were a child of the marker
+     layer, which fixed their z-order to it — and they are `linked` back to that layer in LAYERS, so its
+     checkbox, its slider and its invert button all still reach them. */
+  groups.shNames = el('g', { id: 'lyr_shNames' });
+  svg.insertBefore(groups.shNames, groups.labels);
+  for (const L of LAYERS) if (L.names && L.id !== 'labels') {
+    realmNameG[L.id] = el('g', { id: 'lyr_names_' + L.id });
+    realmNameG[L.id].style.display = 'none';
+    svg.insertBefore(realmNameG[L.id], groups.labels);
+  }
 }
 function applyViewBox() {
   svg.setAttribute('viewBox', `${S.vb.x} ${S.vb.y} ${S.vb.w} ${S.vb.h}`);
@@ -566,6 +602,10 @@ function overlayWarlords(cols) {
 // changes shape, since region indices move with it and nothing here may be cached against them.
 function paintRealms(only) {
   for (const id of realmScans.keys()) if (!only || id === only) paintRealm(id);
+  // The names are fitted to the ground, so they cannot outlive a repaint: what has just been rewritten
+  // is which subhex belongs to whom, and a label placed against the old answer is in the wrong country.
+  // Once, after all the painting, because placing them is a joint pass over both layers at once.
+  renderRealmNames();
 }
 function paintRealm(id) {
   const g = groups[id], scan = realmScans.get(id);
@@ -687,7 +727,1129 @@ function paintRealm(id) {
   }
   for (const [c, d] of byColour) // one path per realm, so 4,000 hexes cost a couple of dozen nodes
     el('path', { d, fill: `rgb(${c})`, 'fill-rule': 'evenodd', stroke: 'none' }, g);
+  // The names that were on this ground are now stale, but they are not rebuilt here: placing them takes
+  // both layers at once, so paintRealms does it after every layer that needed painting has been painted.
+  realmNameG[id]?.replaceChildren();
 }
+
+/* ---------------- realm names ----------------
+   A name laid across the ground it belongs to, the way the grand strategy maps do it: not a caption
+   pinned to a centre, but lettering that runs the length of a country and bends with it, so the shape
+   of the word tells you the shape of the country before you have read it.
+
+   The work divides in two, and the division is the important thing about this section. **Finding a
+   baseline** — a line through the country to write along — is a question with several defensible
+   answers and no obviously right one; a parabola through the middle, a walk along the country's spine,
+   an arc of a circle, and the same arc shared with every other label on the map all produce maps that
+   look different and each look better than the others somewhere. **Setting a name along a baseline** —
+   trimming it to the ground, deciding how large the letters can be, how far apart, where they start —
+   is the same problem whatever line arrived, and is answered once.
+
+   So the baselines are a *list* rather than a decision, chosen from and tuned in the local-only Realm
+   labels panel, and everything downstream of `setNameAlong` neither knows nor cares which one it got.
+   Every number either half uses lives in `RN` and is a control on that panel; the published map takes
+   the defaults, which are what the panel was used to settle on. */
+const realmNameG = {};   // layer id -> the <g> its labels are drawn into
+
+/* Every knob, with the value the published map uses. Kept as one object rather than as constants
+   because the whole point is that they are tried against a real map with real names on it — a number
+   in this file is a hypothesis, and the panel is how it gets tested. */
+const RN_DEFAULT = {
+  /* The **circular arc through the spine**: the walk finds the route through the country, and then the
+     whole of it is reduced to a single arc. One curvature per label, so there is no ripple available to
+     it at any degree of zoom — which the cubic could still manage on a long awkward block — while the
+     walk underneath keeps it going the way the country goes and through whatever neck the country goes
+     through. It is the calmest of the eight that is still about the shape of the ground. */
+  algo: 'spineArc',
+  face: 'palatino',      // which face: see REALM_FACES
+  ink: 'ivory',          // which ink: see REALM_INKS
+
+  fsMin: 3,              // below this a label is a smudge; better nothing
+  fsMax: 48,             // above this the biggest realms start shouting
+  trackMax: 1,           // most extra advance a gap may take, in ems
+  thickPct: 0.35,        // percentile of the thickness profile the size is taken from
+  thickFrac: 0.52,       // how much of that thickness a font size may be
+  /* Both of the taper protections are **off**. They were written for a fitted curve, which will happily
+     run a name into the point of a spit; an arc through the spine stays much closer to the middle of
+     the ground, so the letters do not need holding back from the ends and the map reads better for the
+     extra room. Turn them up if a name starts hanging off a headland again. */
+  endInset: 0,           // room left clear at the two ends together, in font sizes
+  taperNeed: 0,          // ground must be this many font sizes thick to hold a capital
+  /* Steps of "outside the country" the trim will step over rather than end the name. Generous, because
+     an arc is a firmer shape than a fitted curve and will leave the land for longer where a country
+     turns — and because the alternative to stepping over the gap is losing half the name. */
+  gapTol: 11,
+  sagMax: 0.16,          // hard cap on bend, as sag ÷ span, whatever the baseline asked for
+
+  tiltMax: 50,           // degrees; past this a label reads as text turned on its side
+  // At 1 nothing counts as round, so every block is given its own axis rather than being levelled.
+  roundRatio: 1,
+  pull: 3.8,             // how strongly the spine is pulled off the border towards the middle
+  turnMax: 490,          // degrees of total turn past which a baseline is unwritable
+  polyDeg: 3,            // degree of the fit through the spine
+  smoothMix: 0.6,        // 0 = the raw walk, 1 = the fit; between = pulled back towards the walk
+  avgPasses: 2,          // averaging passes, for the smoothed-spine baseline
+  chaikin: 2,            // corner-cutting passes, likewise
+
+  originDeg: 40,         // shared-origin arcs: which way the common centre lies from the map's middle
+  originDist: 8.6,       // ...and how far, in map heights
+
+  blocksMax: 8,          // most pieces of one realm that get its name
+  blockMinHex: 0,        // a piece must be at least this many whole hexes
+  blockFrac: 0.14,       // ...and this share of the realm's largest piece
+  collide: 0.48,         // labels touch when closer than this times their heights added
+  /* The same, for two labels from *different* layers. It was set well below the same-layer figure on the
+     theory that the pair want less room from each other — two names close together on one layer is a
+     real ambiguity about who holds the ground between them, and across the pair it is not, the two being
+     answers to different questions about the same ground. Which is true as far as it goes, and it turned
+     out not to be what the eye wants: at half the crowding was worse than the ambiguity it was avoiding,
+     because a legion's name and a realm's name jostling at arm's length still read as one crowded map
+     rather than as two layers. So it sits within a whisker of the same-layer figure, and the two layers
+     really are treated as one for spacing. What keeps the legion names is the precedence below, not a
+     licence to crowd. */
+  collideCross: 0.5,
+  /* Who wins when a warlord's name and a realm's name want the same ground: `upper` gives it to
+     Warlords, which is the layer drawn on top and therefore the paint a reader can actually see there;
+     `lower` to Borders; `area` to whichever country is larger, regardless of layer. */
+  crossRule: 'upper',
+};
+// The choices for that last one, as the panel offers them.
+const RN_CROSS_RULES = [
+  { id: 'upper', name: 'Warlords win (upper layer)' },
+  { id: 'lower', name: 'Borders win (lower layer)' },
+  { id: 'area',  name: 'Larger realm wins' },
+];
+const RN = { ...RN_DEFAULT };
+const RN_LS = 'rotmap_realmnames_v1';
+// Only locally. A stored preference on the published map would mean two readers seeing two maps.
+if (LOCAL) try { Object.assign(RN, JSON.parse(localStorage.getItem(RN_LS)) || {}); } catch {}
+
+/* Caps, letter-spaced, in a serif. Caps because a spaced-out lowercase word reads as a mistake and a
+   spaced-out capitalised one reads as a map, and serif for the same reason — this is the one thing on
+   the map that is lettering rather than a label, and it should not look like the UI.
+
+   The three web faces are dev-only auditions: they fetch a stylesheet the first time they are picked
+   and never otherwise, so nothing is requested by anyone merely reading the map. Each falls back
+   through the installed serifs, so picking one offline gets the fallback rather than a blank map. */
+const REALM_FACES = [
+  { id: 'palatino',  name: 'Palatino',        weight: 600, family: '"Palatino Linotype", "Book Antiqua", Palatino, "URW Palladio L", Georgia, serif' },
+  { id: 'georgia',   name: 'Georgia',         weight: 600, family: 'Georgia, "Times New Roman", serif' },
+  { id: 'constantia',name: 'Constantia',      weight: 600, family: 'Constantia, Cambria, Georgia, serif' },
+  { id: 'times',     name: 'Times',           weight: 700, family: '"Times New Roman", Times, serif' },
+  { id: 'sans',      name: 'System sans',     weight: 600, family: 'system-ui, -apple-system, "Segoe UI", sans-serif' },
+  { id: 'cinzel',    name: 'Cinzel · web',    weight: 600, family: 'Cinzel, "Palatino Linotype", Georgia, serif', web: 'Cinzel:wght@400..900' },
+  { id: 'marcellus', name: 'Marcellus SC · web', weight: 400, family: '"Marcellus SC", "Palatino Linotype", Georgia, serif', web: 'Marcellus+SC' },
+  { id: 'garamond',  name: 'EB Garamond · web',  weight: 600, family: '"EB Garamond", "Palatino Linotype", Georgia, serif', web: 'EB+Garamond:wght@400..800' },
+];
+/* How the lettering is inked. The first is the published treatment: **opaque** ivory on a solid dark
+   rim. It was translucent once — four fifths on the fill, three quarters on the halo — on the theory
+   that the realm colour reading through would tie the name to its ground. What it actually did was mix
+   every name with whatever it lay on and turn the lot grey, which is the one thing lettering on a map
+   must not be: a label is either legible or it is dirt on the picture. The realm colour ties the name
+   to its ground by being *underneath* it. */
+const REALM_INKS = [
+  { id: 'ivory', name: 'Ivory on black',   fill: '#fbf6ea', stroke: '#0d1015', sw: 0.17 },
+  { id: 'white', name: 'White on black',   fill: '#ffffff', stroke: '#14181e', sw: 0.17 },
+  // Ink cut from the realm's own colour, with the halo the other way round. The one treatment that
+  // says *which* country without being read, and the one that needs the colour passed in.
+  { id: 'realm', name: 'Realm ink on ivory', realm: true, fill: '#fbf6ea', stroke: '#fbf6ea', sw: 0.2 },
+];
+const realmFace = () => REALM_FACES.find(f => f.id === RN.face) || REALM_FACES[0];
+const realmInk  = () => REALM_INKS.find(i => i.id === RN.ink)   || REALM_INKS[0];
+
+/* Measured off a canvas rather than off the SVG. The honest way is to put the text in the document
+   and ask it its length, but these labels are fitted while their group is switched off — that is the
+   whole point of building on demand — and a hidden element has no length to give. The same family,
+   weight and size measured on a canvas is the same font, so the number is the same one; it just does
+   not need the label to be on screen to be had. */
+const _measCtx = (() => { try { return document.createElement('canvas').getContext('2d'); } catch { return null; } })();
+function realmTextW(s, px) {
+  const f = realmFace();
+  if (!_measCtx) return s.length * px * 0.62;   // no canvas: assume a typical average advance
+  _measCtx.font = `${f.weight} ${px}px ${f.family}`;
+  return _measCtx.measureText(s).width || s.length * px * 0.62;
+}
+
+/* ---- the ground a name has to work with ---- */
+
+/* The graph of a colour's holdings: which held subhexes can be walked between. Same-hex pieces that
+   touch (either bank of a river) count as joined; across a hex edge the regions must genuinely meet,
+   which is the test that keeps a headland from inheriting the realm on the far side of a strait.
+   Built once per colour and used twice — its connected components are the blocks, and the walk that
+   becomes the spine runs along its edges. */
+function realmGraph(cells) {
+  const adj = new Map();
+  for (const k of cells) adj.set(k, []);
+  for (const k of cells) {
+    const i = k.indexOf(':'), h = +k.slice(0, i), ri = +k.slice(i + 1);
+    const out = adj.get(k);
+    for (const [a, b] of regionAdj(h)) {
+      if (a === ri && cells.has(h + ':' + b)) out.push(h + ':' + b);
+      else if (b === ri && cells.has(h + ':' + a)) out.push(h + ':' + a);
+    }
+    for (const n of neighbors(h)) {
+      if (!S.hexes[n] || S.hexes[n].t === 'N/A') continue;
+      const nrs = regionsOf(n);
+      for (let rj = 0; rj < nrs.length; rj++)
+        if (cells.has(n + ':' + rj) && regionsMeet(h, ri, n, rj)) out.push(n + ':' + rj);
+    }
+  }
+  return adj;
+}
+// The blocks: one array of keys per piece of the realm that can be walked around without a boat.
+function realmBlocks(adj) {
+  const seen = new Set(), out = [];
+  for (const start of adj.keys()) {
+    if (seen.has(start)) continue;
+    seen.add(start);
+    const stack = [start], block = [];
+    while (stack.length) {
+      const k = stack.pop();
+      block.push(k);
+      for (const n of adj.get(k)) if (!seen.has(n)) { seen.add(n); stack.push(n); }
+    }
+    out.push(block);
+  }
+  return out;
+}
+/* How far each subhex of a block is from the block's own edge, in steps. 1 on the border, upward
+   inland. This is what lets the spine prefer the middle: it is a cheap stand-in for distance to the
+   boundary, and cheap is the point — the alternative is a real distance transform over the polygons.
+   A piece counts as border if it does not have a piece of this block in all six directions, which
+   catches the coast and the frontier with the same test and needs no idea of what lies beyond. */
+function blockDepth(block, adj) {
+  const inBlock = new Set(block);
+  const depth = new Map();
+  const q = [];
+  for (const k of block) {
+    const h = +k.slice(0, k.indexOf(':'));
+    const around = new Set();
+    for (const n of adj.get(k)) {
+      const nh = +n.slice(0, n.indexOf(':'));
+      if (nh !== h && inBlock.has(n)) around.add(nh);
+    }
+    if (around.size < 6) { depth.set(k, 1); q.push(k); }
+  }
+  if (!q.length) { for (const k of block) depth.set(k, 1); return depth; }
+  for (let i = 0; i < q.length; i++) {
+    const k = q[i], d = depth.get(k);
+    for (const n of adj.get(k))
+      if (inBlock.has(n) && !depth.has(n)) { depth.set(n, d + 1); q.push(n); }
+  }
+  for (const k of block) if (!depth.has(k)) depth.set(k, 1);
+  return depth;
+}
+const cellPoint = k => {
+  const i = k.indexOf(':'), h = +k.slice(0, i), r = regionsOf(h)[+k.slice(i + 1)];
+  return r?.cent || hexCenter(h);
+};
+// How much ground a subhex actually is. A whole hex is a whole hex; a piece cut out by a coastline is
+// worth its own polygon, islands included. This is what the axis is weighted by and what decides
+// whether a block is big enough to be worth naming, both of which a count of pieces gets wrong.
+const wholeHexArea = () => 3 * Math.sqrt(3) / 2 * S.G.hex_size ** 2;
+function cellArea(r) {
+  if (!r || !r.poly) return wholeHexArea();
+  let a = Math.abs(polyArea(r.poly));
+  for (const p of r.extra || []) if (p && p.length >= 3) a += Math.abs(polyArea(p));
+  return a;
+}
+/* Which subhex a point on the map is over, answered against a set. This is how a baseline is trimmed
+   to the ground it is supposed to be lying on: the same question the tooltip asks, put to a hundred
+   points along a line instead of to one under the cursor. */
+function pointInCells(cells, x, y) {
+  const h = nearestHex(x, y);
+  if (!h || !S.hexes[h] || S.hexes[h].t === 'N/A') return false;
+  return cells.has(h + ':' + regionAt(h, [x, y]));
+}
+
+/* ---- polyline housekeeping ---- */
+
+// Arc-length parameterisation of a polyline: total length, and the point at any distance along it.
+function polyWalk(pts) {
+  const cum = [0];
+  for (let i = 1; i < pts.length; i++)
+    cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+  const len = cum[cum.length - 1];
+  const at = s => {
+    if (!(len > 0)) return pts[0].slice();
+    const t = Math.max(0, Math.min(len, s));
+    let i = 1;
+    while (i < cum.length - 1 && cum[i] < t) i++;
+    const f = (t - cum[i - 1]) / Math.max(cum[i] - cum[i - 1], 1e-9);
+    return [pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * f,
+            pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * f];
+  };
+  return { pts, cum, len, at };
+}
+function resample(pts, n) {
+  const w = polyWalk(pts);
+  if (!(w.len > 0)) return null;
+  const out = [];
+  for (let i = 0; i <= n; i++) out.push(w.at(w.len * i / n));
+  return out;
+}
+function smoothAvg(pts, passes) {
+  let out = pts;
+  for (let p = 0; p < passes; p++) {
+    const next = [out[0]];
+    for (let i = 1; i < out.length - 1; i++)
+      next.push([(out[i - 1][0] + 2 * out[i][0] + out[i + 1][0]) / 4,
+                 (out[i - 1][1] + 2 * out[i][1] + out[i + 1][1]) / 4]);
+    next.push(out[out.length - 1]);
+    out = next;
+  }
+  return out;
+}
+function smoothChaikin(pts, iters) {
+  let out = pts;
+  for (let it = 0; it < iters && out.length > 2; it++) {
+    const next = [out[0]];
+    for (let i = 0; i < out.length - 1; i++) {
+      const a = out[i], b = out[i + 1];
+      next.push([a[0] * 0.75 + b[0] * 0.25, a[1] * 0.75 + b[1] * 0.25]);
+      next.push([a[0] * 0.25 + b[0] * 0.75, a[1] * 0.25 + b[1] * 0.75]);
+    }
+    next.push(out[out.length - 1]);
+    out = next;
+  }
+  return out;
+}
+// Total absolute turn along a polyline. The test for a baseline that has curled up too far to write on.
+function totalTurn(pts) {
+  let turn = 0;
+  for (let i = 1; i < pts.length - 1; i++) {
+    const ax = pts[i][0] - pts[i - 1][0], ay = pts[i][1] - pts[i - 1][1];
+    const bx = pts[i + 1][0] - pts[i][0], by = pts[i + 1][1] - pts[i][1];
+    const la = Math.hypot(ax, ay), lb = Math.hypot(bx, by);
+    if (la < 1e-9 || lb < 1e-9) continue;
+    turn += Math.acos(Math.max(-1, Math.min(1, (ax * bx + ay * by) / (la * lb))));
+  }
+  return turn;
+}
+/* A hard cap on how far a baseline may bow, applied to whichever algorithm produced it and expressed
+   as **sag against span** — the deepest the line falls away from the chord joining its ends, over the
+   length of that chord — because that is the ratio the eye is actually judging. It is not the same
+   thing as the turn test above: a long gentle curve can turn a long way and read perfectly, while a
+   short sharp one turns very little and reads as a name falling over. Small blocks are where this
+   matters. Twelve subhexes of Blue Scarves gave a circle fit an almost circular arc to work with,
+   quite correctly, and the name came out bent double round it.
+
+   The correction squashes the whole line towards its own chord rather than clipping the middle out of
+   it, so what comes back is the same shape more shallowly drawn, and still follows the country. */
+function limitSag(pts, maxRatio) {
+  const a = pts[0], b = pts[pts.length - 1];
+  const dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy);
+  if (!(L > 1e-6)) return pts;
+  const nx = -dy / L, ny = dx / L;
+  let worst = 0;
+  const off = pts.map(p => {
+    const o = (p[0] - a[0]) * nx + (p[1] - a[1]) * ny;
+    if (Math.abs(o) > worst) worst = Math.abs(o);
+    return o;
+  });
+  const allow = L * maxRatio;
+  if (worst <= allow || worst < 1e-9) return pts;
+  const k = allow / worst - 1;
+  return pts.map((p, i) => [p[0] + nx * off[i] * k, p[1] + ny * off[i] * k]);
+}
+/* Which way round to read it. A textPath sets glyphs from the start of the path onwards, standing them
+   upright to it, so a baseline handed over running leftwards produces a name upside down and backwards.
+   What decides it is therefore the **x** component and almost nothing else: any path with a net
+   leftward drift is reversed, however steep it is. Only when the drift is genuinely vertical — under a
+   fifth of the rise — does the sign of x stop meaning anything, and then the convention is the one a
+   name on a map follows, top to bottom. */
+function orientForReading(pts) {
+  const a = pts[0], b = pts[pts.length - 1];
+  const dx = b[0] - a[0], dy = b[1] - a[1];
+  const wrong = Math.abs(dx) > Math.abs(dy) * 0.2 ? dx < 0 : dy < 0;
+  return wrong ? pts.slice().reverse() : pts;
+}
+// Reach past each end along the end's own direction, so the trim has coast to find: a walk between
+// subhex centres stops half a hex short of the shore at both ends.
+function extendEnds(pts, by) {
+  const out = pts.slice();
+  const dir = (p, q) => { const l = Math.hypot(q[0] - p[0], q[1] - p[1]) || 1; return [(q[0] - p[0]) / l, (q[1] - p[1]) / l]; };
+  const d0 = dir(out[1] ?? out[0], out[0]), d1 = dir(out[out.length - 2] ?? out[out.length - 1], out[out.length - 1]);
+  out.unshift([out[0][0] + d0[0] * by, out[0][1] + d0[1] * by]);
+  out.push([out[out.length - 1][0] + d1[0] * by, out[out.length - 1][1] + d1[1] * by]);
+  return out;
+}
+// Two lines, resampled alike and interpolated. This is what `smoothMix` moves along: 1 takes the fit
+// whole, 0 takes the raw walk, and between the two the fit is pulled back towards the walk — which is
+// how a curve smooth enough to write on can be kept honest about a bottleneck it wants to cut across.
+function mixLines(a, b, t, n) {
+  const A = resample(a, n), B = resample(b, n);
+  if (!A || !B) return A || B;
+  return A.map((p, i) => [p[0] + (B[i][0] - p[0]) * t, p[1] + (B[i][1] - p[1]) * t]);
+}
+// Gaussian elimination with partial pivoting, for the small dense normal equations below. Returns null
+// rather than nonsense if the system is singular, which happens when every point is in one place.
+function solveSym(A, b) {
+  const n = b.length;
+  for (let i = 0; i < n; i++) {
+    let piv = i;
+    for (let r = i + 1; r < n; r++) if (Math.abs(A[r][i]) > Math.abs(A[piv][i])) piv = r;
+    if (Math.abs(A[piv][i]) < 1e-12) return null;
+    [A[i], A[piv]] = [A[piv], A[i]];
+    [b[i], b[piv]] = [b[piv], b[i]];
+    for (let r = i + 1; r < n; r++) {
+      const f = A[r][i] / A[i][i];
+      if (!f) continue;
+      for (let c = i; c < n; c++) A[r][c] -= f * A[i][c];
+      b[r] -= f * b[i];
+    }
+  }
+  const x = new Array(n).fill(0);
+  for (let i = n - 1; i >= 0; i--) {
+    let acc = b[i];
+    for (let c = i + 1; c < n; c++) acc -= A[i][c] * x[c];
+    x[i] = acc / A[i][i];
+  }
+  return x;
+}
+/* A low-order fit through a polyline, parameterised by **distance along it**. That parameter is the
+   whole trick: fitting one coordinate against another is a parabola again and cannot describe a shape
+   that doubles back, which is exactly what a spine through a bottleneck often is. Fitting x(s) and
+   y(s) separately has no such limit — the curve may hook or fork back as the ground does — while a
+   cubic in each simply has nowhere to put a ripple. */
+function fitPolyPath(pts, deg, n) {
+  const w = polyWalk(pts);
+  if (!(w.len > 0)) return null;
+  deg = Math.max(1, Math.min(deg, pts.length - 1));
+  const s = w.cum.map(c => c / w.len);
+  const m = deg + 1;
+  const A = Array.from({ length: m }, () => new Float64Array(m));
+  const bx = new Float64Array(m), by = new Float64Array(m);
+  for (let k = 0; k < pts.length; k++) {
+    const pow = [1];
+    for (let j = 1; j < m; j++) pow.push(pow[j - 1] * s[k]);
+    for (let i = 0; i < m; i++) {
+      for (let j = 0; j < m; j++) A[i][j] += pow[i] * pow[j];
+      bx[i] += pow[i] * pts[k][0];
+      by[i] += pow[i] * pts[k][1];
+    }
+  }
+  const cx = solveSym(A.map(r => Array.from(r)), Array.from(bx));
+  const cy = solveSym(A.map(r => Array.from(r)), Array.from(by));
+  if (!cx || !cy) return null;
+  const ev = (co, t) => { let v = 0, p = 1; for (let i = 0; i < m; i++) { v += co[i] * p; p *= t; } return v; };
+  const out = [];
+  for (let i = 0; i <= n; i++) { const t = i / n; out.push([ev(cx, t), ev(cy, t)]); }
+  return out;
+}
+/* A circle through a cloud of points, by the algebraic (Kåsa) fit: x²+y² = Ax + By + C is linear in
+   A, B, C, and the centre and radius fall straight out of them. Not the geometrically optimal circle —
+   that needs iteration — but the difference is invisible at a hundredth of the radius, and this one
+   cannot fail to converge because it does not converge, it solves.
+
+   The arc wanted from it is then the stretch that spans the points, found by taking each point's
+   bearing from the centre **relative to the mean bearing** rather than absolutely. That detour matters:
+   bearings are angles, angles wrap, and the min and max of a set that straddles due west are the two
+   points either side of the seam rather than the two ends of the arc. */
+function circleArcThrough(pts, wts, n) {
+  const m = 3;
+  const A = Array.from({ length: m }, () => new Float64Array(m));
+  const rhs = new Float64Array(m);
+  let W = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const [x, y] = pts[i], w = wts ? wts[i] : 1;
+    const row = [x, y, 1], v = x * x + y * y;
+    W += w;
+    for (let a = 0; a < m; a++) {
+      for (let b = 0; b < m; b++) A[a][b] += w * row[a] * row[b];
+      rhs[a] += w * row[a] * v;
+    }
+  }
+  if (W <= 0) return null;
+  const sol = solveSym(A.map(r => Array.from(r)), Array.from(rhs));
+  if (!sol) return null;
+  const cx = sol[0] / 2, cy = sol[1] / 2;
+  const r2 = sol[2] + cx * cx + cy * cy;
+  if (!(r2 > 0)) return null;
+  const r = Math.sqrt(r2);
+  // A radius far larger than the map is a straight line wearing a circle's clothes, and asking for
+  // bearings about a centre ten thousand hexes away is asking for rounding noise. Say so instead.
+  if (!isFinite(r) || r > S.G.image_width * 40) return null;
+  return arcAbout([cx, cy], r, pts, n);
+}
+/* The arc of a given circle that spans a set of points. Used by the fitted circle above and by the
+   shared-origin arcs below, which differ only in where the centre comes from. */
+function arcAbout(c, r, pts, n) {
+  let sx = 0, sy = 0;
+  for (const p of pts) {
+    const a = Math.atan2(p[1] - c[1], p[0] - c[0]);
+    sx += Math.cos(a); sy += Math.sin(a);
+  }
+  if (Math.abs(sx) < 1e-12 && Math.abs(sy) < 1e-12) return null;   // points ringed evenly: no arc
+  const mid = Math.atan2(sy, sx);
+  let lo = Infinity, hi = -Infinity;
+  for (const p of pts) {
+    let d = Math.atan2(p[1] - c[1], p[0] - c[0]) - mid;
+    while (d > Math.PI) d -= 2 * Math.PI;
+    while (d < -Math.PI) d += 2 * Math.PI;
+    if (d < lo) lo = d;
+    if (d > hi) hi = d;
+  }
+  if (!(hi > lo)) return null;
+  const out = [];
+  for (let i = 0; i <= n; i++) {
+    const a = mid + lo + (hi - lo) * i / n;
+    out.push([c[0] + r * Math.cos(a), c[1] + r * Math.sin(a)]);
+  }
+  return out;
+}
+/* One centre for the whole map, a long way outside it, and every label an arc about that centre. The
+   labels then all bow the same way and by an amount that depends only on where on the map they are —
+   which is what a graticule does, and what makes an atlas page read as a piece of a globe rather than
+   as a flat sheet with words on it. It says nothing at all about the shape of any individual country,
+   which is either the point or the objection depending on the map you want. */
+function sharedOrigin() {
+  const a = RN.originDeg * Math.PI / 180;
+  const cx = S.G.image_width / 2, cy = S.G.image_height / 2;
+  const d = S.G.image_height * RN.originDist;
+  return [cx + Math.cos(a) * d, cy + Math.sin(a) * d];
+}
+
+/* ---- the axis, and the baselines built on it ---- */
+
+/* The block's principal axis, and a parabola about it. The axis is wanted whichever baseline is in
+   use: it is how the two **ends** of the country are chosen, being the subhexes where the ground runs
+   out along the direction the country lies in. */
+function fitRealmCurve(pts, wts) {
+  let W = 0, mx = 0, my = 0;
+  for (let i = 0; i < pts.length; i++) { W += wts[i]; mx += pts[i][0] * wts[i]; my += pts[i][1] * wts[i]; }
+  mx /= W; my /= W;
+  let sxx = 0, sxy = 0, syy = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const dx = pts[i][0] - mx, dy = pts[i][1] - my, w = wts[i];
+    sxx += w * dx * dx; sxy += w * dx * dy; syy += w * dy * dy;
+  }
+  sxx /= W; sxy /= W; syy /= W;
+  // Eigenvalues of the 2×2 covariance: the spread along the long axis and along the short one. Their
+  // ratio is how elongated the block is, and so whether it has a long direction at all.
+  const tr = sxx + syy, det = Math.sqrt((sxx - syy) ** 2 + 4 * sxy * sxy);
+  const l1 = (tr + det) / 2, l2 = Math.max((tr - det) / 2, 1e-9);
+  let ang = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+  if (Math.sqrt(l1 / l2) < RN.roundRatio) ang = 0;        // round enough that the axis is noise
+  // atan2 halved already lands in (−π/2, π/2], so u always increases with x.
+  const tilt = RN.tiltMax * Math.PI / 180;
+  ang = Math.max(-tilt, Math.min(tilt, ang));
+  const cs = Math.cos(ang), sn = Math.sin(ang);
+  const ex = [cs, sn], ey = [-sn, cs];
+  const us = [], vs = [];
+  let umin = Infinity, umax = -Infinity;
+  for (const p of pts) {
+    const dx = p[0] - mx, dy = p[1] - my;
+    const u = dx * ex[0] + dy * ex[1], v = dx * ey[0] + dy * ey[1];
+    us.push(u); vs.push(v);
+    if (u < umin) umin = u;
+    if (u > umax) umax = u;
+  }
+  // Weighted least squares for v = a·u² + b·u + c. Under six pieces there is not enough to see a bend
+  // in and the fit would be describing the sampling rather than the country, so the quadratic term is
+  // not asked for; under three, neither is the slope.
+  let a = 0, b = 0, c = 0;
+  const deg = pts.length >= 6 ? 2 : pts.length >= 3 ? 1 : 0;
+  if (deg >= 1) {
+    const m = deg + 1;
+    const M = Array.from({ length: m }, () => new Float64Array(m));
+    const rhs = new Float64Array(m);
+    for (let i = 0; i < us.length; i++) {
+      const pow = [1];
+      for (let j = 1; j < m; j++) pow.push(pow[j - 1] * us[i]);
+      for (let r = 0; r < m; r++) {
+        for (let cc = 0; cc < m; cc++) M[r][cc] += wts[i] * pow[r] * pow[cc];
+        rhs[r] += wts[i] * pow[r] * vs[i];
+      }
+    }
+    const sol = solveSym(M.map(r => Array.from(r)), Array.from(rhs));
+    if (sol) { c = sol[0]; b = sol[1] || 0; a = sol[2] || 0; }
+  }
+  return { mx, my, ex, ey, a, b, c, umin, umax };
+}
+// The straight line along the axis: the plainest baseline there is, and the one to compare the rest
+// against — if a curve is not visibly better than this it is not worth the arithmetic.
+function axisLine(f, n) {
+  const pad = S.G.hex_size;
+  const u0 = f.umin - pad, u1 = f.umax + pad, out = [];
+  for (let i = 0; i <= n; i++) {
+    const u = u0 + (u1 - u0) * i / n;
+    out.push([f.mx + u * f.ex[0] + f.c * f.ey[0], f.my + u * f.ex[1] + f.c * f.ey[1]]);
+  }
+  return out;
+}
+// The parabola as a polyline, so the one measuring-and-setting path serves every baseline alike.
+function parabolaPoints(f, n) {
+  const pad = S.G.hex_size;
+  const u0 = f.umin - pad, u1 = f.umax + pad, out = [];
+  for (let i = 0; i <= n; i++) {
+    const u = u0 + (u1 - u0) * i / n, v = f.a * u * u + f.b * u + f.c;
+    out.push([f.mx + u * f.ex[0] + v * f.ey[0], f.my + u * f.ex[1] + v * f.ey[1]]);
+  }
+  return out;
+}
+/* The spine: the cheapest walk from one end of the block to the other, where cheap means short and
+   away from the edges. Dijkstra rather than breadth-first, because the two costs are not commensurate
+   in hops — a step is priced by the distance it covers and then marked up by how exposed it lands, so
+   a detour of one subhex to stay inland is worth taking and a detour of five is not. At a neck there
+   is no detour to be had and the walk simply goes through, which is what makes this work where a
+   fitted curve cannot: **a walk through the block cannot leave the block.**
+
+   Endpoints along the principal axis rather than by graph diameter. Graph-farthest sounds right and is
+   wrong for a broad country: the two ends of the longest walk across a wide block are opposite
+   *corners*, so the empire's name came out set on the diagonal. */
+function blockSpine(block, adj, f) {
+  if (block.length < 2) return null;
+  const depth = blockDepth(block, adj);
+  let maxD = 1;
+  for (const d of depth.values()) if (d > maxD) maxD = d;
+  let A = null, B = null, uA = Infinity, uB = -Infinity;
+  for (const k of block) {
+    const p = cellPoint(k);
+    const u = (p[0] - f.mx) * f.ex[0] + (p[1] - f.my) * f.ex[1];
+    if (u < uA) { uA = u; A = k; }
+    if (u > uB) { uB = u; B = k; }
+  }
+  if (A === B) return null;
+  const cost = new Map([[A, 0]]), from = new Map();
+  // A plain set used as the frontier. A block is at most a few hundred subhexes, so scanning it for
+  // the cheapest is faster than maintaining a heap and very much easier to be sure of.
+  const open = new Set([A]), done = new Set();
+  while (open.size) {
+    let k = null, best = Infinity;
+    for (const x of open) { const c = cost.get(x); if (c < best) { best = c; k = x; } }
+    open.delete(k); done.add(k);
+    if (k === B) break;
+    const p = cellPoint(k);
+    for (const n of adj.get(k)) {
+      if (done.has(n)) continue;
+      const q = cellPoint(n);
+      // Marked up by exposure: 1 at the deepest interior the block has, 1 + pull on the border.
+      const exposure = 1 + RN.pull * (1 - (depth.get(n) - 1) / Math.max(maxD - 1, 1));
+      const c = best + Math.hypot(q[0] - p[0], q[1] - p[1]) * exposure;
+      if (c < (cost.get(n) ?? Infinity)) { cost.set(n, c); from.set(n, k); open.add(n); }
+    }
+  }
+  if (!cost.has(B)) return null;
+  const walk = [B];
+  while (walk[0] !== A) { const p = from.get(walk[0]); if (!p) return null; walk.unshift(p); }
+  return walk.map(cellPoint);
+}
+
+/* The baselines, in the order the panel lists them. Each is handed the block's geometry and returns a
+   polyline to write along, or null if it has nothing to say about this shape. They are genuinely
+   different opinions rather than refinements of one another, which is why they are a list: a parabola
+   describes a lobe well and a country badly, a raw spine describes the country exactly and reads as a
+   wobble, and an arc describes neither but looks like an atlas. */
+const RN_ALGOS = [
+  { id: 'axis', name: 'Straight — principal axis',
+    fn: c => axisLine(c.f, 48) },
+  { id: 'parabola', name: 'Parabola on the axis',
+    fn: c => parabolaPoints(c.f, 48) },
+  { id: 'arcFit', name: 'Best-fitting circular arc',
+    fn: c => circleArcThrough(c.pts, c.wts, 48) },
+  { id: 'arcShared', name: 'Shared-origin arcs (graticule)',
+    fn: c => { const o = sharedOrigin();
+               const r = Math.hypot(c.f.mx - o[0], c.f.my - o[1]);
+               return arcAbout(o, r, c.pts, 48); } },
+  { id: 'spineRaw', name: 'Spine — raw walk',
+    fn: c => c.spine },
+  { id: 'spineSmooth', name: 'Spine — averaged & rounded',
+    fn: c => c.spine && smoothChaikin(smoothAvg(c.spine, RN.avgPasses), RN.chaikin) },
+  { id: 'spineFit', name: 'Spine — polynomial fit',
+    fn: c => { if (!c.spine) return null;
+               const fit = fitPolyPath(c.spine, RN.polyDeg, 48);
+               return fit ? mixLines(c.spine, fit, RN.smoothMix, 48) : null; } },
+  { id: 'spineArc', name: 'Spine — circular arc through it',
+    fn: c => c.spine && circleArcThrough(c.spine, null, 48) },
+];
+const rnAlgo = () => RN_ALGOS.find(a => a.id === RN.algo) || RN_ALGOS.find(a => a.id === 'spineFit');
+
+/* ---- setting a name along a baseline ---- */
+
+/* Everything above finds a line. This is the part that decides whether there is room for a name on it
+   at all, and how big and how spread out it should be to fill the room there is. It is deliberately
+   ignorant of which algorithm produced the line: by the time anything reaches here it is just a line
+   through some ground, which is what lets the baselines be swapped freely. */
+function setNameAlong(baseline, cells, name, area, capFs) {
+  let line = resample(limitSag(baseline, RN.sagMax), 64);
+  if (!line) return null;
+  line = orientForReading(resample(extendEnds(line, S.G.hex_size), 64));
+  const w = polyWalk(line);
+  if (!(w.len > 1)) return null;
+  /* Trimmed to the ground: walked end to end, asking at each of a hundred steps which subhex it is
+     over, and cut back to the longest run that stays inside the block.
+
+     With a **tolerance**, which is what lets a name cross a bottleneck. A smoothed line through a
+     country pinched to one hex wide will cut the corner and step outside for a sample or two before
+     coming back in; judged strictly, that ends the run, and the empire's name was cut back to whichever
+     lobe it started in while the other went unnamed. A gap of a step or two is the smoothing showing,
+     not the country ending, and the letters standing over it have a halo. A gap of ten is the sea. */
+  const N = 100, step = w.len / N;
+  const inside = [];
+  for (let i = 0; i <= N; i++) { const p = w.at(i * step); inside.push(pointInCells(cells, p[0], p[1])); }
+  let bestS = -1, bestE = -1, curS = -1, gap = 0;
+  for (let i = 0; i <= N; i++) {
+    if (inside[i]) {
+      if (curS < 0) curS = i;
+      gap = 0;
+      if (i - curS > bestE - bestS) { bestS = curS; bestE = i; }
+    } else if (curS >= 0 && ++gap > RN.gapTol) { curS = -1; gap = 0; }
+  }
+  if (bestS < 0 || bestE <= bestS) return null;    // the line never lies on its own country
+  const s0 = bestS * step, s1 = bestE * step;
+  const run = resample([w.at(s0), ...w.pts.filter((p, i) => w.cum[i] > s0 && w.cum[i] < s1), w.at(s1)], 40);
+  if (!run) return null;
+  const iw = polyWalk(run);
+  /* How thick the country is under the line, sampled the whole way along rather than at a handful of
+     places in the middle. Stepped out along the local **normal** and stopped at the first step that
+     leaves the block, both ways. A profile rather than a number, because the two things it is wanted
+     for are different questions: how big the letters can be is about the *typical* thickness, and where
+     the name may start and stop is about the thickness *at those points*. */
+  const probe = S.G.hex_size * 0.3, LIM = 14, K = 24, prof = [];
+  for (let i = 0; i <= K; i++) {
+    const s = iw.len * i / K;
+    const [px, py] = iw.at(s);
+    const a = iw.at(Math.max(0, s - probe)), b = iw.at(Math.min(iw.len, s + probe));
+    const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+    const nx = -(b[1] - a[1]) / tl, ny = (b[0] - a[0]) / tl;
+    let t = 0;
+    for (const dir of [1, -1])
+      for (let k = 1; k <= LIM; k++) {
+        if (!pointInCells(cells, px + nx * dir * probe * k, py + ny * dir * probe * k)) break;
+        t += probe;
+      }
+    prof.push(t + probe);   // the step the line itself is standing on counts
+  }
+  const NAME = name.toUpperCase();
+  const nat = realmTextW(NAME, 100) / 100;         // natural advance at font-size 1
+  /* Size and extent, settled together, because each is the other's constraint.
+
+     A country **tapers**, and the run the trim handed back reaches into the point of the taper: the
+     centreline is inside the country right to the tip, but the letters standing at the tip are a whole
+     font size tall and there is no country left to hold them. Legion V's name ran down a spit and
+     dropped its last letter into the sea for exactly this reason. So the ends are cut back to where the
+     ground is thick enough to stand a capital in — which cannot be done before the size is known, and
+     the size depends on how much run is left after cutting. Three passes, shrinking only, so it settles
+     rather than oscillating.
+
+     The typical thickness is taken at a **percentile** of what is left rather than at the median: a
+     name has to fit the narrow places it crosses, not the average of narrow and wide. */
+  let lo = 0, hi = K, fs = 0, usable = 0;
+  for (let pass = 0; pass < 3; pass++) {
+    const arc = iw.len * (hi - lo) / K;
+    const seg = prof.slice(lo, hi + 1).sort((p, q) => p - q);
+    const thick = seg[Math.min(seg.length - 1, Math.floor(seg.length * RN.thickPct))];
+    // `capFs` is the placement pass asking for this name smaller than it would like, so it can fit
+    // beside something already placed rather than be dropped. See renderRealmNames.
+    const size = room => Math.min(room / Math.max(nat, 0.01), thick * RN.thickFrac, RN.fsMax, capFs ?? Infinity);
+    usable = arc * 0.9;
+    for (let q = 0; q < 2; q++) usable = Math.min(arc * 0.9, arc - size(usable) * RN.endInset);
+    fs = size(usable);
+    const need = fs * RN.taperNeed;
+    let nlo = lo, nhi = hi;
+    while (nlo < nhi && prof[nlo] < need) nlo++;
+    while (nhi > nlo && prof[nhi] < need) nhi--;
+    if (nhi - nlo < 3) break;                      // nowhere on this line is thick enough; keep what we had
+    if (nlo === lo && nhi === hi) break;           // settled
+    lo = nlo; hi = nhi;
+  }
+  if (fs < RN.fsMin) return null;                  // too small to read; better nothing than a smudge
+  const glyphs = Math.max(NAME.length - 1, 1);
+  const ls = Math.max(0, Math.min((usable - fs * nat) / glyphs, fs * RN.trackMax));
+  const total = fs * nat + ls * glyphs;
+  // The surviving stretch is the path the name is set on, so the start offset is measured against the
+  // same line the letters will walk — not against the untrimmed run they no longer use.
+  const final = resample([iw.at(iw.len * lo / K),
+                          ...iw.pts.filter((p, i) => iw.cum[i] > iw.len * lo / K && iw.cum[i] < iw.len * hi / K),
+                          iw.at(iw.len * hi / K)], 40);
+  if (!final) return null;
+  const fw = polyWalk(final);
+  /* Where the ink actually falls, as a chain of points down the middle of the lettering, for the
+     overlap pass. Only the stretch the ink covers is walked, since the name is centred and the trimmed
+     ends are usually bare.
+
+     A chain rather than a rectangle. It was a rectangle, and a rectangle is close enough for a level
+     label and hopeless for a slanted one: the bounding box of a name set on a diagonal is mostly the
+     two corners it does not touch, so a long diagonal claimed a quarter of the map and every small
+     realm anywhere near it lost its name to a collision that was not happening. What a label occupies
+     is a *ribbon* along its baseline, and a run of points down that ribbon describes it well enough. */
+  const ink = [];
+  for (let i = 0; i <= 14; i++) ink.push(fw.at((fw.len - total) / 2 + total * i / 14));
+  return { d: smoothPathD(final), fs, ls, total, arc: fw.len, area, text: NAME, ink };
+}
+// A smooth SVG path through a polyline, Catmull-Rom converted to cubics. The points are already evenly
+// spaced and already smoothed; this is only so the joins between them do not show under 40px letters.
+function smoothPathD(pts) {
+  let d = `M${pts[0][0].toFixed(1)} ${pts[0][1].toFixed(1)}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || pts[i + 1];
+    const c1 = [p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6];
+    const c2 = [p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6];
+    d += `C${c1[0].toFixed(1)} ${c1[1].toFixed(1)} ${c2[0].toFixed(1)} ${c2[1].toFixed(1)} ${p2[0].toFixed(1)} ${p2[1].toFixed(1)}`;
+  }
+  return d;
+}
+/* Do two labels touch? Their ribbons are compared point against point: a hit is any pair closer than
+   the two half-heights added together, which is the distance at which a capital of one would be
+   sitting on a capital of the other.
+
+   Labels from **different layers** are allowed closer than labels from the same one. On one layer two
+   names near each other is a genuine ambiguity about who holds the ground between them; across the pair
+   it is not, because the two are answering different questions about the same ground — who holds it by
+   right, and who is sitting on it now — and a reader looking at both at once is expecting them to be
+   layered. Room enough not to overlap is all that is wanted there. */
+function labelsCollide(a, b) {
+  const near = (a.fs + b.fs) * (a.layer === b.layer ? RN.collide : RN.collideCross);
+  const n2 = near * near;
+  for (const p of a.ink) for (const q of b.ink) {
+    const dx = p[0] - q[0], dy = p[1] - q[1];
+    if (dx * dx + dy * dy < n2) return true;
+  }
+  return false;
+}
+/* One block, one name. The chosen baseline first, then the plainer ones as fallbacks — because an
+   algorithm returning nothing for an awkward shape is a normal event, not an error, and the answer to
+   it is a duller line rather than no name. */
+function fitRealmLabel(block, adj, name) {
+  const cells = new Set(block);
+  const pts = [], wts = [];
+  for (const k of block) {
+    const i = k.indexOf(':'), h = +k.slice(0, i);
+    pts.push(cellPoint(k));
+    wts.push(cellArea(regionsOf(h)[+k.slice(i + 1)]));
+  }
+  const area = wts.reduce((s, x) => s + x, 0);
+  const f = fitRealmCurve(pts, wts);
+  const ctx = { block, adj, cells, pts, wts, f, spine: blockSpine(block, adj, f) };
+  const turnMax = RN.turnMax * Math.PI / 180;
+  const chosen = rnAlgo();
+  // The fallback chain never repeats the chosen one and never leaves the parabola out: whatever else
+  // fails, a country has an axis and a bend about it.
+  for (const algo of [chosen, ...RN_ALGOS.filter(a => a.id === 'parabola' || a.id === 'axis')]) {
+    let line;
+    try { line = algo.fn(ctx); } catch { line = null; }
+    if (!line || line.length < 2) continue;
+    // A baseline that turns this far is a shape no word fits, rather than a wobble to be smoothed away.
+    if (totalTurn(line) > turnMax) continue;
+    const lab = setNameAlong(line, cells, name, area);
+    // The baseline is kept with the label so the placement pass can ask for the same name again
+    // smaller, which is how a label that loses a collision yields size instead of existence.
+    if (lab) { lab.algo = algo.id; lab.line = line; lab.cells = cells; lab.name = name; return lab; }
+  }
+  return null;
+}
+
+/* Every named realm on a layer, laid across its ground. Only *named* ones: the Warlords scan ships a
+   legend and the Borders scan does not, so most of the Borders palette has never been anything but a
+   hex code, and writing "#DA85FF" across half the empire is not a label. Name a colour in the Realm
+   tool and it appears here — which makes this switch a reading of the same names the swatches and the
+   tooltip give, rather than a third place they could disagree. */
+let nameSeq = 0;   // ids for the curves the labels ride on; unique across rebuilds, never reused
+let rnLastStats = null;   // what the last fit did, for the panel to report
+// Which layer keeps a name when the two of them make the same one and it comes to a tie. Warlords is
+// the upper layer and the one whose scan the shared legend belongs to, so it goes first.
+const RN_LAYER_ORDER = ['warlords', 'borders'];
+// Every label one layer *wants*, fitted but not yet placed. Placement is a separate pass because it is
+// not a per-layer question — see renderRealmNames below.
+function realmLabelCandidates(id) {
+  const cols = realmCols.get(id);
+  if (!cols) return [];
+  const byColour = new Map();
+  for (const [k, c] of cols) {
+    if (!realmName(id, c)) continue;               // unnamed washes have nothing to write
+    if (!byColour.has(c)) byColour.set(c, new Set());
+    byColour.get(c).add(k);
+  }
+  const hexA = wholeHexArea(), out = [];
+  for (const [c, cells] of byColour) {
+    const name = realmName(id, c);
+    const adj = realmGraph(cells);
+    const labels = [];
+    for (const block of realmBlocks(adj)) {
+      const lab = fitRealmLabel(block, adj, name);
+      if (lab) { lab.c = c; lab.layer = id; labels.push(lab); }
+    }
+    if (!labels.length) continue;
+    // A realm gets its name on each piece of itself, but not on every scrap: without the fraction a
+    // large realm has its name written again on every coastal fragment it owns, and without the floor a
+    // realm that is *entirely* fragments ends up with no name at all.
+    labels.sort((p, q) => q.area - p.area);
+    const big = labels[0].area;
+    for (const lab of labels.slice(0, Math.max(1, RN.blocksMax)))
+      if (lab === labels[0] || (lab.area >= big * RN.blockFrac && lab.area >= hexA * RN.blockMinHex))
+        out.push(lab);
+  }
+  return out;
+}
+/* Both layers' names, fitted and then placed **together**.
+
+   Placement cannot be a per-layer question, and treating it as one produced two visible faults as soon
+   as Borders and Warlords were switched on at once. Each layer laid out its own names in ignorance of
+   the other's, so a legion's name and the name of the imperial ground it sits on were written across
+   each other; and the Blue Scarves, who appear on *both* maps — being nobody's subject, they keep their
+   own colour on the Borders map instead of being coloured in as the empire's — had their name written
+   twice in the same place, once from each layer.
+
+   So the candidates from every visible name group go into one pool, and one pass places them. Two rules
+   come out of that:
+
+   - **They respect each other as if they were one layer.** One collision list, so a warlord's name and
+     a realm's name give way to each other exactly as two realms on one layer do, largest first.
+   - **A name is written once.** If the same name has already been placed *from another layer*, this
+     copy is dropped. Only from another layer: within one layer a realm may quite properly have its name
+     on several separate pieces of itself, which is what `blocksMax` is about.
+
+   Which layer keeps it is settled by size first and by RN_LAYER_ORDER on a tie — and a tie is the usual
+   case here, since a colour on both maps is the same colour over the same ground and its blocks come out
+   identical. Each label is still drawn into *its own* layer's group, so it goes on appearing and
+   disappearing with that layer's switch. */
+function renderRealmNames() {
+  for (const id in realmNameG) realmNameG[id].innerHTML = '';
+  if (!S.adj) return;
+  const t0 = performance.now();
+  const shown = [...RN_LAYER_ORDER, ...Object.keys(realmNameG).filter(id => !RN_LAYER_ORDER.includes(id))]
+    .filter(id => realmNameG[id] && realmNameG[id].style.display !== 'none');
+  const cand = [];
+  for (const id of shown) cand.push(...realmLabelCandidates(id));
+  /* The order candidates are offered in is the order they win in, and across the two layers that is a
+     choice rather than a fact. Sorting the pool purely by area — the obvious thing, and what was done
+     first — hands the map to Borders, whose pale imperial wash is the largest thing on it by a wide
+     margin: its name is set across three hundred hexes and crosses half the legions on the way, and
+     four legion names disappeared under it. Which is exactly backwards for a reader who has just
+     switched Warlords on. With both layers up, the paint you can *see* inside a legion's territory is
+     the legion's — Warlords is drawn over Borders and leaves the realm beneath showing only where no
+     warlord has taken it — so the name that survives there should be the legion's too, whatever the
+     relative size of the two countries. The name should match the paint.
+
+     Hence a precedence rather than a size contest, `RN.crossRule` deciding it: the upper layer first by
+     default, or the lower, or the old largest-wins. Within a layer it is always area order. */
+  const layerRank = id => RN_LAYER_ORDER.indexOf(id);
+  const rule = RN.crossRule;
+  cand.sort((p, q) => {
+    if (p.layer !== q.layer && rule !== 'area')
+      return (rule === 'lower' ? -1 : 1) * (layerRank(p.layer) - layerRank(q.layer));
+    return q.area - p.area || layerRank(p.layer) - layerRank(q.layer);
+  });
+  const face = realmFace(), ink = realmInk();
+  const placed = [], byAlgo = {}, drawn = {}, byName = new Map();
+  let hit = 0, dup = 0, shrunk = 0;
+  for (const lab0 of cand) {
+    const already = byName.get(lab0.text);
+    if (already && already !== lab0.layer) { dup++; continue; }   // the other layer has said it
+    /* A label that loses a collision is offered the chance to be **smaller** before it is dropped. It
+       is a better answer than either alternative: dropping it loses the name outright, and nudging it
+       aside moves it off its own ground onto somebody else's. Smaller keeps it where it belongs and
+       says something true about the relation — the crowded name is the lesser claim on that ground.
+       Two steps down, because a name at a third of the size it wanted is not the map's problem any
+       more, it is unreadable. */
+    let lab = lab0;
+    let clash = placed.some(other => labelsCollide(lab, other));
+    for (const shrink of [0.7, 0.48]) {
+      if (!clash) break;
+      const alt = setNameAlong(lab0.line, lab0.cells, lab0.name, lab0.area, lab0.fs * shrink);
+      if (!alt) break;
+      Object.assign(alt, { algo: lab0.algo, line: lab0.line, cells: lab0.cells,
+                           name: lab0.name, layer: lab0.layer, c: lab0.c });
+      lab = alt;
+      clash = placed.some(other => labelsCollide(lab, other));
+      if (!clash) shrunk++;
+    }
+    if (clash) { hit++; continue; }
+    placed.push(lab);
+    byName.set(lab.text, lab.layer);
+    byAlgo[lab.algo] = (byAlgo[lab.algo] || 0) + 1;
+    drawn[lab.layer] = (drawn[lab.layer] || 0) + 1;
+    const g = realmNameG[lab.layer];
+    const pid = 'rn_' + lab.layer + '_' + (nameSeq++);   // a serial: a textPath must name its path
+    const path = el('path', { id: pid, d: lab.d, fill: 'none', stroke: 'none' }, g);
+    /* Ink and halo, both **opaque**. The halo is scaled with the font so it stays a rim at every size
+       instead of swallowing small labels and vanishing on large ones, and `paint-order: stroke` is
+       what puts it behind the fill rather than across it. */
+    const t = el('text', {
+      'font-family': face.family, 'font-weight': face.weight, 'font-size': lab.fs.toFixed(2),
+      'letter-spacing': lab.ls.toFixed(2),
+      fill: ink.realm ? darkenRgb(lab.c, 0.42) : ink.fill,
+      stroke: ink.stroke, 'stroke-width': (lab.fs * ink.sw).toFixed(2),
+      'paint-order': 'stroke', 'stroke-linejoin': 'round', 'pointer-events': 'none',
+    }, g);
+    const tp = el('textPath', { href: '#' + pid, startOffset: 0 }, t);
+    tp.setAttributeNS('http://www.w3.org/1999/xlink', 'href', '#' + pid);  // older renderers
+    tp.textContent = lab.text;
+    /* Centred by hand rather than with text-anchor. Letter-spacing is added *after* every character
+       including the last, so the advance the renderer centres is half a gap wider than the word
+       actually is, and a heavily tracked name comes out visibly left of where it should be. Placing
+       the start explicitly at half the slack sidesteps it. The path's own length is asked for in
+       preference to the sampled one — same curve, but it is the renderer's own arithmetic that will
+       be walking the glyphs along it. */
+    let len = lab.arc;
+    try { const L = path.getTotalLength(); if (L > 0) len = L; } catch {}
+    tp.setAttribute('startOffset', Math.max(0, (len - lab.total) / 2).toFixed(1));
+  }
+  rnLastStats = { layers: shown, drawn, ms: +(performance.now() - t0).toFixed(1),
+                  total: placed.length, hit, dup, shrunk, byAlgo };
+  updateRnReport();
+}
+// A realm's own colour, taken down far enough to be ink. Multiplying rather than mixing towards black
+// keeps the hue: a washed-out lilac darkens to a lilac, not to a grey.
+function darkenRgb(c, k) {
+  return 'rgb(' + String(c).split(',').map(n => Math.round(+n * k)).join(',') + ')';
+}
+// One entry point, since the pass is joint: whatever changed, both groups are rebuilt from scratch.
+// Every control on the panel, every repaint and every switch ends here.
+const refitRealmNames = renderRealmNames;
+/* A web face is fetched the first time it is picked and never otherwise, so a reader of the published
+   map requests nothing. Waited for rather than merely asked for: the widths are measured on a canvas,
+   and a canvas measuring a font that has not arrived silently measures the fallback. */
+const realmFontsAsked = new Set();
+async function loadRealmWebFont(f) {
+  if (!f?.web) return;
+  if (!realmFontsAsked.has(f.web)) {
+    realmFontsAsked.add(f.web);
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = `https://fonts.googleapis.com/css2?family=${f.web}&display=swap`;
+    document.head.appendChild(link);
+  }
+  const family = f.family.split(',')[0].replace(/"/g, '').trim();
+  try { await document.fonts.load(`${f.weight} 40px "${family}"`); await document.fonts.ready; } catch {}
+}
+
+/* ---- the tuning panel (local only) ----
+   Which baseline is right, and what every threshold in the fitting should be, are not questions this
+   file can answer by reasoning. They are answered by looking at a real map with real names on it and
+   changing one number at a time. So the panel exists, it is built from the table below rather than
+   from markup — one row per knob, so adding a knob is adding a line — and it is dropped entirely from
+   the published build along with the stored choices, where a reader's own tuning would mean two people
+   seeing two different maps. */
+const RN_FIELDS = [
+  { group: 'Baseline' },
+  { k: 'algo', label: 'Algorithm', opts: () => RN_ALGOS, wide: true },
+  { k: 'sagMax', label: 'Max bend', min: 0, max: 0.6, step: 0.01,
+    hint: 'Hard cap on how far any baseline may bow, whatever it asked for. Small blocks are where this bites.' },
+  { k: 'gapTol', label: 'Bottleneck steps', min: 0, max: 12, step: 1,
+    hint: 'How many steps outside the country the trim will step over rather than end the name. This is what carries a name through a one-hex neck.' },
+  { k: 'turnMax', label: 'Max turn °', min: 60, max: 720, step: 10,
+    hint: 'Degrees of turn from end to end past which a baseline is unwritable and the plainer fallbacks are used instead.' },
+
+  { group: 'Spine' },
+  { k: 'pull', label: 'Interior pull', min: 0, max: 6, step: 0.1,
+    hint: 'How much more a step costs when it lands on the border than when it lands as deep inland as the block goes.' },
+  { k: 'smoothMix', label: 'Fit ↔ raw walk', min: 0, max: 1, step: 0.05,
+    hint: '1 takes the fitted curve whole; 0 takes the raw walk; between pulls the curve back towards the walk, which keeps a bottleneck the fit wants to cut across.' },
+  { k: 'polyDeg', label: 'Fit degree', min: 1, max: 5, step: 1,
+    hint: 'Degree of the polynomial fitted to x and y against distance along the spine. 1 is a straight line; 3 manages one real bend; higher starts to ripple again.' },
+  { k: 'avgPasses', label: 'Averaging passes', min: 0, max: 8, step: 1,
+    hint: 'For the averaged-and-rounded spine only. Takes the hex stagger down without changing the fact that the line still follows it.' },
+  { k: 'chaikin', label: 'Corner cutting', min: 0, max: 5, step: 1 },
+
+  { group: 'Axis' },
+  { k: 'tiltMax', label: 'Max tilt °', min: 0, max: 90, step: 1,
+    hint: 'How far off level the principal axis may be. It sets where the two ends of the country are taken from, so it steers the spine as well as the straight baselines.' },
+  { k: 'roundRatio', label: 'Round threshold', min: 1, max: 3, step: 0.05,
+    hint: 'Below this axis ratio a block counts as round and its name is set level, the axis being noise.' },
+
+  { group: 'Shared origin' },
+  { k: 'originDeg', label: 'Direction °', min: -180, max: 180, step: 5,
+    hint: 'Which way the shared centre lies from the middle of the map: 90 is below it, so the arcs bow upwards like lines of latitude on a north-up globe.' },
+  { k: 'originDist', label: 'Distance', min: 0.3, max: 20, step: 0.1,
+    hint: 'How far away the shared centre is, in map heights. Near, and the labels curve hard; far, and they flatten towards straight.' },
+
+  { group: 'Lettering' },
+  { k: 'face', label: 'Face', opts: () => REALM_FACES, wide: true },
+  { k: 'ink', label: 'Ink', opts: () => REALM_INKS, wide: true },
+  { k: 'fsMax', label: 'Largest size', min: 10, max: 120, step: 1,
+    hint: 'A ceiling for the biggest realms, which are otherwise limited only by how thick they are.' },
+  { k: 'fsMin', label: 'Smallest size', min: 3, max: 30, step: 0.5 },
+  { k: 'trackMax', label: 'Max tracking (em)', min: 0, max: 1.5, step: 0.05 },
+  { k: 'thickFrac', label: 'Size ÷ thickness', min: 0.2, max: 1, step: 0.02 },
+  { k: 'thickPct', label: 'Thickness percentile', min: 0, max: 1, step: 0.05,
+    hint: 'Which of the thicknesses along the line the size is taken from. Low means the name fits the narrow places it crosses.' },
+  { k: 'endInset', label: 'End clearance', min: 0, max: 3, step: 0.1,
+    hint: 'Room left clear at the two ends together, in font sizes, since the trim only followed the centreline and a glyph has width.' },
+  { k: 'taperNeed', label: 'Taper cut-off', min: 0, max: 2, step: 0.05,
+    hint: 'Ground must be this many font sizes thick to hold a capital; thinner, and the ends are cut back.' },
+
+  { group: 'Which blocks, and collisions' },
+  { k: 'blocksMax', label: 'Names per realm', min: 1, max: 8, step: 1 },
+  { k: 'blockMinHex', label: 'Smallest piece', min: 0, max: 30, step: 1,
+    hint: 'A piece of a realm must be at least this many whole hexes to be worth its own copy of the name.' },
+  { k: 'blockFrac', label: '…share of largest', min: 0, max: 1, step: 0.02,
+    hint: '…and this share of the realm\u2019s largest piece. Without it a big realm has its name written again on every coastal fragment it owns.' },
+  { k: 'collide', label: 'Collision distance', min: 0, max: 1.5, step: 0.02,
+    hint: 'Two labels touch when closer than this times their two heights added. 0 places everything and lets them overlap.' },
+
+  { group: 'Borders ↔ Warlords' },
+  { k: 'crossRule', label: 'Who wins', opts: () => RN_CROSS_RULES, wide: true },
+  { k: 'collideCross', label: 'Distance across layers', min: 0, max: 1.5, step: 0.02,
+    hint: 'The same, for two labels on different layers — which are allowed nearer, since the two are answering different questions about the same ground rather than disputing it.' },
+];
+function buildRnPanel() {
+  const host = document.getElementById('rnTuner');
+  if (!host || !LOCAL) return;
+  host.innerHTML = '';
+  for (const f of RN_FIELDS) {
+    if (f.group) {
+      const h = document.createElement('div');
+      h.className = 'rngroup';
+      h.textContent = f.group;
+      host.appendChild(h);
+      continue;
+    }
+    const row = document.createElement('label');
+    row.className = 'rnrow' + (f.wide ? ' wide' : '');
+    row.title = f.hint || '';
+    const val = RN[f.k];
+    row.innerHTML = f.opts
+      ? `<span>${escHtml(f.label)}</span><select>${f.opts().map(o =>
+          `<option value="${o.id}"${o.id === val ? ' selected' : ''}>${escHtml(o.name)}</option>`).join('')}</select>`
+      : `<span>${escHtml(f.label)}</span>
+         <input type="range" min="${f.min}" max="${f.max}" step="${f.step}" value="${val}">
+         <output>${val}</output>`;
+    const input = row.querySelector('select, input');
+    const out = row.querySelector('output');
+    const commit = async () => {
+      RN[f.k] = f.opts ? input.value : +input.value;
+      if (out) out.textContent = RN[f.k];
+      try { localStorage.setItem(RN_LS, JSON.stringify(RN)); } catch {}
+      if (f.k === 'face') await loadRealmWebFont(realmFace());
+      refitRealmNames();
+    };
+    // Sliders answer live, since the whole value of the panel is watching the map move as you drag —
+    // a refit is forty milliseconds and the browser coalesces what it cannot keep up with.
+    input.oninput = commit;
+    input.onchange = commit;
+    host.appendChild(row);
+  }
+  const foot = document.createElement('div');
+  foot.className = 'rnfoot';
+  foot.innerHTML = `<button class="btn" type="button">Back to defaults</button><p class="hint" id="rnReport"></p>`;
+  foot.querySelector('button').onclick = () => {
+    Object.assign(RN, RN_DEFAULT);
+    try { localStorage.removeItem(RN_LS); } catch {}
+    buildRnPanel(); refitRealmNames();
+  };
+  host.appendChild(foot);
+  loadRealmWebFont(realmFace());
+  updateRnReport();
+}
+/* What the last fit actually did. Worth reporting because the interesting failures are silent ones:
+   a baseline that returned nothing and fell back, or a label dropped for a collision, both leave a
+   map that merely looks a bit bare. The tally names which algorithm each drawn label came from. */
+function updateRnReport() {
+  const el = document.getElementById('rnReport');
+  if (!el || !rnLastStats) return;
+  const s = rnLastStats;
+  if (!s.layers.length) { el.textContent = 'No realm names showing.'; return; }
+  const per = s.layers.map(id => `${id} ${s.drawn[id] || 0}`).join(' + ');
+  const from = Object.entries(s.byAlgo).map(([k, n]) => `${n}× ${k}`).join(', ');
+  el.textContent = `${per} drawn`
+                 + (s.shrunk ? `, ${s.shrunk} shrunk to fit` : '')
+                 + (s.hit ? `, ${s.hit} dropped for collisions` : '')
+                 + (s.dup ? `, ${s.dup} as duplicates across layers` : '')
+                 + ` · ${s.ms} ms` + (from ? ` · ${from}` : '');
+}
+
 /* Four thousand numbers, drawn once into pictures.
 
    As live <text> this was 4,113 nodes, each with a stroked outline behind it — and text with
@@ -786,6 +1948,14 @@ async function renderHexIds() {
    the two would collapse into one. */
 function renderLabels() {
   groups.labels.innerHTML = '';
+  /* The names go in a group of their own, appended after every marker has been drawn, for two
+     reasons. One is the switch: the Strongholds row carries a names button, and a group is something
+     that can be hidden without any of this being redone. The other is stacking — names used to be
+     drawn interleaved with the discs, so a name reaching over its neighbour went *behind* that
+     neighbour's marker and lost a letter or two. Collected and laid on top afterwards, every name
+     clears every disc. Names overlapping each other is a different problem and not one a z-order
+     can solve. */
+  const names = [];
   const done = new Set();
   const put = (id, ri, name, m) => {
     const key = id + ':' + ri;
@@ -817,10 +1987,7 @@ function renderLabels() {
       el('rect', { x: cx - a, y: cy - a, width: 2 * a, height: 2 * a,
                    fill: FORT_FILL, stroke: 'none' }, groups.labels);
     }
-    if (name) el('text', {
-      x: cx, y: cy - r - SH_NAME_GAP, 'text-anchor': 'middle', 'font-size': 10.5, fill: '#fff',
-      stroke: '#14181e', 'stroke-width': 2.4, 'paint-order': 'stroke', 'font-family': 'system-ui,sans-serif',
-    }, groups.labels).textContent = name;
+    if (name) names.push([cx, cy - r - SH_NAME_GAP, name]);
   };
   for (const id of namedHexes()) {
     const es = shEntries(id);
@@ -830,6 +1997,16 @@ function renderLabels() {
     // marker to hang the name off, so it stays hex-keyed and sits wherever the centre falls.
     if (!es.length && S.features.labels[id]) put(id, shRegion(id, {}), S.features.labels[id], null);
   }
+  /* Emptied and refilled rather than made afresh, because the group is not this function's to own: it
+     lives at its own height in the z-order (below the realm lettering, above the drawn features) and it
+     carries the switch state, the opacity and the filter that the Strongholds row has set on it. Rebuild
+     the element and all three are silently lost — which is what happened while it was a child made on
+     every render: renaming one stronghold brought every hidden name back with it. */
+  groups.shNames.replaceChildren();
+  for (const [x, y, name] of names) el('text', {
+    x, y, 'text-anchor': 'middle', 'font-size': 10.5, fill: '#fff',
+    stroke: '#14181e', 'stroke-width': 2.4, 'paint-order': 'stroke', 'font-family': 'system-ui,sans-serif',
+  }, groups.shNames).textContent = name;
   // Floating OCR labels (S.names.floating) are not rendered — they were mis-OCR'd stray text, not
   // real strongholds. Use the Label tool to name a hex if a genuine label is needed.
 }
@@ -5423,11 +6600,22 @@ function buildLayerUI() {
     if (L.slave || L.fixed) continue;
     const row = document.createElement('div');
     row.className = 'layer';
+    /* Invert is a tracing aid and nothing else: it exists so a dark reference scan can be flipped
+       into light lines to draw against. The scans themselves are dropped from the published build,
+       which leaves the button there offering to solarise the finished map — a control whose only
+       honest use has been taken away. So it goes out with them, and the published row is a
+       checkbox, a slider, and whatever that layer has to say for itself. */
     row.innerHTML = `<label><input type="checkbox" ${L.def > 0 ? 'checked' : ''}> ${L.name}</label>
       <input type="range" min="0" max="1" step="0.05" value="${L.def || 1}">
-      <button class="inv" title="Invert this layer's colours — dark reference scans become light lines you can trace against">◐</button>`;
+      ${L.names ? `<button class="nam" title="${escHtml(L.names)}">A</button>` : ''}
+      ${LOCAL ? `<button class="inv" title="Invert this layer's colours — dark reference scans become light lines you can trace against">◐</button>` : ''}`;
     const [chk, rng] = row.querySelectorAll('input');
     const inv = row.querySelector('.inv');
+    const nmb = row.querySelector('.nam');
+    // Whether this layer's names are showing. Kept on the layer rather than in the closure so the
+    // renderers can ask — a name group is rebuilt from scratch whenever the ground under it changes,
+    // and has to come back up in the state the button is showing.
+    if (L.names) L._names = L.nameDef ?? false;
     const apply = () => {
       if (chk.checked && L.lazy && !L._built) { L.lazy(); L._built = true; } // build on first use
       if (chk.checked && L._img && !L._img.getAttribute('href')) L._img.setAttribute('href', L.img); // fetch on first use
@@ -5443,14 +6631,45 @@ function buildLayerUI() {
         // CSS filter, so it costs nothing and never touches the underlying geometry or colours
         g.style.filter = L._inv ? 'invert(1)' : '';
       }
+      if (L.names) applyNameGroup(L, chk.checked);
     };
     chk.onchange = apply; rng.oninput = apply;
-    inv.onclick = () => { L._inv = !L._inv; inv.classList.toggle('on', L._inv); apply(); };
+    if (inv) inv.onclick = () => { L._inv = !L._inv; inv.classList.toggle('on', L._inv); apply(); };
+    if (nmb) {
+      nmb.classList.toggle('on', !!L._names);
+      nmb.onclick = () => { L._names = !L._names; nmb.classList.toggle('on', L._names); apply(); };
+    }
     list.appendChild(row);
     // Kept on the layer so something else can work the switch and have the panel agree: the Map
     // painting tool turns its own scan on, and a checkbox that said otherwise would be a lie.
-    L._apply = apply; L._row = row; L._chk = chk;
+    L._apply = apply; L._row = row; L._chk = chk; L._nmb = nmb;
   }
+}
+/* A names group is only ever drawn while it is being looked at. Fitting the realm labels means walking
+   every held subhex, splitting it into contiguous blocks and probing the ground along a curve for each
+   one, and that is not work to do for a layer nobody has asked to read — so the button being switched
+   on is what builds it. Both conditions matter: names belong to their layer, and a layer that is off
+   has no names.
+
+   Whose names get built is *not* just this layer's, though. Since the two realm layers are placed
+   together, switching either one changes what the other is allowed to draw — turn Warlords on and the
+   Blue Scarves label it takes over has to come off Borders — so the whole pass is redone whenever the
+   set of visible name groups changes.
+
+   Which is why the rebuild is guarded rather than unconditional: `apply` also runs on every frame of an
+   opacity drag, and refitting there would refit sixty times a second. It fires when a group's visibility
+   actually flipped, or when a visible one has nothing in it yet. */
+function applyNameGroup(L, on) {
+  const show = on && !!L._names;
+  if (L.id === 'labels') {
+    if (groups.shNames) groups.shNames.style.display = show ? '' : 'none';
+    return;
+  }
+  const g = realmNameG[L.id];
+  if (!g) return;
+  const was = g.style.display !== 'none';
+  g.style.display = show ? '' : 'none';
+  if (was !== show || (show && !g.firstChild)) renderRealmNames();
 }
 
 /* ---------------- tokens ----------------
@@ -6552,10 +7771,12 @@ function saveUI() { try { localStorage.setItem(UI_LS, JSON.stringify(UI)); } cat
    is open — so opening it switches the map into drawing and leaving it switches back. That is the
    whole of the old Draw/Route toggle, minus the toggle. */
 const PANE_TITLES = { find: 'Find', route: 'Routes', iso: 'Isochrone', tokens: 'Tokens',
-                      draw: 'Draw', data: 'Data' };
+                      draw: 'Draw', data: 'Data', labels: 'Realm labels' };
 function showPane(name, opts) {
   if (!PANE_TITLES[name]) name = 'route';
-  if (!LOCAL && name === 'data') name = 'route';   // Draw survives publication; Data does not
+  // Draw survives publication; the two tuning panels do not, so a stored pane name from a local
+  // session cannot strand a reader on a panel that is no longer there.
+  if (!LOCAL && (name === 'data' || name === 'labels')) name = 'route';
   UI.pane = name;
   for (const el of document.querySelectorAll('#panelBody .pane')) el.classList.toggle('on', el.dataset.pane === name);
   for (const b of railEl.querySelectorAll('.railbtn[data-pane]')) b.classList.toggle('on', b.dataset.pane === name);
@@ -6611,8 +7832,18 @@ document.getElementById('panelClose').onclick = closePanel;
 // sheet refetch and the drawing reset, which are jobs for whoever maintains the map, so its button is
 // dropped rather than hidden.
 railEl.querySelector('.railbtn[data-pane="draw"]').hidden = false;
-if (LOCAL) railEl.querySelector('.railbtn[data-pane="data"]').hidden = false;
-else railEl.querySelector('.railbtn[data-pane="data"]').remove();
+/* The Data and Realm labels panels go the same way and for the same reason: both are for settling
+   questions about the map rather than for reading it, so their buttons are dropped rather than hidden.
+   The **buttons** only. Removing the panes themselves as well was tried and took `#dataInfo` with them
+   — a status line `boot()` writes to before it has drawn anything — so the published map died at the
+   first sentence with "Failed to load data". A pane nothing can reach is unreachable enough; there is
+   no second prize for also deleting it, and the coupling that made it fatal is the sort that only
+   shows up when the thing is served the way a reader would serve it. */
+for (const p of ['data', 'labels']) {
+  const b = railEl.querySelector(`.railbtn[data-pane="${p}"]`);
+  if (LOCAL) b.hidden = false; else b.remove();
+}
+buildRnPanel();   // local only; a no-op on the published map
 
 /* Anything that floats over the map can be picked up by its header and put where it suits. One
    implementation, so the layer list and the route readout behave identically — and both remember

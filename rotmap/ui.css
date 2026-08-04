@@ -343,14 +343,55 @@ body.panel-shut #panel { display: none; }
   overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
 }
 .layer label input { flex: 0 0 auto; width: 14px; height: 14px; margin: 0; accent-color: var(--accent); }
-.layer .inv {
+/* The two row buttons are one control in two jobs — a switch that sits after the slider and lights up
+   when it is on — so they wear one rule rather than two that would have to be kept in step. Invert
+   only exists locally (see buildLayerUI); the names button ships. */
+.layer .inv, .layer .nam {
   flex: 0 0 22px; width: 22px; height: 20px; padding: 0;
   background: var(--bg-raise); color: var(--ink-3);
   border: 1px solid var(--line-2); border-radius: var(--r1);
   font-size: var(--f1); line-height: 1; cursor: pointer;
 }
-.layer .inv:hover { border-color: var(--line-3); color: var(--ink); }
-.layer .inv.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+/* The names button says what it does by being a letter. Set in the serif the labels themselves are
+   drawn in, so the button looks like a small sample of what switching it on puts on the map. */
+.layer .nam { font-family: Georgia, "Times New Roman", serif; font-weight: 600; }
+.layer .inv:hover, .layer .nam:hover { border-color: var(--line-3); color: var(--ink); }
+.layer .inv.on, .layer .nam.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+/* The realm-label tuning panel. Thirty controls in a 328px column, so the rows are as tight as they
+   can be and still be draggable: name on the left, slider taking whatever is left, value on the right
+   in a fixed gutter so the numbers line up in a column and can be read down. Built in script from
+   RN_FIELDS; local only. */
+#rnTuner { display: flex; flex-direction: column; gap: 2px; }
+.rngroup {
+  margin: var(--s4) 0 var(--s1); padding-bottom: 3px;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink-3); font-size: var(--f1); letter-spacing: .06em; text-transform: uppercase;
+}
+.rngroup:first-child { margin-top: 0; }
+.rnrow {
+  display: flex; align-items: center; gap: var(--s3);
+  padding: 3px var(--s2); margin: 0 calc(var(--s2) * -1);
+  border-radius: var(--r1); cursor: pointer;
+}
+.rnrow:hover { background: var(--bg-raise); }
+.rnrow > span {
+  flex: 0 0 132px; min-width: 0;
+  color: var(--ink-2); font-size: var(--f2);
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.rnrow input[type=range] { flex: 1 1 0; min-width: 30px; }
+/* Tabular figures, or the column of values jitters as you drag and the eye cannot read down it. */
+.rnrow output {
+  flex: 0 0 38px; text-align: right;
+  color: var(--ink); font-size: var(--f1); font-variant-numeric: tabular-nums;
+}
+/* The three selects are the choices rather than the adjustments, so they get the whole width. */
+.rnrow.wide { display: grid; grid-template-columns: 1fr; gap: 2px; }
+.rnrow.wide > span { flex: none; }
+.rnrow.wide select { width: 100%; }
+.rnfoot { margin-top: var(--s5); }
+.rnfoot .hint { font-variant-numeric: tabular-nums; }
+
 /* A row the Map painting tool switched on by itself. It blinks three times and settles, the same tell
    the search gives a hex it has just found — enough to land the eye on the switch, since the next
    question after "why did the map change" is "how do I change it back". */
@@ -731,7 +772,7 @@ body.colsizing { cursor: col-resize; user-select: none; }
   .sr .addsel { flex: 0 0 32px; width: 32px; height: 32px; font-size: 18px; }
   .layer { padding: 7px 0; }
   .layer input[type=range] { height: 22px; }
-  .layer .inv { flex: 0 0 28px; width: 28px; height: 28px; }
+  .layer .inv, .layer .nam { flex: 0 0 28px; width: 28px; height: 28px; }
   .ctxit { padding: 11px 10px; font-size: var(--f4); }
   .numgrid { grid-template-columns: repeat(4, 44px); gap: var(--s2); }
   .numgrid button { padding: 11px 0; font-size: var(--f3); }

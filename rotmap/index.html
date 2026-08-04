@@ -45,6 +45,10 @@
     <g id="i-hex" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
       <path d="M11 2.2 18.6 6.6v8.8L11 19.8 3.4 15.4V6.6z"/>
     </g>
+    <!-- A serif A on a curve: lettering that follows a line, which is what the panel is about. -->
+    <g id="i-type" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 13.5 8 5l4 8.5"/><path d="M5.6 10.6h4.8"/><path d="M3 18c4-2.6 12-2.6 16 0"/>
+    </g>
   </defs>
 </svg>
 
@@ -59,6 +63,9 @@
        script removes these two buttons unless the app is served locally. -->
   <button class="railbtn" type="button" data-pane="draw"   data-label="Draw" hidden><svg viewBox="0 0 22 22"><use href="#i-draw"/></svg></button>
   <button class="railbtn" type="button" data-pane="data"   data-label="Data" hidden><svg viewBox="0 0 22 22"><use href="#i-data"/></svg></button>
+  <!-- Which curve a realm name is written along, and every threshold in the fitting. Tuning, not
+       reading: it exists so the questions can be settled by looking, and goes with the other two. -->
+  <button class="railbtn" type="button" data-pane="labels" data-label="Realm labels" hidden><svg viewBox="0 0 22 22"><use href="#i-type"/></svg></button>
   <div class="spacer"></div>
   <button class="railbtn" type="button" id="railShut" data-label="Hide panel"><svg viewBox="0 0 22 22"><use href="#i-collapse"/></svg></button>
 </nav>
@@ -342,6 +349,27 @@
           named a wash</b> — unnamed, it would be a hex code, which tells nobody anything — plus the
           realms that appear there in their own colour rather than the empire's, which today means the
           Blue Scarves. Name a polity once and every hex of it answers from then on.
+          <br>A named realm can also be <b>written across its own ground</b>. The <b>A</b> button on the
+          Borders and Warlords rows of the Layers panel lays each name along the land it holds — fitted
+          to the shape, so it runs the length of the country and bends with it rather than sitting
+          straight across the middle. Only named colours appear, which makes this a third reading of the
+          same names the palette and the readout give. A realm split by sea gets its name on each piece
+          large enough to carry it, and where two names would land on top of one another the larger
+          upper layer keeps its and the other yields — first by being set smaller, and only then by going
+          without, since a name nudged aside to fit would be labelling somebody else's country. With
+          Warlords up, a legion's name beats the name of the imperial ground it sits on: the paint you
+          can see there is the legion's, so the name should be too. A name the two layers share, like
+          the Blue Scarves, is written once. Off by default: the layer is already colouring this ground, and the
+          lettering is a second answer to a question you may not be asking.
+          <br><b>Locally</b> there is a <b>Realm labels</b> panel on the rail, which is where all of this
+          is actually decided. Eight ways of finding the line a name is written along — a straight axis,
+          a parabola, a fitted arc, arcs all sharing one distant centre, and four kinds of walk along the
+          country's own spine — and a slider for every threshold in the fitting, answering live as you
+          drag. It also says what the last fit did: how many names were drawn, how many were dropped for
+          colliding, and which algorithm each one came from. The face and the ink are on the same panel;
+          three of the faces are fetched from the web and are auditions only, requested the first time
+          you pick one and never otherwise. None of it exists on the published map, which takes the
+          defaults — the settings this panel was used to arrive at.
         </details>
         <details class="hint" data-dev>
           <summary>Stronghold</summary>
@@ -358,6 +386,14 @@
           Click any hex to name or rename it, which works on datasheet strongholds too; clear the text
           to fall back to the datasheet name. A commandery is named for the grandest settlement inside
           it, so renaming the right stronghold renames the commandery around it.
+          <br>The names come off the map without the markers: the <b>A</b> button on the Strongholds row
+          of the Layers panel switches the lettering alone, leaving every disc where it was. On by
+          default — a stronghold you cannot name is of limited use — but on a crowded stretch of coast
+          it is the names that collide rather than the markers, and reading the shape of the ground is
+          easier with them off. They are drawn <b>under</b> the realm lettering: a town's name is the
+          name of a place, a realm's is a claim on a whole stretch of ground, and the larger claim reads
+          over the smaller. The markers themselves stay on top of both, being small and being what you
+          click.
         </details>
         <details class="hint">
           <summary>Erase</summary>
@@ -378,6 +414,14 @@
         </div>
         <p class="hint" id="dataInfo"></p>
       </div>
+    </section>
+
+    <!-- Built from the RN_FIELDS table in script rather than written out here: one row per knob, so
+         adding a knob is adding a line, and the panel cannot drift out of step with what it sets. -->
+    <section class="pane" data-pane="labels">
+      <p class="hint">Which line a realm's name is written along, and every threshold in the fitting.
+        Turn <b>Borders</b> or <b>Warlords</b> on with its <b>A</b> switched on, and drag.</p>
+      <div id="rnTuner"></div>
     </section>
 
   </div>
