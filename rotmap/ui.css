@@ -268,10 +268,16 @@ body.panel-shut #panel { display: none; }
   border: 1px solid var(--line-3); border-radius: var(--r3);
   box-shadow: var(--shadow-2);
 }
-/* [hidden] has to out-specify the id rules below, which set `display: flex` to lay these two out.
-   A class-plus-attribute selector does not, so `hidden` did nothing and both surfaces sat visible at
-   the body's flex static position — the top-left corner — whatever script asked of them. */
-#layersPop[hidden], #routeCard[hidden], .float[hidden] { display: none; }
+/* [hidden] has to out-specify the id rules below, which set `display: flex` to lay these surfaces out.
+   A class-plus-attribute selector does not, so `hidden` did nothing and the surface sat visible at
+   whatever position it had not been given yet — whatever script asked of it.
+
+   This was a list of ids, one per surface, which worked and was a trap: adding a fourth float meant
+   knowing to come back here, and the symptom of forgetting is a panel that cannot be closed and appears
+   in the wrong corner. Which is exactly what happened to Find. `!important` is the right tool for once —
+   "hidden means hidden" genuinely should beat any layout rule, and stating it that way means the next
+   float added needs nothing from this file at all. */
+.float[hidden] { display: none !important; }
 .floathead {
   display: flex; align-items: center; gap: var(--s3);
   padding: var(--s3) var(--s3) var(--s3) var(--s4);
@@ -398,6 +404,31 @@ body.panel-shut #panel { display: none; }
 @keyframes layerflash { 0%, 100% { background: none } 50% { background: var(--accent) } }
 .layer.lit { border-radius: var(--r1); animation: layerflash .5s ease-in-out 3; }
 
+/* Find, as a surface over the map ----------------------------------------- */
+#findPop {
+  width: 330px;
+  min-width: 240px; max-width: 92vw;
+  display: flex; flex-direction: column;
+}
+/* The results open **upward**, above the box you type in. Two reasons, and they are the same reason:
+   the surface lives in the bottom-right corner, so a list growing downward grows off the bottom of the
+   window and the last hits cannot be reached — and the box stays under your hands instead of walking
+   down the screen as you type. The DOM order is box-then-results, because that is the order they should
+   be read and tabbed through; only the painting is reversed. See placeFind for the other half of it,
+   which pins the surface by its bottom edge so growing really does grow upward. */
+#findBody {
+  display: flex; flex-direction: column; min-height: 0;
+  padding: var(--s3) var(--s4) var(--s4);
+}
+/* `hidden auto`, not `auto`: a scroll box with one axis set to auto computes the other to auto as well,
+   so asking only for vertical scrolling got a horizontal bar too. There was something to scroll to,
+   because a result row carries **negative side margins** — that is how it bleeds to the panel edge in the
+   sidebar, where the parent's padding absorbs it — and inside a scroll container that padding is not
+   there, so every row overhung its box by six pixels and a bar appeared to reach them. The rows give up
+   the bleed in here instead; the highlight stopping short of the edge is the better trade. */
+#findBody #searchResults { order: -1; overflow: hidden auto; min-height: 0; margin: 0 0 var(--s2); }
+#findBody .sr { margin-inline: 0; }
+
 /* Route readout card ------------------------------------------------------ */
 #routeCard {
   width: 430px; height: 460px;
@@ -513,8 +544,17 @@ body.colsizing { cursor: col-resize; user-select: none; }
   border: 1px solid #0007; border-radius: 4px;
 }
 .tokitem .sw { border-radius: 50%; }
+/* A counter's colour in front of its name in the results, so a row and the disc on the map read as the
+   same object. Inline rather than a flex child, since it sits inside the name span with the text. */
+.sr .nm .sw {
+  display: inline-block; width: 9px; height: 9px; margin-right: 6px;
+  border: 1px solid #0007; border-radius: 50%;
+}
 .rtitem .nm, .tokitem .nm { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .rtitem .tm, .tokitem .hx { color: var(--ink-3); font-size: var(--f2); font-variant-numeric: tabular-nums; }
+/* Who commands the force, beside its designation. Quieter and not italic-for-emphasis but italic-for-
+   aside: the row identifies a force by its numeral, and the name is what that force is called. */
+.tokitem .nm .who { margin-left: var(--s2); color: var(--ink-2); font-size: var(--f2); font-style: normal; }
 .rtitem .x, .tokitem .x { flex: 0 0 auto; padding: 0 var(--s1); color: var(--ink-3); }
 .rtitem .x:hover, .tokitem .x:hover { color: var(--bad); }
 /* The route's own menu. Dim until the row is under the cursor, so a list of routes reads as names and

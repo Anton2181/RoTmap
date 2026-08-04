@@ -219,7 +219,7 @@ const S = {
    army the boxes are editing means asking this, and that question is asked from the travel calculator
    a long way above the UI section. The panel machinery still does everything else with it. */
 const UI_LS = 'rotmap_ui_v1';
-const UI = { pane: 'route', shut: false, card: null, cardOff: false };
+const UI = { pane: 'route', shut: false, card: null, cardOff: false, find: null, findOn: false };
 try { Object.assign(UI, JSON.parse(localStorage.getItem(UI_LS)) || {}); } catch {}
 
 /* ---------------- geometry ---------------- */
@@ -337,7 +337,18 @@ function buildScaffold() {
   }
   groups.route = el('g', { id: 'lyr_route' });
   groups.edit = el('g', { id: 'lyr_edit' });
+  /* The hover layer never takes a pointer event. It exists to show you what you are pointing *at*, so an
+     element in it that intercepts the pointer is answering a question with a lie — and it was doing so:
+     the highlight for a split hex is a **filled** region polygon, unlike the stroke-only outline a whole
+     hex gets, and a filled path is hit-testable. It sits above the route layer, so a waypoint on one bank
+     of a river could not be grabbed at all: the press landed on the highlight drawn to point out the very
+     marker you were reaching for. Dragging worked everywhere else, which is what made it look like a
+     subhex problem rather than a stacking one.
+
+     Set on the group rather than per element, because "nothing in here is a target" is the rule for the
+     whole layer, and stating it once means the next thing drawn into it cannot forget. */
   groups.hover = el('g', { id: 'lyr_hover' });
+  groups.hover.style.pointerEvents = 'none';
   groups.selHex = el('g', { id: 'lyr_selHex' });   // topmost: outlines of the hexes the search picked
   // The region wash goes under the grid, roads and names — it tints the ground, it doesn't bury it.
   groups.selRegion = el('g', { id: 'lyr_selRegion' });
@@ -4026,10 +4037,84 @@ const shKindOf = m => !m ? 'none' : m.major ? 'major' : m.fort ? 'fortress' : 'o
 const COMM_RANK = { major: 0, fortress: 1, ordinary: 2 };
 let commIndex = null;     // hex -> index into S.commanderies
 let commSeats = null;     // index -> { h, name, kind } | null, the settlement it is named for
+let commCells = null;     // "hex:region" -> index; the subhex reading, see commanderyCells
 
-// Dropped whenever the strongholds or the hand-written labels might have moved under us; the next
-// question rebuilds it. Cheap enough (a few hundred lookups) that nothing tries to be cleverer.
-function commanderiesChanged() { commIndex = null; commSeats = null; }
+/* Dropped whenever the strongholds or the hand-written labels might have moved under us; the next
+   question rebuilds it. Cheap enough (a few hundred lookups) that nothing tries to be cleverer.
+   `commCells` goes too, since it is keyed by region index and those move when a coastline is redrawn. */
+function commanderiesChanged() { commIndex = null; commSeats = null; commCells = null; }
+
+/* A commandery, per **subhex** rather than per hex.
+
+   `data/commanderies.json` names whole hexes, because the scans it is read from are pixels over hexes and
+   the tool that reads them has no idea where your coastlines are. But administered ground is land: a bay
+   that a drawn coast has bitten out of a shore hex is not part of the commandery around it, and saying so
+   is the difference between a wash that describes a province and one that spills into the sea. So the hex
+   list is refined here, against the live geometry, and the answer is a set of subhexes.
+
+   Refined rather than re-derived. The alternative was to sample the three scans in the browser the way
+   `paintRealm` samples the realm scans, which is the more faithful reading — it could put two banks of one
+   river in different commanderies — and it was rejected twice over: it means three more images fetched and
+   sampled at boot, where the readout and the search want commanderies immediately and a JSON is free; and
+   it would move the colour-to-component work out of the Python tool, where it is done once and can be
+   inspected and versioned, into work redone on every load. The hex list is the identity; the coast is the
+   only thing the tool could not know; this adds exactly that.
+
+   Two rules, then. **Water is not administered** — a sea subhex of a listed hex is left out, unless a
+   drawn river runs through it, since a river reach inside a province is still inside the province. And a
+   **sliver the list does not cover inherits**, by the same fixed-point pass the realm scans use: a spit
+   your coast pushed out past what the scan drew belongs to the commandery it can be walked to, and a chain
+   of such slivers resolves because each round sees what the last one settled. */
+function commanderyCells() {
+  if (commCells) return commCells;
+  if (!commIndex) commanderyBuild();
+  if (!S.adj) deriveAdj();
+  commCells = new Map();
+  for (const [h, i] of commIndex) {
+    if (!S.hexes[h] || S.hexes[h].t === 'N/A') continue;
+    const rs = regionsOf(h);
+    /* `regWalkable` is the whole test, and is exactly the right one: it admits land, and admits the water
+       of a major river's channel where one splits a hex — a reach running through a province is inside it —
+       while leaving open sea out. It was `regWalkable || riverInRegion` at first, and that second clause
+       quietly let nine **river mouths** in: a bay a drawn river empties into is reached by that river and
+       is still the sea. The channel is in; the mouth is not. */
+    for (let ri = 0; ri < rs.length; ri++)
+      if (regWalkable(rs[ri])) commCells.set(h + ':' + ri, i);
+  }
+  /* The inheritance pass, confined to hexes a drawn coast or river has actually cut up — `S.adj.sub` holds
+     exactly those — so nothing can creep across whole hexes of unadministered ground. A piece takes the
+     commandery most of the land it adjoins is in, and stays out if the unadministered ground it touches
+     outnumbers that: being in no commandery is a real answer about a piece of ground, most of this map
+     being in none. */
+  for (;;) {
+    const round = new Map();
+    for (const [h, cells] of S.adj.sub) {
+      if (!S.hexes[h] || S.hexes[h].t === 'N/A') continue;
+      const rs = cells.regions;
+      for (let ri = 0; ri < rs.length; ri++) {
+        if (!regWalkable(rs[ri])) continue;
+        if (commCells.has(h + ':' + ri)) continue;
+        const votes = new Map();
+        let none = 0;
+        for (const n of neighbors(h)) {
+          if (!S.hexes[n] || S.hexes[n].t === 'N/A') continue;
+          const nrs = regionsOf(n);
+          for (let rj = 0; rj < nrs.length; rj++) {
+            if (!regWalkable(nrs[rj]) || !regionsMeet(h, ri, n, rj)) continue;
+            const c = commCells.get(n + ':' + rj);
+            if (c === undefined) none++; else votes.set(c, (votes.get(c) || 0) + 1);
+          }
+        }
+        let best = null, bn = 0;
+        for (const [c, n] of votes) if (n > bn) { bn = n; best = c; }
+        if (best !== null && bn > none) round.set(h + ':' + ri, best);
+      }
+    }
+    if (!round.size) break;
+    for (const [k, c] of round) commCells.set(k, c);
+  }
+  return commCells;
+}
 
 function commanderyBuild() {
   commIndex = new Map();
@@ -4050,11 +4135,17 @@ function commanderyBuild() {
     return best;
   });
 }
-// The commandery a hex is in, as { i, tier, name, hexes }, or null. `name` is null for one holding no
-// named settlement at all — possible in principle, and better said than silently blanked.
-function commanderyAt(h) {
+/* The commandery a piece of ground is in, as { i, tier, name, hexes }, or null. `name` is null for one
+   holding no named settlement at all — possible in principle, and better said than silently blanked.
+
+   Answers for a **subhex** when given one, and for the hex as a whole when not. Both are wanted: the
+   readout is pointing at one bank of a river and should say whether *that* bank is administered, while
+   anything asking "is this hex in a commandery" — the search, the wash's own bookkeeping — means the hex.
+   Asked about a hex, it falls back to the hex list, so a hex whose only land is an inherited sliver still
+   answers rather than coming back empty. */
+function commanderyAt(h, ri) {
   if (!commIndex) commanderyBuild();
-  const i = commIndex.get(+h);
+  const i = ri == null ? commIndex.get(+h) : commanderyCells().get(+h + ':' + (ri | 0));
   if (i === undefined) return null;
   return { i, tier: S.commanderies[i].tier, name: commSeats[i]?.name ?? null,
            seat: commSeats[i]?.h ?? null, hexes: S.commanderies[i].hexes };
@@ -4064,11 +4155,25 @@ function commanderyList() {
   if (!commIndex) commanderyBuild();
   const out = [];
   S.commanderies.forEach((c, i) => {
-    if (commSeats[i]) out.push({ i, tier: c.tier, name: commSeats[i].name, hexes: c.hexes.length });
+    if (commSeats[i]) out.push({ i, tier: c.tier, name: commSeats[i].name, hexes: commanderySize(i) });
   });
   return out;
 }
-const commanderySize = i => S.commanderies[i]?.hexes.length || 0;
+/* How big a commandery is, in hexes — but counted over the ground it actually holds, so a shore province
+   whose hexes are half water is not credited with the water. Whole hexes still count as one; a cut hex
+   counts as the share of it that is land, and the total is rounded for display. Which means the number in
+   the search rows can now differ from the length of the hex list in the JSON, and should: the list says
+   which hexes it reaches into, and this says how much ground that comes to. */
+function commanderySize(i) {
+  const whole = wholeHexArea();
+  let a = 0;
+  for (const [k, ci] of commanderyCells()) {
+    if (ci !== i) continue;
+    const p = k.indexOf(':'), h = +k.slice(0, p);
+    a += cellArea(regionsOf(h)[+k.slice(p + 1)]);
+  }
+  return Math.max(1, Math.round(a / whole));
+}
 function commanderyName(i) {
   if (!commIndex) commanderyBuild();
   return commSeats?.[i]?.name ?? null;
@@ -5291,17 +5396,34 @@ function computeRoute() {
   const results = [];
   S.routes.forEach((rt, i) => {
     const act = i === S.activeRoute;
-    rt.wps.forEach(w => {
-      const [cx, cy] = endPoint(w.h, w.ri | 0); // every waypoint is a stop, and stops sit at the marker
-      const sea = !!(region(w.h, w.ri | 0)?.sea && !region(w.h, w.ri | 0)?.river);
-      el('circle', { cx, cy, r: act ? 6 : 5, fill: sea ? rt.color : 'none', stroke: rt.color,
-                     'stroke-width': act ? 2.4 : 1.8, opacity: act ? 1 : 0.7, 'data-rt': i }, groups.route);
-    });
+    /* The marched line first, the stop markers over it. It was the other way round, which looked much
+       the same — the dashes crossing a hollow ring rather than stopping at it — and made the markers
+       **ungrabbable**: the line is drawn through every waypoint it passes, so at exactly the point you
+       aim at to pick a stop up, the line was the topmost thing and took the press. It is also given
+       `pointer-events: none`, since it is a drawn answer rather than a control and has no business
+       intercepting anything. */
     const r = rt.wps.length > 1 ? routeLeg(rt, armyOpts(rt.set)) : null;
     if (r && r.pts.length > 1)
       el('path', { d: featPathD(r.pts), fill: 'none', stroke: rt.color, 'stroke-width': act ? 2.8 : 2,
                    'stroke-dasharray': '7,5', 'stroke-linecap': 'round', opacity: act ? 0.95 : 0.55,
-                   'data-rt': i }, groups.route);
+                   'data-rt': i, 'pointer-events': 'none' }, groups.route);
+    rt.wps.forEach((w, wi) => {
+      const [cx, cy] = endPoint(w.h, w.ri | 0); // every waypoint is a stop, and stops sit at the marker
+      const sea = !!(region(w.h, w.ri | 0)?.sea && !region(w.h, w.ri | 0)?.river);
+      /* Draggable, so a march can be adjusted rather than retyped. It was remove-and-re-add, which for a
+         waypoint in the *middle* of a route meant taking the tail off behind it — the only removal is the
+         last one — or right-clicking the hex it happens to sit on and rebuilding from there. Moving the
+         thing you can see is the obvious gesture and it was the one thing the marker would not do.
+
+         `data-wp` is what the pointer handler grabs by; the ring is given a transparent disc behind it so
+         the whole marker is a target rather than just its outline, which at five pixels is nothing to aim
+         at. Only that hit area is filled — the ring itself still reads as hollow. */
+      const g = el('g', { 'data-wp': i + ':' + wi, style: 'cursor:grab' }, groups.route);
+      el('circle', { cx, cy, r: (act ? 6 : 5) + 4, fill: 'transparent', stroke: 'none' }, g);
+      el('circle', { cx, cy, r: act ? 6 : 5, fill: sea ? rt.color : 'none', stroke: rt.color,
+                     'stroke-width': act ? 2.4 : 1.8, opacity: act ? 1 : 0.7, 'data-rt': i,
+                     'pointer-events': 'none' }, g);
+    });
     results.push(r);
   });
   lastResults = results;
@@ -5661,6 +5783,14 @@ function openRouteMenu(i, x, y) {
   if (!rt) return;
   openCtx(x, y, box => {
     ctxHead(box, `<b>${escHtml(rt.name)}</b> — ${rt.wps.length} waypoint${rt.wps.length === 1 ? '' : 's'}`);
+    // Renaming lives here now. It used to be a double-click on the name in the row, which the name filled
+    // nearly all of — so double-clicking "the row" mostly hit it, and the gesture the row plainly wants
+    // is the breakdown. A menu the row already has is a better home for the rarer of the two.
+    ctxItem(box, 'Rename…', () => {
+      closeCtx();
+      const n = prompt('Route name:', rt.name);
+      if (n) { pushUndoRoutes(); rt.name = n; computeRoute(); }
+    });
     ctxItem(box, 'Duplicate route', () => { closeCtx(); cloneRoute(i); });
     ctxSep(box);
     ctxItem(box, 'Copy hexes — simple<span class="arw">948 -&gt; 949</span>',
@@ -5692,16 +5822,51 @@ function openRouteMenu(i, x, y) {
   });
 }
 
+/* Double-clicking a route row opens that route's breakdown — recognised by hand rather than by the
+   browser, because the browser will never fire `dblclick` here. A single click activates the route,
+   activating recomputes, recomputing **re-renders the whole list**, and `dblclick` requires two clicks on
+   the *same* element; the second always lands on a freshly built row. A row's own `ondblclick` is
+   therefore dead code, and had been for as long as the sidebar advertised "double-click its name to
+   rename" — that gesture never worked either.
+
+   So the listener lives on the *container*, which survives re-rendering, identifies the row by its
+   **index** rather than by its node, and is registered in the **capture** phase so it reads that index
+   before the row's own click handler rebuilds everything underneath it.
+
+   The whole row answers, the name included. The name filled nearly all of it, so reserving the name for
+   renaming would have meant that double-clicking "the row" mostly renamed — and the breakdown is plainly
+   what a route row wants a second click to do: a route is a question and the step table is the answer.
+   Renaming moved to the row's own ⋯ menu, which is the better home for the rarer of the two. */
+const RT_DBL_MS = 400;
+let rtLastClick = { i: -1, t: 0 };
+document.getElementById('routeList').addEventListener('click', e => {
+  const row = e.target.closest('.rtitem');
+  // The swatch, the ⋯ and the × answer for themselves and must not start or finish a double.
+  if (!row || e.target.closest('.sw, .mn, .x')) { rtLastClick = { i: -1, t: 0 }; return; }
+  const i = [...document.getElementById('routeList').querySelectorAll('.rtitem')].indexOf(row);
+  const now = performance.now();
+  const second = i === rtLastClick.i && now - rtLastClick.t < RT_DBL_MS;
+  rtLastClick = second ? { i: -1, t: 0 } : { i, t: now };
+  if (!second || !S.routes[i]) return;
+  // Activated first, so the card that opens describes the route just double-clicked rather than whichever
+  // was active before — the plain click has usually done this already, but not if it was ever eaten.
+  S.activeRoute = i;
+  computeRoute();
+  showCard();
+}, true);
+
 function renderRouteList(results) {
   const list = document.getElementById('routeList');
   list.innerHTML = S.routes.length ? '' : '<div class="emptynote">No routes yet — click a hex, or right-click one and Start a route here.</div>';
   S.routes.forEach((rt, i) => {
     const div = document.createElement('div');
     div.className = 'rtitem' + (i === S.activeRoute ? ' on' : '');
+    div.title = 'Click to activate · double-click for the hex breakdown';
     const r = results[i];
     const tm = r ? (r.fail ? '✗' : r.irl.toFixed(1) + 'd') : rt.wps.length + ' wp';
     div.innerHTML = `<span class="sw" style="background:${rt.color}" title="Change colour"></span>` +
-      `<span class="nm" title="Click to activate, double-click to rename">${rt.name}</span>` +
+      `<span class="nm">${rt.name}</span>` +
+
       `<span class="tm">${tm}</span>` +
       `<span class="mn" title="More — duplicate, copy hexes or column, clear waypoints">⋯</span>` +
       `<span class="x" title="Delete route">×</span>`;
@@ -5724,11 +5889,6 @@ function renderRouteList(results) {
       S.routes.splice(i, 1);
       if (S.activeRoute >= S.routes.length) S.activeRoute = S.routes.length - 1;
       computeRoute();
-    };
-    div.querySelector('.nm').ondblclick = e => {
-      e.stopPropagation();
-      const n = prompt('Route name:', rt.name);
-      if (n) { pushUndoRoutes(); rt.name = n; computeRoute(); }
     };
     div.onclick = () => { S.activeRoute = i; computeRoute(); };
     list.appendChild(div);
@@ -5764,6 +5924,7 @@ function saveRoutes() {
 /* ---------------- interactions ---------------- */
 let pan = null, downPos = null, spaceHeld = false, edgeSnap = false;
 let tokDrag = null;   // { t, g, p, dx, dy, moved, target } while a token is under the pointer
+let wpDrag = null;    // { ri, wi, g, p, moved, target } while a route's waypoint marker is being dragged
 // The click that puts an open context menu away does nothing else — it must not also drop a waypoint
 // on whatever hex happened to be under it.
 let ctxDismiss = false;
@@ -5809,8 +5970,13 @@ function startLongPress(e) {
     longPress = null;
     longPressed = true;   // lifting the finger now drops no waypoint, and moving it inspects
     pan = null;           // whatever pan this press had optimistically started is off
-    // Held on a token, the same gesture stands in for the right-click a touchscreen hasn't got.
-    if (tokDrag && !tokDrag.moved) { openCtx(pt.clientX, pt.clientY, tokenMenu(tokDrag.t)); return; }
+    // Held on a token, the same gesture stands in for the right-click a touchscreen hasn't got — and on
+    // the same terms: the counter's entries belong to whoever has the Tokens panel open. Otherwise the
+    // hold falls through to the readout, which is what a hold on anything else gives.
+    if (tokDrag && !tokDrag.moved && UI.pane === 'tokens') {
+      openCtx(pt.clientX, pt.clientY, tokenMenu(tokDrag.t));
+      return;
+    }
     showReadout(pt);
   }, LONG_PRESS_MS);
 }
@@ -5879,6 +6045,21 @@ svg.addEventListener('pointerdown', e => {
     tooltip.hidden = true; groups.hover.innerHTML = '';   // a new touch puts the last readout away
     startLongPress(e);
   }
+  /* A press on a waypoint marker belongs to that waypoint, the same way a press on a counter belongs to
+     the counter: it never pans, never draws, never plants a second waypoint on top of the first. Taken
+     before the token test only because the two cannot overlap — a marker and a counter in one hex sit at
+     different points — so the order is arbitrary and this one reads first. */
+  const grabbedWp = (e.button === 0 && !spaceHeld && S.mode !== 'draw') ? e.target.closest?.('[data-wp]') : null;
+  if (grabbedWp) {
+    const [ri, wi] = grabbedWp.dataset.wp.split(':').map(Number);
+    const rt = S.routes[ri];
+    if (rt?.wps[wi]) {
+      const w = rt.wps[wi];
+      wpDrag = { ri, wi, g: grabbedWp, p: endPoint(w.h, w.ri | 0), moved: false, target: null };
+      svg.setPointerCapture(e.pointerId);
+      return;
+    }
+  }
   // A press that lands on a token belongs to the token: it never pans, never draws, never places a
   // waypoint. What it turns into — a colour cycle or a move — is decided on the way up.
   const grabbed = (e.button === 0 && !spaceHeld) ? e.target.closest?.('[data-tok]') : null;
@@ -5915,6 +6096,30 @@ svg.addEventListener('pointermove', e => {
   // Sliding before the hold has registered is panning: the press has stopped being a long one.
   if (longPress && downPos && Math.hypot(e.clientX - downPos[0], e.clientY - downPos[1]) > tapSlop(e)) cancelLongPress();
   if (pinch) { if (ptrs.size >= 2) movePinch(); return; }
+  if (wpDrag) {
+    if (!wpDrag.moved && downPos && Math.hypot(e.clientX - downPos[0], e.clientY - downPos[1]) <= tapSlop(e)) return;
+    wpDrag.moved = true;
+    cancelLongPress();
+    const [wx, wy] = toWorld(e);
+    const h = nearestHex(wx, wy);
+    /* The marker follows the pointer, and the hex under it is outlined — the same two things the token
+       drag does, for the same reason: a marker that jumped from node to node would hide which hex it was
+       actually going to land on, and the outline is what answers that.
+
+       Unlike a token, a waypoint carries a *subhex*, so the region under the pointer is picked up as well
+       — dropping a stop on the far bank of a river has to mean the far bank. And unlike a token it may
+       land on water, since fleets sail: what it may not land on is off-map filler. */
+    wpDrag.target = (h && S.hexes[h].t !== 'N/A') ? { h, ri: regionAt(h, [wx, wy]) } : null;
+    wpDrag.g.setAttribute('transform', `translate(${(wx - wpDrag.p[0]).toFixed(2)} ${(wy - wpDrag.p[1]).toFixed(2)})`);
+    groups.hover.innerHTML = '';
+    tooltip.hidden = true;
+    if (wpDrag.target) {
+      const [cx, cy] = hexCenter(wpDrag.target.h);
+      el('path', { d: hexPath(cx, cy), fill: 'rgba(255,255,255,.10)', stroke: '#fff',
+                   'stroke-width': 1.8, 'pointer-events': 'none' }, groups.hover);
+    }
+    return;
+  }
   if (tokDrag) {
     if (longPressed) return;   // the hold became the token's menu; leave it where it is
     if (!tokDrag.moved && downPos && Math.hypot(e.clientX - downPos[0], e.clientY - downPos[1]) <= tapSlop(e)) return;
@@ -5963,6 +6168,30 @@ svg.addEventListener('pointerup', e => {
   // press held long enough to have been asking about the hex instead.
   const afterPinch = !!pinch || tapDead || longPressed;
   dropPointer(e);
+  if (wpDrag) {
+    const d = wpDrag;
+    wpDrag = null;
+    pan = null; downPos = null;
+    groups.hover.innerHTML = '';
+    /* A drag that went somewhere moves the stop and re-solves; a press that did not is left alone. Not
+       treated as a click, deliberately: a click on bare map plants a waypoint, and a press on a marker
+       that turns out not to have moved should do *nothing* rather than plant a second stop on the one
+       already there. The route re-solves on drop rather than continuously, because each solve is a
+       fresh pathfind over the whole march and following the pointer with it would be recomputing a
+       dozen routes a second to show a dozen answers nobody asked for. */
+    if (d.moved && d.target) {
+      const rt = S.routes[d.ri];
+      if (rt?.wps[d.wi]) {
+        pushUndoRoutes();
+        rt.wps[d.wi] = { ...rt.wps[d.wi], h: d.target.h, ri: d.target.ri | 0 };
+        S.activeRoute = d.ri;      // the route you just adjusted is the one the card should describe
+        computeRoute();
+        return;
+      }
+    }
+    computeRoute();                // clears the transform the marker was following the pointer with
+    return;
+  }
   if (tokDrag) {
     const d = tokDrag;
     tokDrag = null;
@@ -5971,10 +6200,13 @@ svg.addEventListener('pointerup', e => {
     // renderTokens() either way: it clears the transform the drag was following the pointer with,
     // which is also how a token let go off the edge of the map finds its way back.
     if (afterPinch) { renderTokens(); return; }
-    if (!d.moved) {
-      const i = TOKEN_COLORS.indexOf(d.t.color);
-      d.t.color = TOKEN_COLORS[(i + 1) % TOKEN_COLORS.length];   // a custom colour rejoins at the start
-    } else if (d.target) d.t.h = d.target;
+    // A click swaps the rim between black and white. It used to step the *fill* through the palette,
+    // which is no longer a useful thing to do to a counter: the fill is the legion's colour and means
+    // something, so stepping it turns Legion V into Legion VI's colour at a stray click. What a click is
+    // good for is the one adjustment that is purely about being seen — a white rim against dark ground,
+    // a black one against light — and the fill is changed deliberately, from the menu.
+    if (!d.moved) d.t.rim = tokenRim(d.t) === '#fff' ? '#14181e' : '#fff';
+    else if (d.target) d.t.h = d.target;
     commitTokens();
     return;
   }
@@ -6040,6 +6272,9 @@ svg.addEventListener('pointercancel', e => {
   if (!ptrs.size) {
     pan = null; tapDead = false; longPressed = false; S.dragErase = null; downPos = null;
     if (tokDrag) { tokDrag = null; renderTokens(); groups.hover.innerHTML = ''; }
+    // Same for a waypoint the pointer was lost from — a cancelled drag has to put the marker back, and
+    // recomputing is what clears the transform it was following the pointer with.
+    if (wpDrag) { wpDrag = null; computeRoute(); groups.hover.innerHTML = ''; }
   }
 });
 svg.addEventListener('contextmenu', e => {
@@ -6057,7 +6292,14 @@ svg.addEventListener('contextmenu', e => {
   // A counter does not stop the hex underneath it being a hex. Landing on one used to replace the
   // hex menu outright, which meant a token sitting on the place you wanted to march from had to be
   // dragged aside first. Both menus now show, the token's first, since that is what you aimed at.
-  const onTok = e.target.closest?.('[data-tok]');
+  /* A counter's own entries are offered only while the **Tokens panel is open**. They were offered
+     whenever you right-clicked a counter, which sounds helpful and is not: a counter sitting on the hex
+     you want to march from is in the way, and a menu that opens with six ways to rename and recolour it
+     — above the hex entries you were after — makes it more in the way. Having that panel open is the
+     plain statement that counters are what you are working on; with it shut, the counter is scenery and
+     the hex under it is the subject. The panel's own rows still answer the right button either way, and
+     `Mark as` on the hex menu is how a counter gets made in the first place. */
+  const onTok = UI.pane === 'tokens' ? e.target.closest?.('[data-tok]') : null;
   const t = onTok && tokenById(+onTok.dataset.tok);
   openCtx(e.clientX, e.clientY, t ? box => { tokenMenu(t)(box); ctxSep(box); hex(box); } : hex);
 });
@@ -6400,11 +6642,40 @@ function realmTip(h, ri) {
     if (!name && id === 'borders') continue;                  // an unnamed wash has nothing to say
     found.push({ id, c, name });
   }
-  const both = found.length > 1;
-  return found.map(({ id, c, name }) =>
+  /* One line per *answer*, not one per layer. With both maps up the pair usually differ — a legion sits
+     on imperial ground, and saying so twice is the point of having both — but where they agree they agree
+     because it is the same fact arriving twice, which is what happens over the Blue Scarves: they keep
+     their own colour on the Borders map by construction, so both layers name them and the readout said it
+     twice. Identical name *and* identical colour is the test; same name in two colours is a federation
+     holding ground on both maps and still worth two lines.
+
+     And no "Borders"/"Warlords" qualifier. It was there to say which map a line came from, which sounds
+     useful and is not: the two are stacked deliberately so that what shows is who holds the ground now
+     over who holds it by right, and by the time a reader has both layers on they know which is which.
+     What the qualifier actually did was put the machinery's vocabulary in front of the answer. */
+  const lines = [];
+  for (const { c, name } of found)
+    if (!lines.some(p => p.c === c && p.name === name)) lines.push({ c, name });
+  return lines.map(({ c, name }) =>
     `<br><span class="rg"><span class="chip" style="background:rgb(${c})"></span>` +
     (name ? escHtml(name) : `unnamed colour ${rgbHex(c)}`) +
-    (both ? ` <i class="qual">${LAYERS.find(L => L.id === id)?.name || id}</i>` : '') +
+    '</span>').join('');
+}
+
+/* The counters standing on this hex, and who commands them. The designation is on the board already, so
+   this line exists for the **name** — which is deliberately not drawn on the map, fourteen commanders'
+   names over fourteen counters being a way to bury the terrain. Hovering is how you ask about one of them.
+
+   Keyed by hex rather than by subhex: a counter sits on a hex, not on one bank of it, so both halves of a
+   split hex report the force standing there. Counters with no commander still get a line, because being
+   told "V" and nothing else is the correct answer for a force nobody has named — the Blue Scarves are not
+   anybody's command, and an absent name is a fact about them rather than a hole in the data. */
+function tokenTip(h) {
+  const here = S.tokens.filter(t => t.h === h);
+  if (!here.length) return '';
+  return here.map(t =>
+    `<br><span class="rg"><span class="chip" style="background:${escHtml(t.color)}"></span>` +
+    `<b>${escHtml(t.label || '—')}</b>` + (t.name ? ' · ' + escHtml(t.name) : '') +
     '</span>').join('');
 }
 
@@ -6497,24 +6768,33 @@ function onHover(e) {
   const hoverRi = regionAt(h, [wx, wy]);
   const hoverM = shAt(h, hoverRi);
   const name = hoverM ? shName(h, hoverM) : (S.features.labels[h] ?? S.names.hexes[h]);
-  /* What kind of place it is, as one phrase: "Coastal Major City", "Inland Fortress". Whether it can
-     be reached by ship is the first thing anyone wants of a stronghold on a map with a fleet on it,
-     so it leads rather than trailing in a bracket — and a bracket after a bracketed hex number was
-     one pair too many. Coastal and inland are both said; neither is the assumption. */
+  /* What kind of place it is, as one phrase: "Port Fortress", "Inland Major City". Whether it can be
+     reached by ship is the first thing anyone wants of a stronghold on a map with a fleet on it, so it
+     leads rather than trailing in a bracket — and a bracket after a bracketed hex number was one pair
+     too many. Both halves are said; neither is the assumption.
+
+     **Port**, not "coastal", because coastal describes where a place *is* and port describes what it
+     *does* — and it is the second that the map is actually asserting and that the rules act on. A
+     stronghold on the shore that ships cannot use is coastal and is not a port, which the old wording
+     made unsayable; the flag has always meant the port, and now the readout says the same word the
+     Stronghold tool and the marching rules use for it. */
   const shKind = hoverM
-    ? (isPort(h, hoverRi) ? 'Coastal ' : 'Inland ') +
+    ? (isPort(h, hoverRi) ? 'Port ' : 'Inland ') +
       ({ major: 'Major City', fortress: 'Fortress' }[shKindOf(hoverM)] || 'Stronghold')
     : '';
   // The two ways the map divides the same ground: the region, geographic, from the sheet; and under
   // it the commandery, administrative, from the scans. A line each — they are different answers, and
   // side by side the longer pairs ran past the width of the readout.
-  const cm = commanderyAt(h);
+  // Asked of the subhex under the cursor, so a bay cut out of a shore hex answers "no commandery" while
+  // the land beside it answers for the province — the two are different ground.
+  const cm = commanderyAt(h, hoverRi);
   tooltip.innerHTML = `<span class="t">${name ? name + ' — ' : ''}hex ${h}${subLabel}</span><br>` +
     `${v.t}${hoverM ? ` · ${shKind}` : ''}` +
     (LOCAL ? `${v.r ? ' · river (sheet)' : ''}${v.d ? ' · road (sheet)' : ''}` : '') +
     (v.g ? `<br><span class="rg">${escHtml(v.g)}</span>` : '') +
     (cm?.name ? `<br><span class="cm">${escHtml(cm.name)} commandery <i>(${cm.tier})</i></span>` : '') +
     realmTip(h, hoverRi) +                                // who holds it, while those layers are up
+    tokenTip(h) +                                         // and who is standing on it
     isoTip(h, hoverRi);
   tooltip.hidden = false;
   const wr = svg.parentElement.getBoundingClientRect();
@@ -6814,6 +7094,12 @@ function applyNameGroup(L, on) {
 const TOKEN_COLORS = PALETTE;   // named for the tokens, shared with the routes
 const TOK_LS = 'rotmap_tokens_v1';
 const TOK_MAXLEN = 24;
+/* Who is commanding it. The counter itself carries a *designation* — V, XII'a — because that is what has
+   to be readable at a glance from across the map, and a designation is short. Whose command it is is a
+   different kind of fact: it is asked about one counter at a time, so it belongs in the readout rather
+   than on the board, where fourteen names would bury the terrain. Optional throughout, and blank is a
+   real answer, not a gap to be filled — the Blue Scarves are not anybody's command. */
+const TOK_NAME_MAXLEN = 48;
 
 const escHtml = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const tokenById = id => S.tokens.find(t => t.id === id);
@@ -6823,11 +7109,19 @@ const tokenById = id => S.tokens.find(t => t.id === id);
    can't use, and a hex that isn't on the map is dropped rather than drawn nowhere. */
 function normalizeTokens(arr) {
   if (!Array.isArray(arr)) return null;
-  return arr.filter(t => t && S.hexes[+t.h]).map((t, i) => ({
-    id: i + 1, h: +t.h,
-    label: String(t.label ?? '').slice(0, TOK_MAXLEN),
-    color: /^#[0-9a-f]{6}$/i.test(t.color || '') ? t.color : TOKEN_COLORS[i % TOKEN_COLORS.length],
-  }));
+  return arr.filter(t => t && S.hexes[+t.h]).map((t, i) => {
+    const out = {
+      id: i + 1, h: +t.h,
+      label: String(t.label ?? '').slice(0, TOK_MAXLEN),
+      color: /^#[0-9a-f]{6}$/i.test(t.color || '') ? t.color : TOKEN_COLORS[i % TOKEN_COLORS.length],
+    };
+    // Both of these are optional and both are omitted when unset rather than written as empty, so a
+    // board that uses neither exports exactly as it did before either existed.
+    if (t.rim === TOK_RIM_LIGHT || t.rim === TOK_RIM_DARK) out.rim = t.rim;
+    const name = String(t.name ?? '').trim().slice(0, TOK_NAME_MAXLEN);
+    if (name) out.name = name;
+    return out;
+  });
 }
 // The board as the news last left it, shipped with the map. It seeds an empty browser and can be
 // asked for again at any time — it is a starting position, not a save. The fingerprint is for the
@@ -6843,6 +7137,20 @@ async function fetchStartingTokens() {
   } catch { return null; }
 }
 
+/* A counter's rim: black or white, and nothing else. Two states rather than a colour, because the rim is
+   not carrying information — the fill does that — it is carrying *contrast*, and against the terrain of
+   this map there are only two useful answers. A click on the counter swaps them.
+
+   **Black by default**, for every counter, whatever its fill. The obvious alternative is to derive it
+   from the fill the way the numeral inside is derived, giving each counter the rim that contrasts with
+   itself — and that is worse, because it makes the board's outlines inconsistent for a reason the reader
+   cannot see. Fourteen counters, some ringed black and some white according to their own darkness, read
+   as a board with something going on in it; fourteen ringed alike read as fourteen counters. Uniform also
+   keeps the *fill* doing all the work of identification, which is the point of matching the fills to the
+   Warlords scan in the first place. The swap is there for the one case the default cannot cover — a dark
+   counter on its own dark ground — and it is one click, on the counter, where the eye already is. */
+const TOK_RIM_DARK = '#14181e', TOK_RIM_LIGHT = '#fff';
+const tokenRim = t => t.rim === TOK_RIM_LIGHT ? TOK_RIM_LIGHT : TOK_RIM_DARK;
 function saveTokens() {
   try { localStorage.setItem(TOK_LS, JSON.stringify({ version: 1, tokens: S.tokens })); } catch {}
 }
@@ -6956,14 +7264,9 @@ function renderTokens() {
     if (!p) continue;
     const g = el('g', { 'data-tok': t.id, style: 'cursor:grab' }, groups.tokens);
     g._p = p;
-    /* The rim contrasts with the counter's own fill rather than being a fixed dark line, and it has to,
-       now that a legion's counter is the same colour as the legion's ground on the Warlords map. Against
-       ground of exactly its own colour the rim is the only thing making it a counter rather than a patch
-       — and a dark rim on a dark fill (Legion II's navy, VI's wine, I's brown) is no rim at all. It uses
-       the same inkOn decision the numeral inside does, so the edge and the digit never disagree about
-       which way round the contrast goes. */
+    // Black rim or white, whichever this counter has been given — see tokenRim.
     el('circle', { cx: p.x, cy: p.y, r: p.r, fill: t.color,
-                   stroke: inkOn(t.color), 'stroke-width': 1.6 }, g);
+                   stroke: tokenRim(t), 'stroke-width': 1.7 }, g);
     const lab = t.label || '';
     if (!lab) continue;
     // A numeral goes inside the counter, shrinking to stay off the rim. Anything long enough that
@@ -7000,8 +7303,12 @@ function renderTokenList() {
   for (const t of S.tokens) {
     const div = document.createElement('div');
     div.className = 'tokitem';
+    // The commander's name sits beside the designation in the row, quieter than it — the row is a list of
+    // forces and the designation is what identifies one; the name is what it is called.
     div.innerHTML = `<span class="sw" style="background:${escHtml(t.color)}"></span>` +
-      `<span class="nm">${escHtml(t.label)}</span><span class="hx">hex ${t.h}</span>` +
+      `<span class="nm">${escHtml(t.label)}` +
+      (t.name ? `<i class="who">${escHtml(t.name)}</i>` : '') +
+      `</span><span class="hx">hex ${t.h}</span>` +
       `<span class="x" title="Remove">×</span>`;
     div.querySelector('.sw').title = 'Change colour';
     div.title = 'Click to centre the map on it';
@@ -7169,9 +7476,78 @@ function buildMarkGrid(box, h) {
 function markMenu(h) {
   return box => { ctxHead(box, 'Mark ' + hexTitle(h)); buildMarkGrid(box, h); };
 }
+/* Painting a realm colour over a whole commandery at once. The Map tool paints a subhex at a time, and a
+   sweep paints a stroke, which is the right grain for a frontier and the wrong grain for the commonest edit
+   of all: a province changes hands. Seventy-two commanderies is the administrative map the scans already
+   draw, so "this province is his now" is one instruction, and doing it by hand meant nine or ten strokes
+   and a squint at the boundary.
+
+   Every subhex the commandery holds, from the subhex reading — so it stops at the coast, and the bay in a
+   shore hex is not painted with the land. One undo step for the lot: it is one decision. */
+function paintCommandery(layer, ci, colour) {
+  const cells = commanderyCells();
+  pushUndo();
+  const all = S.features.realms || (S.features.realms = {});
+  const byHex = all[layer] || (all[layer] = {});
+  let n = 0;
+  for (const [k, i] of cells) {
+    if (i !== ci) continue;
+    const p = k.indexOf(':'), hx = k.slice(0, p), ri = +k.slice(p + 1);
+    const byRi = byHex[hx] || (byHex[hx] = {});
+    if (colour) byRi[ri] = colour;
+    else { delete byRi[ri]; if (!Object.keys(byRi).length) delete byHex[hx]; }
+    n++;
+  }
+  commitFeatures();
+  return n;
+}
+// Every hand-painted override on one layer, dropped. The scan speaks again everywhere.
+function clearRealmPaint(layer) {
+  const byHex = S.features.realms?.[layer];
+  if (!byHex) return 0;
+  let n = 0;
+  for (const hx in byHex) n += Object.keys(byHex[hx]).length;
+  if (!n) return 0;
+  pushUndo();
+  delete S.features.realms[layer];
+  commitFeatures();
+  return n;
+}
+
 function hexMenu(h, pt, wp) {
   return box => {
     ctxHead(box, hexTitle(h));
+    /* The Map tool's own entries, at the top, and only while that tool is in hand. Everything the tool can
+       do was in the panel or on the pointer; the one thing a right-click is for is acting on *what you are
+       pointing at*, and the two entries below are exactly that — this subhex, and the province it is part
+       of. Undo and the clear are here because a painting tool wants them within reach of the hand that is
+       painting, not across the window. */
+    if (S.mode === 'draw' && S.tool === 'realm' && pt) {
+      const layer = document.getElementById('realmLayer').value;
+      const ri = regionAt(h, pt);
+      const cur = realmOverride(layer, h, ri);
+      /* Two entries, and neither says which colour. The menu opened with the loaded colour named and
+         swatched on both, and a palette flyout beside each so another could be chosen — which was one
+         reading of "colour" too many. The colour is loaded in the panel, the panel shows it, and by the
+         time you are right-clicking the map you have already chosen it: repeating it here was the tool
+         telling you what you had just told it, twice, and offering to ask again. What the menu is for is
+         *where* the colour goes — this subhex, or the whole province — so that is all it says. */
+      if (realmPaint) ctxItem(box, 'Paint', () => { setRealmAt(layer, h, ri, realmPaint); closeCtx(); });
+      // Offered only where there is a commandery, since otherwise it is an entry with no subject.
+      const cm = commanderyAt(h, ri) || commanderyAt(h);
+      if (realmPaint && cm)
+        ctxItem(box, 'Paint commandery', () => { paintCommandery(layer, cm.i, realmPaint); closeCtx(); });
+      if (cur || cm) ctxSep(box);
+      if (cur) ctxItem(box, 'Rub out this subhex', () => { setRealmAt(layer, h, ri, null); closeCtx(); });
+      ctxItem(box, 'Undo<span class="arw">Ctrl+Z</span>', () => { closeCtx(); undoLast(); });
+      const painted = Object.values(S.features.realms?.[layer] || {})
+        .reduce((n, o) => n + Object.keys(o).length, 0);
+      if (painted) ctxItem(box, `Clear painted colours<span class="arw">${painted}</span>`, () => {
+        closeCtx();
+        if (confirm(`Erase all ${painted} painted hexes?`)) clearRealmPaint(layer);
+      }, 'danger');
+      ctxSep(box);
+    }
     /* Origins, while the Isochrone panel is the open one. A left-click on the map already moves the
        selected origin, which is the fast path and the one worth keeping — but it is the *only* path,
        so making a second origin, or getting rid of one, meant leaving the map for the panel. These
@@ -7435,15 +7811,29 @@ document.getElementById('routeOut').addEventListener('click', e => {
 
 function tokenMenu(t) {
   return box => {
-    ctxHead(box, `<b>${escHtml(t.label)}</b> — token`);
+    ctxHead(box, `<b>${escHtml(t.label)}</b>${t.name ? ' · ' + escHtml(t.name) : ''} — token`);
     ctxItem(box, 'Rename…', () => {
       const v = prompt('Token text:', t.label);
       closeCtx();
       if (v != null && v.trim()) { t.label = v.trim().slice(0, TOK_MAXLEN); commitTokens(); }
     });
+    /* The designation and the commander are two separate things to set, so they are two entries rather
+       than one prompt asking for both. The item says which it is holding, so a counter with a commander
+       shows the name here and one without shows the invitation. */
+    ctxItem(box, t.name ? `Commander: <b style="color:#fff">${escHtml(t.name)}</b>` : 'Commander…', () => {
+      const v = prompt('Who commands this force? Leave blank for none — not every force has a name.',
+                       t.name || '');
+      closeCtx();
+      if (v == null) return;
+      const n = v.trim().slice(0, TOK_NAME_MAXLEN);
+      if (n) t.name = n; else delete t.name;
+      commitTokens();
+    });
     ctxFlyout(ctxItem(box, `<span class="sw" style="background:${escHtml(t.color)}"></span>Colour<span class="arw">▸</span>`),
               s => buildColorPanel(s, TOKEN_COLORS, () => t.color,
                                    c => { t.color = c; commitTokens({ coalesce: 'tkcolor' + t.id }); }));
+    // No rim entry. A click on the counter swaps it, which is the whole of the feature, and a menu row
+    // saying so was a line of text spent on something already done by the more obvious gesture.
     const det = nextDetachLabel(t);
     if (det) ctxItem(box, `Split off <b style="color:#fff">${escHtml(det)}</b>`, () => {
       addToken(t.h, det, t.color);   // same hex and colour: drag it off, it stays visibly the same command
@@ -7728,13 +8118,39 @@ function searchPlaces(raw) {
     const rank = score(fold(cm.name));
     if (rank !== null) hits.push({ comm: cm.i, name: cm.name, tier: cm.tier, hexes: cm.hexes, rank });
   }
+  /* The counters on the board, by **designation and by commander alike** — "XII" and "Gautarza" are two
+     names for the same force and either should find it. This is the question the search could not answer
+     and most wanted to: everything else here is a fixed feature of the map, and where a legion is is the
+     one fact that changes week to week, so "where is V" was the lookup with no answer but scrolling the
+     token list.
+
+     Whichever of the two names matched is what the row is *titled*, since that is the word that was
+     typed; the other is shown beside it. Both are scored, and the better of the two wins, so an exact
+     commander beats a near-miss designation.
+
+     A token hit resolves to its **hex**, not to a selection kind of its own: the answer to "where is V"
+     is a place, and making it a place means it lights up, pans and pins with everything else rather than
+     needing a fourth branch through the selection machinery. Two counters in one hex therefore give one
+     row each and land in the same spot, which is correct — they are in the same spot. */
+  for (const t of S.tokens) {
+    const cands = [[t.label, t.name], [t.name, t.label]].filter(([a]) => a);
+    let best = null;
+    for (const [title, other] of cands) {
+      const rank = score(fold(title));
+      if (rank !== null && (!best || rank < best.rank)) best = { rank, title, other };
+    }
+    if (best) hits.push({ h: t.h, ri: t.ri, tok: t.id, name: best.title, other: best.other, rank: best.rank });
+  }
   hits.sort((a, b) => a.rank - b.rank || a.name.localeCompare(b.name));
   const seen = new Set();
   // Two places in one hex are two answers, so the dedupe key has to carry the subhex — otherwise
   // searching for the one on the far bank would silently return the one on the near bank instead.
   return hits.filter(x => {
+    // A counter is keyed by its own id, not by the hex it is standing on: it resolves to that hex when
+    // picked, but it is a different answer from the town there and must not be deduped against it.
     const k = x.region != null ? 'r:' + x.region
             : x.comm != null ? 'c:' + x.comm
+            : x.tok != null ? 't:' + x.tok
             : x.h + ':' + (x.ri ?? '');
     return !seen.has(k) && seen.add(k);
   }).slice(0, SEARCH_MAX);
@@ -7806,6 +8222,15 @@ function renderSearch() {
       // The tier is what tells two commanderies apart at a glance, and it is the thing you are most
       // likely to have been looking for, so it leads.
       meta.textContent = `${hit.tier} commandery · ${nhex(hit.hexes)}`;
+    } else if (hit.tok != null) {
+      // Whichever of a counter's two names was *not* the one typed leads the detail, since it is the
+      // thing the row can tell you that you did not already know: search "Gautarza" and the row says
+      // which force that is; search "III'a" and it says who has it.
+      meta.textContent = (hit.other ? hit.other + ' · ' : '') + 'token · hex ' + hit.h;
+      // The counter's own colour, so a row and the disc on the map are the same object at a glance.
+      const t = tokenById(hit.tok);
+      if (t) { const sw = document.createElement('span'); sw.className = 'sw';
+               sw.style.background = t.color; nm.prepend(sw); }
     } else {
       const t = S.hexes[hit.h]?.t;
       meta.textContent = hit.h + (t ? ' · ' + t : '');
@@ -7914,12 +8339,22 @@ function regionPath(name) {
 }
 // Same shape, from the other direction: a commandery already knows its hexes, so there is nothing to
 // scan for. Off-map filler is skipped here too, though a commandery should never contain any.
+/* A commandery's outline, built from the **subhexes** it holds rather than from whole hexagons — the same
+   `regionShape` the realm fills use, so where a coastline has cut a shore hex the wash stops at the water's
+   edge instead of running out into the bay.
+
+   This is the visible half of the subhex reading. A region's wash still covers whole hexes, and should: the
+   sheet names a region per hex and that claim covers all of it, water included. A commandery is different
+   in kind — administered ground, read off a picture of the coast — so the water is not its and the wash
+   should not say otherwise. */
 function commanderyPath(i) {
   let d = '';
-  for (const id of S.commanderies[i]?.hexes || []) {
-    if (S.hexes[id]?.t === 'N/A') continue;
-    const [cx, cy] = hexCenter(+id);
-    d += hexPath(cx, cy);
+  for (const [k, ci] of commanderyCells()) {
+    if (ci !== i) continue;
+    const p = k.indexOf(':'), h = +k.slice(0, p), ri = +k.slice(p + 1);
+    if (S.hexes[h]?.t === 'N/A') continue;
+    const r = regionsOf(h)[ri];
+    if (r) d += regionShape(h, r);
   }
   return d;
 }
@@ -7978,7 +8413,16 @@ searchInput.addEventListener('keydown', e => {
                 : hit.comm != null ? { comm: hit.comm }
                 : { h: hit.h }, e.shiftKey);
   } else if (e.key === 'Escape') {
-    searchInput.value = ''; clearSelection(); renderSearch(); searchInput.blur();
+    /* Two stages, and in this order: **clear, then close.** A first Escape empties the box and drops the
+       selection, which is what it has always done and what someone mid-search wants. A second — with
+       nothing left to clear — puts the surface away, which is what Escape means everywhere else. Closing
+       on the first press would take the panel down over a typo. */
+    if (searchInput.value || sel.length) {
+      searchInput.value = ''; clearSelection(); renderSearch();
+    } else {
+      searchInput.blur();
+      closeFind();
+    }
   }
 });
 
@@ -8002,7 +8446,9 @@ function saveUI() { try { localStorage.setItem(UI_LS, JSON.stringify(UI)); } cat
 /* Which panel is showing. Draw is a mode as well as a panel — the map behaves differently while it
    is open — so opening it switches the map into drawing and leaving it switches back. That is the
    whole of the old Draw/Route toggle, minus the toggle. */
-const PANE_TITLES = { find: 'Find', route: 'Routes', iso: 'Isochrone', tokens: 'Tokens',
+// Find is missing from this list on purpose: it is a floating surface now, not a panel. A stored
+// UI.pane of 'find' from before that change falls through to Routes, as any unknown name does.
+const PANE_TITLES = { route: 'Routes', iso: 'Isochrone', tokens: 'Tokens',
                       draw: 'Draw', data: 'Data', labels: 'Realm labels' };
 function showPane(name, opts) {
   if (!PANE_TITLES[name]) name = 'route';
@@ -8211,6 +8657,91 @@ makeDraggable(layersPop, layersPop.querySelector('.floathead'), () => {
   saveUI();
 });
 layersBtn.onclick = () => (layersPop.hidden ? openLayers() : closeLayers());
+
+/* ---------------- the dock ----------------
+   The surfaces over the map are not windows. They were: each had a default corner, each could be dragged,
+   each remembered where it had been put, and the corner-picking grew a rule every time another one arrived
+   — the layer list and the readout collided at the top right, so the readout took the bottom; Find then
+   took the bottom right, so the readout learned to step beside it. Two surfaces, three rules, and a fourth
+   would have needed a fifth.
+
+   They are a **stack against the right edge** instead, filled leftwards in the order they were opened. The
+   first one open holds the edge; the next sits to its left; closing one closes the gap. That is the whole
+   layout, it needs no defaults and no remembered positions, and it cannot collide — which is what dragging
+   was really for. Nothing is dragged now and nothing needs to be: a surface has one place to be and it is
+   already there.
+
+   The layer list stays out of this. It drops out of its own button at the top of the screen, which is what
+   makes it read as that button's list rather than as another panel, and it is the one surface whose
+   position means something. */
+const DOCK = [];            // the open surfaces, in the order they were opened; [0] holds the right edge
+const DOCK_GAP = 16;
+function layoutDock() {
+  let right = DOCK_GAP;
+  for (const el of DOCK) {
+    if (el.hidden) continue;
+    const w = el.offsetWidth || 330;
+    // Clamped, so a stack wider than the window crowds inwards rather than marching off the left of it.
+    el.style.left = Math.max(8, innerWidth - right - w) + 'px';
+    el.style.bottom = DOCK_GAP + 'px';
+    el.style.right = 'auto';
+    el.style.top = 'auto';
+    el.style.maxHeight = (innerHeight - DOCK_GAP * 2) + 'px';
+    right += w + DOCK_GAP;
+  }
+}
+function dockAdd(el) {
+  if (!DOCK.includes(el)) DOCK.push(el);
+  layoutDock();
+}
+function dockRemove(el) {
+  const i = DOCK.indexOf(el);
+  if (i >= 0) DOCK.splice(i, 1);
+  layoutDock();
+}
+addEventListener('resize', layoutDock);
+
+/* ---------------- Find, as a surface over the map ----------------
+   Find was a panel, and a panel is the wrong shape for it. Everything else in the sidebar is something
+   you settle into — plan a march, paint a border, place counters — whereas finding a place is something
+   you do *while* doing one of those, and the panel made you leave the work to do it and leave the search
+   to get back. So it comes out over the map, where it can sit open beside whatever panel is in use, and it
+   answers to Ctrl+F, which is the key anyone already presses when they want to find something on a page.
+
+   Where it sits is the dock's business, not its own — see above. */
+const findPop = document.getElementById('findPop');
+const findBtn = document.getElementById('findBtn');
+function openFind(focus) {
+  findPop.hidden = false;
+  findBtn.classList.add('on');
+  findBtn.setAttribute('aria-expanded', 'true');
+  dockAdd(findPop);
+  UI.findOn = true; saveUI();
+  // Ctrl+F is a request to *type*, so the box takes the caret and offers what is already in it for
+  // replacement — the same thing the browser's own find does, and the reason the shortcut is worth
+  // taking over at all.
+  if (focus) { const s = document.getElementById('search'); s.focus(); s.select(); }
+}
+function closeFind() {
+  findPop.hidden = true;
+  findBtn.classList.remove('on');
+  findBtn.setAttribute('aria-expanded', 'false');
+  dockRemove(findPop);
+  UI.findOn = false; saveUI();
+}
+findBtn.onclick = () => (findPop.hidden ? openFind(true) : closeFind());
+document.getElementById('findClose').onclick = () => closeFind();
+addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) {
+    e.preventDefault();                       // the browser's own find would cover the map with a bar
+    openFind(true);
+    return;
+  }
+  // Escape is handled by the search box itself — clear first, close second — because it is the box that
+  // knows whether there is anything left to clear. Nothing to add here: elsewhere on the page Escape
+  // already means "cancel what I am drawing", "drop the selection", "disarm the dropper", and taking
+  // that over would be worse than useless.
+});
 document.getElementById('layersClose').onclick = closeLayers;
 document.addEventListener('pointerdown', e => {
   if (layersPop.hidden) return;
@@ -8228,24 +8759,22 @@ document.addEventListener('pointerdown', e => {
 const routeCard = document.getElementById('routeCard');
 const routeBtns = document.getElementById('routeBtns');
 const CARD_MIN_W = 260, CARD_MIN_H = 150;
+/* The card's *size* is still remembered — the step table is the one thing in this app that genuinely wants
+   room, and how much room is a real preference. Its position is not: the dock decides that. */
 function placeCard() {
-  // A size measured while the card was display:none comes back as zero. Anything under the minimum
-  // the stylesheet allows is such a reading, not a size someone chose, so it is thrown away.
+  // A size measured while the card was display:none comes back as zero. Anything under the minimum the
+  // stylesheet allows is such a reading, not a size someone chose, so it is thrown away.
   const c = UI.card && UI.card.w >= CARD_MIN_W && UI.card.h >= CARD_MIN_H ? UI.card : null;
   if (c) {
     routeCard.style.width = c.w + 'px';
     routeCard.style.height = c.h + 'px';
   }
-  const w = c?.w || routeCard.offsetWidth || 340;
-  const h = c?.h || routeCard.offsetHeight || 380;
-  // Its own corner, not the layer list's. Two surfaces that both opened top-right landed on top of
-  // one another and looked like one broken panel; the readout is the taller of the two, so it takes
-  // the bottom of the screen and leaves the top for the list that drops out of the Layers button.
-  clampFloat(routeCard, { x: c?.x ?? innerWidth - w - 16, y: c?.y ?? innerHeight - h - 16 });
+  layoutDock();
 }
 function showCard() {
   UI.cardOff = false;
   routeCard.hidden = false;
+  dockAdd(routeCard);
   placeCard();
   saveUI();
   renderRouteButtons(lastResults);
@@ -8253,6 +8782,7 @@ function showCard() {
 function hideCard() {
   UI.cardOff = true;
   routeCard.hidden = true;
+  dockRemove(routeCard);
   saveUI();
   renderRouteButtons(lastResults);
 }
@@ -8289,7 +8819,6 @@ function renderRouteButtons(results) {
 }
 
 const routeCardHead = document.getElementById('routeCardHead');
-makeDraggable(routeCard, routeCardHead, () => rememberCard());
 /* The card is a view of one route, so its head is that route's handle in every sense: the left button
    moves the card, the right one asks about the route. It raises the same menu the ⋯ on the route's row
    raises, because it is the same question about the same thing — and until now the only way to
@@ -8301,11 +8830,13 @@ routeCardHead.addEventListener('contextmenu', e => {
   e.stopPropagation();
   if (S.routes[S.activeRoute]) openRouteMenu(S.activeRoute, e.clientX, e.clientY);
 });
+// Only the size. Resizing also moves whatever is docked to its left, so the stack is re-laid here.
 function rememberCard() {
   if (routeCard.hidden) return;          // a hidden element measures zero; never save that
   const r = routeCard.getBoundingClientRect();
-  UI.card = { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) };
+  UI.card = { w: Math.round(r.width), h: Math.round(r.height) };
   saveUI();
+  layoutDock();
 }
 // The CSS resize handle reports through no event of its own; an observer is how you hear about it.
 if (window.ResizeObserver) {
@@ -8318,10 +8849,11 @@ if (window.ResizeObserver) {
 function updateRouteCard(results) {
   const rt = S.routes[S.activeRoute];
   const has = !!rt;
-  if (!has) { routeCard.hidden = true; undoFloat.hidden = true; renderRouteButtons(results); return; }
-  if (UI.cardOff) { routeCard.hidden = true; renderRouteButtons(results); return; }
+  if (!has) { routeCard.hidden = true; dockRemove(routeCard); undoFloat.hidden = true; renderRouteButtons(results); return; }
+  if (UI.cardOff) { routeCard.hidden = true; dockRemove(routeCard); renderRouteButtons(results); return; }
   const first = routeCard.hidden;
   routeCard.hidden = false;
+  dockAdd(routeCard);
   if (first) placeCard();
   const r = results?.[S.activeRoute];
   routeCard.querySelector('.floathead h3').textContent =
@@ -8334,7 +8866,6 @@ const updateDrawerBadge = updateRouteCard;   // the name computeRoute() calls it
 
 // A window that has changed shape can leave a floating surface half off the screen.
 addEventListener('resize', () => {
-  if (!routeCard.hidden) placeCard();
   if (!layersPop.hidden) clampFloat(layersPop, UI.layers || { x: innerWidth - layersPop.offsetWidth - 16, y: 60 });
 });
 
@@ -8366,6 +8897,9 @@ panelGrip.addEventListener('pointercancel', endGrip);
 // Opening state. A phone starts with the map clear and the sheet down, whatever was last open on a
 // desktop; a desktop restores the panel it was left on.
 showPane(UI.pane, { keepShut: true });
+// Find reopens where it was left, because it is the surface you keep up rather than one you open to
+// ask a question and shut again.
+if (UI.findOn) openFind(false);
 if (UI.shut || narrow()) closePanel(); else openPanel();
 
 boot().catch(err => {

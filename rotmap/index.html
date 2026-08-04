@@ -55,7 +55,10 @@
 <!-- ------------------------------------------------------------------ rail -->
 <nav id="rail" aria-label="Panels">
   <svg class="mark" viewBox="0 0 22 22"><use href="#i-hex"/></svg>
-  <button class="railbtn" type="button" data-pane="find"   data-label="Find">   <svg viewBox="0 0 22 22"><use href="#i-find"/></svg></button>
+  <!-- Find is a floating surface rather than a panel: it is the one thing you want open *while* doing
+       something else, and a panel that has to be left to get back to the map cannot be that. The button
+       toggles it; so does Ctrl+F. -->
+  <button class="railbtn" type="button" id="findBtn" data-label="Find (Ctrl+F)"><svg viewBox="0 0 22 22"><use href="#i-find"/></svg></button>
   <button class="railbtn" type="button" data-pane="route"  data-label="Routes"> <svg viewBox="0 0 22 22"><use href="#i-route"/></svg></button>
   <button class="railbtn" type="button" data-pane="iso"    data-label="Isochrone"><svg viewBox="0 0 22 22"><use href="#i-iso"/></svg></button>
   <button class="railbtn" type="button" data-pane="tokens" data-label="Tokens"> <svg viewBox="0 0 22 22"><use href="#i-token"/></svg></button>
@@ -81,17 +84,6 @@
   <div id="panelBody">
 
     <!-- ---------------------------------------------------------- Find -->
-    <section class="pane" data-pane="find">
-      <div class="group">
-        <input id="search" type="search" autocomplete="off" autocapitalize="off" spellcheck="false"
-               placeholder="Place name or hex number…">
-        <div id="searchResults"></div>
-        <p class="hint">Accents, apostrophes and near-misses are all forgiven — type
-        <b>haesema</b> and Hā-aēšema comes back. A hit stays lit until you click it off;
-        hold <b>Shift</b> to keep several lit at once.</p>
-      </div>
-    </section>
-
     <!-- -------------------------------------------------------- Routes -->
     <section class="pane" data-pane="route">
       <div class="group">
@@ -103,15 +95,20 @@
         <div id="routeList"></div>
         <details class="hint">
           <summary>How routing works</summary>
-          Click hexes to add waypoints to the active route. <b>Right-click</b> a hex to add one there
+          Click hexes to add waypoints to the active route, and <b>drag a waypoint marker</b> to move that
+          stop — the march re-solves when you let go, and the hex you are over is outlined so there is no
+          doubt where it will land. A stop in the middle of a route could only be changed by taking the
+          whole tail off behind it before. A press that does not move does nothing, so there is no risk of
+          planting a second stop on top of the one you meant to pick up. <b>Right-click</b> a hex to add one there
           without clicking the map at all — which is how you keep building a route while another panel
           has the map's clicks, the Isochrone one especially — or to start a fresh route there, or to
           remove the last waypoint from this one; right-click a hex the route stops in to remove that
           waypoint, wherever it sits in the route. <b>Remove last</b> does the same
           for touchscreens, where there is no right button. <b>Ctrl+Z</b> undoes. Click a route's
-          swatch to recolour it, double-click its name to rename; its <b>⋯</b> menu — or a right-click
+          swatch to recolour it, and <b>double-click the row for its hex breakdown</b> — the step table is what
+          a route is for, and it had no way in from here. Renaming is in its <b>⋯</b> menu; that menu — or a right-click
           on the row, or on the <b>title bar of the breakdown card</b>, which describes the same route
-          — will duplicate it, empty it of waypoints, or copy its march and its column to the
+          — will rename it, duplicate it, empty it of waypoints, or copy its march and its column to the
           clipboard as text you can keep and paste back. A route that sets out from a hex a
           <b>token</b> is standing on takes that token's colour, so a legion's march is drawn in the
           legion's own colour. In the readout, <b>right-click a
@@ -255,7 +252,10 @@
       <details class="hint">
         <summary>How tokens work</summary>
         <b>Right-click</b> a hex and choose <b>Mark as</b> to drop a counter on it — I to XIV, or text
-        of your own. A counter named after a legion arrives <b>in that legion's colour</b>, the same
+        of your own. A counter's own menu — rename, commander, colour, split off, delete — is offered
+        while <b>this panel is open</b>, and not otherwise: with it shut, a counter on the hex you are
+        marching from is scenery, and the hex under it is what the right button should be about.
+        A counter named after a legion arrives <b>in that legion's colour</b>, the same
         colour the Warlords map paints its ground, so a counter and the territory under it match; its
         detachments wear it too, being part of the same command. A counter named anything else takes one
         of the five colours no warlord uses, so a baggage train never reads as somebody's legion. After
@@ -351,6 +351,12 @@
           under it instead of painting, reading what the map is <i>showing</i> there — an override, an
           inherited spit and a warlord over the borders all answer alike. Ground nobody holds picks up
           Nobody. Esc disarms.
+          <br><b>Right-click the map</b> while this tool is in hand for the things that act on what you are
+          pointing at: <b>Paint</b> puts the loaded colour on this subhex, <b>Paint commandery</b> puts it
+          over the whole province — one instruction for "this province is his now", and one Ctrl+Z
+          to take it back — rub this subhex out, undo, or drop every hand-painted colour on the layer and
+          let the scan speak again. A commandery covers the *land* it holds, so painting one stops at the
+          coast and leaves the bay in a shore hex alone.
           <br><b>Double-click a colour's name to rename it.</b> The Warlords scan ships with a legend
           of ten; the Borders washes have none and go by their hex code until you say otherwise. A name
           is kept per layer and per colour, beats the legend, and shows in the hover readout as well as
@@ -470,6 +476,20 @@
     <button class="iconbtn" type="button" id="layersClose" aria-label="Close"><svg viewBox="0 0 22 22"><use href="#i-close"/></svg></button>
   </div>
   <div id="layerList"></div>
+</div>
+
+<div class="float" id="findPop" hidden>
+  <div class="floathead" id="findHead">
+    <h3>Find</h3>
+    <button class="iconbtn" type="button" id="findClose" aria-label="Close"><svg viewBox="0 0 22 22"><use href="#i-close"/></svg></button>
+  </div>
+  <div id="findBody">
+    <!-- Counters are searchable by numeral and by commander, which the placeholder now says: they are the
+         one thing on this map that moves, so "where is V" is the lookup most worth having. -->
+    <input id="search" type="search" autocomplete="off" autocapitalize="off" spellcheck="false"
+           placeholder="Place, region, commandery, legion, hex…">
+    <div id="searchResults"></div>
+  </div>
 </div>
 
 <div class="float" id="routeCard" hidden>
