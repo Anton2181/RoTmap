@@ -452,7 +452,8 @@
     "x": 1848.3,
     "y": 955.2,
     "name": "Artāvan Temple",
-    "fort": true
+    "fort": true,
+    "coastal": false
    }
   ],
   "1932": [
