@@ -13,14 +13,9 @@ const TERRAIN_COLORS = {
   Flatlands: '#7fae5a', Hills: '#ac9159', Mountains: '#8d8177',
   Ocean: '#5d8fc4', Sea: '#74a5d4', Lake: '#7fb7de', 'N/A': '#181d24',
 };
-/* One palette, used by everything on the map that needs telling apart — the fourteen legions, their
-   detachments, and the routes. Two palettes meant a route and a token could be "the same colour"
-   without matching, and meant learning the swatch grid twice.
-
-   Fifteen, so the grid is three even rows of five. The hues are spaced right round the wheel and
-   kept clear of the terrain beneath them: no mid-green (Flatlands), no tan (Hills), no grey-brown
-   (Mountains), no soft mid-blue (Sea and Lake). The last two are dark on purpose and take white ink,
-   which inkOn() works out rather than being told. */
+// The one palette everything on the map that needs telling apart is drawn from — tokens, routes,
+// isochrone origins. It is built out of the Warlords legend, so it is declared beside it: see PALETTE,
+// below WARLORD_NAMES.
 /* The stronghold marker, in the two sizes it comes in — written as the ratio they are meant to read
    as, 9 to 13, rather than as two numbers that happen to sit near it. That is what the eye does with
    them: a marker is large *compared with* the ones beside it. Stating the relation instead of the
@@ -47,9 +42,6 @@ const SH_FORT_FILL = 0.8;
 // at four pixels across, and far enough from the port ring's blue that the two never read as the same
 // statement about a place.
 const FORT_FILL = '#6b3fbf';
-const PALETTE = ['#ffd93d', '#ffa23d', '#ff6b5e', '#ff5e9c', '#ef7bff',
-                 '#b18cff', '#8c9bff', '#4fc3ff', '#3fe0d0', '#4fe08a',
-                 '#b8e838', '#eceff3', '#98a3b3', '#6b4fd0', '#b3283c'];
 
 // The hex grid's own line. A drawn coast wears exactly this, because a coast at subhex resolution is
 // the same kind of thing as a hex boundary — the edge of a piece of ground — and should read as one.
@@ -540,6 +532,51 @@ const WARLORD_NAMES = {
 const rgbKey = hex => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16)).join(',');
 const WARLORD_BY_RGB = new Map(Object.entries(WARLORD_NAMES).map(([hex, n]) => [rgbKey(hex), n]));
 const rgbHex = c => '#' + c.split(',').map(n => (+n).toString(16).padStart(2, '0')).join('');
+// The legend read the other way round, so the palette below can ask for a warlord by name.
+const WARLORD_HEX = Object.fromEntries(Object.entries(WARLORD_NAMES).map(([hex, n]) => [n, hex]));
+
+/* The fourteen legions, in numeral order. Up here rather than beside the tokens because the palette is
+   built out of it and the palette is needed early. */
+const ROMAN = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 'XI', 'XII', 'XIII', 'XIV'];
+/* Four legions hold no ground on the Warlords scan, so that scan gives them no colour, so they need one
+   given here. Chosen to sit in the hue gaps the other ten leave — the scan's ten cover red, crimson,
+   wine, orange, gold, tan, brown, two greens and a blue, which leaves teal, violet, olive and a
+   desaturated slate as the four openings. Legion XI's is deliberately the flat one: with thirteen
+   saturated counters on the board, a grey among them is easier to pick out than a fourteenth hue
+   squeezed between two others. */
+const LEGION_UNHELD = { IV: '#0f8f8a', VIII: '#7b4fd0', X: '#7d8c1f', XI: '#6e7b96' };
+/* A legion's colour is the colour the Warlords scan paints its ground, so a counter on the board and the
+   territory under it are the same colour — which is the whole point of aligning the two. Derived from the
+   legend rather than copied out of it, so the two cannot drift: change a colour in WARLORD_NAMES and the
+   counters follow. */
+const LEGION_COLORS = ROMAN.map(n => WARLORD_HEX['Legion ' + n] || LEGION_UNHELD[n]);
+/* Five more, for everything that is not a legion: a scratch route, an isochrone origin, a counter for
+   somebody's baggage train. Kept clear of all fifteen warlord colours *and* of the terrain beneath them —
+   no mid-green (Flatlands), no tan (Hills), no grey-brown (Mountains), no soft mid-blue (Sea and Lake) —
+   so nothing here can be mistaken for a legion or lost against the ground. The charcoal is dark on
+   purpose and takes white ink, which inkOn() works out rather than being told. */
+const PALETTE_SPARE = ['#eceff3', '#2b3440', '#00c8d4', '#ffd93d', '#ff5e9c'];
+/* One palette, used by everything on the map that needs telling apart — the fourteen legions, their
+   detachments, the routes and the isochrone origins. Two palettes meant a route and a token could be
+   "the same colour" without matching, and meant learning the swatch grid twice.
+
+   Twenty: the fourteen legions in numeral order, then the Blue Scarves — who are on both realm maps in
+   their own right and so have a colour of their own to match — then the five spares. Twenty rather than
+   fifteen because fourteen legions took all but one of the old fifteen and left nothing to draw a route
+   with, and because twenty is four even rows of five in the swatch grid where fifteen was three. */
+const PALETTE = [...LEGION_COLORS, WARLORD_HEX['Blue Scarves'], ...PALETTE_SPARE];
+/* Detachments are named off the parent: the 5th's first is V'a, the next V'b. So a token's "base" is
+   whatever stands before the apostrophe, and every token sharing a base belongs to one command — which is
+   also how the next free letter is found, and how a detachment knows whose colour to wear. */
+const tokenBase = lab => String(lab || '').split("'")[0];
+/* Which counter colour a label implies. A token called V is Legion V and takes Legion V's colour; so does
+   its detachment V'a, since a detachment is part of its parent and colouring it separately would say
+   otherwise. Anything else — a name, a numeral past XIV — has no legion to point at and falls through to
+   the first unused colour. */
+const legionColorFor = label => {
+  const i = ROMAN.indexOf(tokenBase(label));
+  return i < 0 ? null : LEGION_COLORS[i];
+};
 
 /* The Borders scan paints the empire in two shades of purple — the pale one and the strong one — and
    those two are what "held by the empire" looks like on that map. Sampled from the scan itself rather
@@ -6775,7 +6812,6 @@ function applyNameGroup(L, on) {
    the mouse: click cycles its colour, drag carries it to another hex, right-click renames,
    recolours or removes it. */
 const TOKEN_COLORS = PALETTE;   // named for the tokens, shared with the routes
-const ROMAN = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 'XI', 'XII', 'XIII', 'XIV'];
 const TOK_LS = 'rotmap_tokens_v1';
 const TOK_MAXLEN = 24;
 
@@ -6794,17 +6830,49 @@ function normalizeTokens(arr) {
   }));
 }
 // The board as the news last left it, shipped with the map. It seeds an empty browser and can be
-// asked for again at any time — it is a starting position, not a save.
+// asked for again at any time — it is a starting position, not a save. The fingerprint is for the
+// recolour below: it is how a change to the shipped board reaches a browser that already has one.
+let startingTokensStamp = null;
 async function fetchStartingTokens() {
   try {
     const r = await fetch('data/tokens.json');
     if (!r.ok) return null;
-    return normalizeTokens((await r.json()).tokens);
+    const txt = await r.text();
+    startingTokensStamp = quickHash(txt);
+    return normalizeTokens(JSON.parse(txt).tokens);
   } catch { return null; }
 }
 
 function saveTokens() {
   try { localStorage.setItem(TOK_LS, JSON.stringify({ version: 1, tokens: S.tokens })); } catch {}
+}
+/* A board already in this browser, brought up to date with the map's colours — and with its **colours
+   only**. Where the counters *are* is the reader's own; a position they have been playing for a month
+   must survive a republication, so nothing here moves anything. What colour Legion XII is, on the other
+   hand, is the map's to say: the label names a legion, the map paints that legion neon green, and a white
+   counter labelled XII is simply out of date. The palette was recoloured to match the Warlords scan and
+   every existing board went on showing the old colours, because the shipped board only ever seeded an
+   empty browser — the same shape of fault as a stale features file shadowing a republished one.
+
+   Keyed on a fingerprint of the shipped board, so this runs once per publication rather than on every
+   load, and a deliberate recolour survives until the next one. It is a real undo step, not a quiet one:
+   one Ctrl+Z puts the old colours back for anyone who wanted them. */
+const TOK_SRC_LS = 'rotmap_tokens_src_v1';
+async function refreshLegionColours() {
+  await fetchStartingTokens();                    // for the fingerprint; the positions are not wanted
+  if (!startingTokensStamp) return false;
+  let seen = null;
+  try { seen = localStorage.getItem(TOK_SRC_LS); } catch {}
+  if (seen === startingTokensStamp) return false; // already up to date with this publication
+  const changed = S.tokens.filter(t => {
+    const want = legionColorFor(t.label);
+    return want && t.color !== want;
+  });
+  try { localStorage.setItem(TOK_SRC_LS, startingTokensStamp); } catch {}
+  if (!changed.length) return false;
+  for (const t of changed) t.color = legionColorFor(t.label);
+  commitTokens();
+  return true;
 }
 /* `quiet` is for the one commit that isn't a change the user made — seeding the board at boot.
    `coalesce` folds a run of live changes (a colour picker being dragged) into one undo step. */
@@ -6816,21 +6884,29 @@ function commitTokens(opts) {
 
 // Two armies arriving in the same colour would defeat the point, so a new token takes the first
 // colour nobody is using before it starts repeating.
+/* A colour for a counter that is nobody's legion. The spares are offered first, because the fifteen
+   warlord colours mean something on this map and a baggage train wearing Legion VII's green is a counter
+   that reads as Legion VII's. Only once the spares are all out does it fall back to the rest of the
+   palette, which is better than repeating: at that point every colour says something misleading and the
+   only remaining virtue is being distinct. */
 function nextTokenColor() {
   const used = new Set(S.tokens.map(t => t.color));
-  return TOKEN_COLORS.find(c => !used.has(c)) || TOKEN_COLORS[S.tokens.length % TOKEN_COLORS.length];
+  return PALETTE_SPARE.find(c => !used.has(c))
+      || TOKEN_COLORS.find(c => !used.has(c))
+      || TOKEN_COLORS[S.tokens.length % TOKEN_COLORS.length];
 }
+/* A new counter takes its legion's colour if its label names one, and otherwise the first colour nobody
+   is using — two armies arriving in the same colour would defeat the point. The legion case comes first
+   and is *not* subject to the "unused" rule: two counters of Legion V should be the same colour, because
+   they are the same legion. */
 function addToken(h, label, color) {
   const id = S.tokens.reduce((m, t) => Math.max(m, t.id || 0), 0) + 1;
-  S.tokens.push({ id, h, label: String(label).slice(0, TOK_MAXLEN), color: color || nextTokenColor() });
+  S.tokens.push({ id, h, label: String(label).slice(0, TOK_MAXLEN),
+                  color: color || legionColorFor(label) || nextTokenColor() });
   commitTokens();
 }
 function deleteToken(t) { S.tokens = S.tokens.filter(x => x !== t); commitTokens(); }
 
-/* Detachments are named off the parent: the 5th's first is V'a, the next V'b. So a token's "base"
-   is whatever stands before the apostrophe, and every token sharing a base belongs to one command —
-   which is also how the next free letter is found. */
-const tokenBase = lab => String(lab || '').split("'")[0];
 function nextDetachLabel(t) {
   const base = tokenBase(t.label);
   const used = new Set(S.tokens.filter(x => tokenBase(x.label) === base)
@@ -6880,7 +6956,14 @@ function renderTokens() {
     if (!p) continue;
     const g = el('g', { 'data-tok': t.id, style: 'cursor:grab' }, groups.tokens);
     g._p = p;
-    el('circle', { cx: p.x, cy: p.y, r: p.r, fill: t.color, stroke: '#14181e', 'stroke-width': 1.6 }, g);
+    /* The rim contrasts with the counter's own fill rather than being a fixed dark line, and it has to,
+       now that a legion's counter is the same colour as the legion's ground on the Warlords map. Against
+       ground of exactly its own colour the rim is the only thing making it a counter rather than a patch
+       — and a dark rim on a dark fill (Legion II's navy, VI's wine, I's brown) is no rim at all. It uses
+       the same inkOn decision the numeral inside does, so the edge and the digit never disagree about
+       which way round the contrast goes. */
+    el('circle', { cx: p.x, cy: p.y, r: p.r, fill: t.color,
+                   stroke: inkOn(t.color), 'stroke-width': 1.6 }, g);
     const lab = t.label || '';
     if (!lab) continue;
     // A numeral goes inside the counter, shrinking to stay off the rim. Anything long enough that
@@ -7397,6 +7480,9 @@ document.getElementById('tokStart').onclick = async () => {
   if (!arr) return alert('No data/tokens.json to load.');
   if (S.tokens.length && !confirm(`Replace the ${S.tokens.length} tokens on the map with the ${arr.length} starting positions?`)) return;
   S.tokens = arr;
+  // Taking the shipped board wholesale also takes its colours, so this browser is up to date with that
+  // publication by definition — recording it stops the recolour pass finding work to do on next boot.
+  if (startingTokensStamp) try { localStorage.setItem(TOK_SRC_LS, startingTokensStamp); } catch {}
   commitTokens();
 };
 function clearAllTokens() {
@@ -7463,6 +7549,8 @@ function quickHash(s) {
    any number of reloads — it is only superseded by an actual republication, which is the one event that
    should supersede it. */
 const FEAT_SRC_LS = 'rotmap_features_src_v1';
+// Where a superseded browser copy goes, so that being superseded is recoverable rather than final.
+const FEAT_PREV_LS = 'rotmap_features_prev_v1';
 function chooseFeatures(ls, file) {
   const parsed = (() => { try { return ls ? JSON.parse(ls) : null; } catch { return null; } })();
   if (!file) return parsed;                       // nothing shipped: the local copy is all there is
@@ -7470,8 +7558,13 @@ function chooseFeatures(ls, file) {
   if (LOCAL) return parsed;                       // authoring: the working state always wins
   const seen = localStorage.getItem(FEAT_SRC_LS);
   if (seen === file.stamp) return parsed;         // the copy was made against this same publication
-  try { localStorage.removeItem(LS_KEY); } catch {}
-  return file.obj;                                // republished since: the map's own answer wins
+  /* Republished since: the map's own answer wins. The superseded copy is **stashed rather than deleted**,
+     because "a reader's sketch" is not the only thing it can be. Anyone authoring against a non-local
+     hostname — a LAN address, a tunnel, the deployed site itself — is an author whose unexported work
+     this would otherwise discard without trace. It is one key, it is overwritten each time, and it turns
+     an irreversible loss into a recoverable one. */
+  try { localStorage.setItem(FEAT_PREV_LS, ls); localStorage.removeItem(LS_KEY); } catch {}
+  return file.obj;
 }
 async function boot() {
   const T = await (await fetch('data/terrain.json')).json();
@@ -7507,11 +7600,13 @@ async function boot() {
     // rather than leaving the first change to take one of itself, after the fact.
     tokensSnap = JSON.stringify(S.tokens);
     renderTokens(); renderTokenList();
+    await refreshLegionColours();
   } else {
     // Saved as soon as it is seeded, so the shipped board becomes *this* browser's board: clearing
     // it and reloading then leaves it clear, rather than quietly putting every legion back.
     S.tokens = await fetchStartingTokens() || [];
     commitTokens({ quiet: true });   // the board as it arrives is not a change to take back
+    if (startingTokensStamp) try { localStorage.setItem(TOK_SRC_LS, startingTokensStamp); } catch {}
   }
   try {
     const rr = JSON.parse(localStorage.getItem('rotmap_routes_v1'));
