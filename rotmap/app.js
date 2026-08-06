@@ -3526,6 +3526,7 @@ function insidePoint(poly) {
 }
 const anyPoly = (polys, pt) => polys.some(p => pointInPoly(pt, p));
 const baseSea = h => RULES.WATER.has(S.hexes[h].t);
+const realHex = h => !!S.hexes[h] && S.hexes[h].t !== 'N/A';
 const majorRiverHex = h => S.adj.majorHexes.has(h);
 const seaSlivers = h => S.adj.sub.get(h)?.seaPolys || [];
 const landSlivers = h => S.adj.sub.get(h)?.landPolys || [];
@@ -4313,15 +4314,21 @@ function ferryRoad(fa, from) {
 // be occupied either afloat (sailing) or on foot (marching); sea = always afloat, land = never.
 function expand(h, ri, af, ships, g, o) {
   const out = [];
-  const reg = region(h, ri); if (!reg) return out;
+  const reg = region(h, ri); if (!reg || !realHex(h)) return out;
   const hSplit = isSplit(h);
-  const N = neighbors(h).map(n => ({ n, e: (hSplit || isSplit(n)) ? sharedEdgePts(h, n) : null }));
+  // The datasheet carries three padding columns marked N/A. They are outside the world, not cheap
+  // flatlands a Marines column may land on, so they must never enter the movement graph at all.
+  const N = neighbors(h).filter(realHex)
+    .map(n => ({ n, e: (hSplit || isSplit(n)) ? sharedEdgePts(h, n) : null }));
   if (af) { // afloat, ships === 1 — never on a road, so arrivals carry g: 0
     for (const { n, e } of N) { // sail across to any navigable region (sea OR river) — no port needed
       if (!regionOnEdge(h, ri, e)) continue;
       const rs = regionsOf(n);
       for (let rj = 0; rj < rs.length; rj++)
-        if (regSail(rs[rj]) && regionOnEdge(n, rj, e) && waterLink(h, ri, n, rj))
+        // Merely reaching this edge somewhere is not enough: two bays can touch opposite ends of
+        // it with dry ground between them. The regions themselves must face the same stretch.
+        if (regSail(rs[rj]) && regionOnEdge(n, rj, e) && regionsMeet(h, ri, n, rj) &&
+            waterLink(h, ri, n, rj))
           out.push({ toH: n, toRi: rj, af: 1, ships: 1, g: 0, irl: SHIP_IRL, note: 'sail' });
     }
     // Sail between adjacent navigable regions of the SAME hex (a river mouth, a bay opening into a
@@ -4333,6 +4340,11 @@ function expand(h, ri, af, ships, g, o) {
       if (a === ri && regSail(region(h, b)) && waterLink(h, ri, h, b)) out.push({ toH: h, toRi: b, af: 1, ships: 1, g: 0, irl: 0, note: 'sail (within hex)' });
       if (b === ri && regSail(region(h, a)) && waterLink(h, ri, h, a)) out.push({ toH: h, toRi: a, af: 1, ships: 1, g: 0, irl: 0, note: 'sail (within hex)' });
     }
+    // A major-river region is both navigable water and walkable bank. Land in the region already
+    // reached, instead of treating its ground half as permission to jump ashore from a different
+    // river reach across a neighbouring edge.
+    if (regWalkable(reg) && (o.marines || isPort(h, ri)))
+      out.push({ toH: h, toRi: ri, af: 0, ships: 1, g: 0, irl: DISEMBARK, note: DISEMBARK_NOTE });
     /* Ashore inside this hex. Needs a port — unless the army is Marines, who land anywhere. The port
        now has to be in the subhex being landed *on*, not merely somewhere in the hex: putting an army
        ashore on the far bank of a river because the near bank has a harbour was never right. */
@@ -4348,7 +4360,11 @@ function expand(h, ri, af, ships, g, o) {
       if (!regionOnEdge(h, ri, e)) continue;
       const rs = regionsOf(n);
       for (let rj = 0; rj < rs.length; rj++)
-        if (regWalkable(rs[rj]) && regionOnEdge(n, rj, e) && (o.marines || isPort(n, rj)))
+        // A navigable destination must be reached by the sailing loop above, which enforces the
+        // river's actual drawn edge. This loop is only for stepping directly onto dry coast.
+        if (regWalkable(rs[rj]) && !regSail(rs[rj]) && regionOnEdge(n, rj, e) &&
+            regionsMeet(h, ri, n, rj) &&
+            (o.marines || isPort(n, rj)))
           out.push({ toH: n, toRi: rj, af: 0, ships: 1, g: 0, irl: SHIP_IRL + DISEMBARK, note: DISEMBARK_NOTE });
     }
     return out;
@@ -4443,7 +4459,8 @@ function expand(h, ri, af, ships, g, o) {
     for (const { n, e } of N) { // launching from a port: the ship starts in that water, no mouth needed
       if (!regionOnEdge(h, ri, e)) continue;
       const rs = regionsOf(n);
-      for (let rj = 0; rj < rs.length; rj++) if (regSail(rs[rj]) && regionOnEdge(n, rj, e))
+      for (let rj = 0; rj < rs.length; rj++)
+        if (regSail(rs[rj]) && regionOnEdge(n, rj, e) && regionsMeet(h, ri, n, rj))
         out.push({ toH: n, toRi: rj, af: 1, ships: 1, g: 0, irl: cost + SHIP_IRL, note: pre + ', sail' });
     }
   }
@@ -4780,7 +4797,7 @@ const nkRi = k => k % MAX_REGIONS;
    would have meant this guess and the search's arithmetic disagreeing sooner or later.
 
    River subhexes are held either way: a bank is walkable ground that happens to be sailable too. */
-const isoHolds = (h, ri, o) => o.fleet || o.secureFleet || regWalkable(region(h, ri));
+const isoHolds = (h, ri, o) => realHex(h) && (o.fleet || o.secureFleet || regWalkable(region(h, ri)));
 
 // Travel time from `from` to every reachable subhex within maxD IRL days (min over fleet states —
 // but not over regions, which are different ground and get their own answer).
@@ -4819,6 +4836,7 @@ function spreadAll(fromNode, speedMiPerDay, maxD) {
   const best = new Map();
   for (const idS in S.hexes) {
     const id = +idS;
+    if (!realHex(id)) continue;
     const [cx, cy] = hexCenter(id);
     const px = Math.hypot(cx - ox, cy - oy);
     if (px > maxPx) continue;
@@ -5356,10 +5374,12 @@ function renderIso() {
   }
 }
 
-function computeRoute() {
+function computeRoute({ preview = false } = {}) {
   const out = document.getElementById('routeOut');
   groups.route.innerHTML = '';
-  saveRoutes();
+  // A waypoint drag temporarily moves a stop so the answer can follow the pointer. It must not
+  // overwrite the saved route (or the undo snapshot) until the pointer is actually released.
+  if (!preview) saveRoutes();
   if (!S.adj) deriveAdj();
   // migrate legacy waypoints (number, or {h,sea}) to region nodes {h, ri}
   for (const rt of S.routes) rt.wps = rt.wps.map(w => {
@@ -5379,20 +5399,22 @@ function computeRoute() {
   // entirely, so for those the two origins differ only in where they stand. Relief keeps its two
   // legs alongside the total, because the total on its own does not say which of them is the
   // constraint — and that is the whole of what you do about it.
-  S.iso.parts = [];
-  S.iso.data = S.iso.origins.map((og, i) => {
-    if (og.h == null) return null;
-    if (mode === 'relief') {
-      const r = reliefAll(og, armyOpts(og.set), newsSpeed, isoMax);
-      S.iso.parts[i] = r.parts;
-      return r.best;
-    }
-    return mode === 'message' ? spreadAll(og, RULES.SPREAD.message, isoMax)
-         : mode === 'rumour' ? spreadAll(og, RULES.SPREAD.rumour, isoMax)
-         : dijkstraAll(og, armyOpts(og.set), isoMax);
-  });
-  assignIsoOwners(isoMax);
-  renderIso();
+  if (!preview) {
+    S.iso.parts = [];
+    S.iso.data = S.iso.origins.map((og, i) => {
+      if (og.h == null) return null;
+      if (mode === 'relief') {
+        const r = reliefAll(og, armyOpts(og.set), newsSpeed, isoMax);
+        S.iso.parts[i] = r.parts;
+        return r.best;
+      }
+      return mode === 'message' ? spreadAll(og, RULES.SPREAD.message, isoMax)
+           : mode === 'rumour' ? spreadAll(og, RULES.SPREAD.rumour, isoMax)
+           : dijkstraAll(og, armyOpts(og.set), isoMax);
+    });
+    assignIsoOwners(isoMax);
+    renderIso();
+  }
   const results = [];
   S.routes.forEach((rt, i) => {
     const act = i === S.activeRoute;
@@ -5924,7 +5946,7 @@ function saveRoutes() {
 /* ---------------- interactions ---------------- */
 let pan = null, downPos = null, spaceHeld = false, edgeSnap = false;
 let tokDrag = null;   // { t, g, p, dx, dy, moved, target } while a token is under the pointer
-let wpDrag = null;    // { ri, wi, g, p, moved, target } while a route's waypoint marker is being dragged
+let wpDrag = null;    // route/waypoint, original stop and live preview while its marker is dragged
 // The click that puts an open context menu away does nothing else — it must not also drop a waypoint
 // on whatever hex happened to be under it.
 let ctxDismiss = false;
@@ -6055,7 +6077,8 @@ svg.addEventListener('pointerdown', e => {
     const rt = S.routes[ri];
     if (rt?.wps[wi]) {
       const w = rt.wps[wi];
-      wpDrag = { ri, wi, g: grabbedWp, p: endPoint(w.h, w.ri | 0), moved: false, target: null };
+      wpDrag = { ri, wi, g: grabbedWp, p: endPoint(w.h, w.ri | 0), moved: false, target: null,
+                 original: { ...w }, previewKey: `${w.h}:${w.ri | 0}` };
       svg.setPointerCapture(e.pointerId);
       return;
     }
@@ -6110,7 +6133,23 @@ svg.addEventListener('pointermove', e => {
        — dropping a stop on the far bank of a river has to mean the far bank. And unlike a token it may
        land on water, since fleets sail: what it may not land on is off-map filler. */
     wpDrag.target = (h && S.hexes[h].t !== 'N/A') ? { h, ri: regionAt(h, [wx, wy]) } : null;
-    wpDrag.g.setAttribute('transform', `translate(${(wx - wpDrag.p[0]).toFixed(2)} ${(wy - wpDrag.p[1]).toFixed(2)})`);
+    const key = wpDrag.target ? `${wpDrag.target.h}:${wpDrag.target.ri | 0}` : 'off-map';
+    if (key !== wpDrag.previewKey) {
+      const rt = S.routes[wpDrag.ri];
+      if (rt?.wps[wpDrag.wi]) {
+        rt.wps[wpDrag.wi] = wpDrag.target
+          ? { ...wpDrag.original, h: wpDrag.target.h, ri: wpDrag.target.ri | 0 }
+          : { ...wpDrag.original };
+        wpDrag.previewKey = key;
+        S.activeRoute = wpDrag.ri;
+        computeRoute({ preview: true });
+        // computeRoute rebuilt the marker group. Keep the newly drawn one under the pointer too.
+        wpDrag.g = groups.route.querySelector(`[data-wp="${wpDrag.ri}:${wpDrag.wi}"]`);
+        const cur = rt.wps[wpDrag.wi];
+        wpDrag.p = endPoint(cur.h, cur.ri | 0);
+      }
+    }
+    wpDrag.g?.setAttribute('transform', `translate(${(wx - wpDrag.p[0]).toFixed(2)} ${(wy - wpDrag.p[1]).toFixed(2)})`);
     groups.hover.innerHTML = '';
     tooltip.hidden = true;
     if (wpDrag.target) {
@@ -6173,22 +6212,26 @@ svg.addEventListener('pointerup', e => {
     wpDrag = null;
     pan = null; downPos = null;
     groups.hover.innerHTML = '';
-    /* A drag that went somewhere moves the stop and re-solves; a press that did not is left alone. Not
+    /* A drag that went somewhere commits the stop whose route has already been previewing live; a press
+       that did not is left alone. Not
        treated as a click, deliberately: a click on bare map plants a waypoint, and a press on a marker
        that turns out not to have moved should do *nothing* rather than plant a second stop on the one
-       already there. The route re-solves on drop rather than continuously, because each solve is a
-       fresh pathfind over the whole march and following the pointer with it would be recomputing a
-       dozen routes a second to show a dozen answers nobody asked for. */
+       already there. */
     if (d.moved && d.target) {
       const rt = S.routes[d.ri];
       if (rt?.wps[d.wi]) {
-        pushUndoRoutes();
-        rt.wps[d.wi] = { ...rt.wps[d.wi], h: d.target.h, ri: d.target.ri | 0 };
+        const changed = d.original.h !== d.target.h || (d.original.ri | 0) !== (d.target.ri | 0);
+        if (!changed) { rt.wps[d.wi] = { ...d.original }; computeRoute(); return; }
+        pushUndoRoutes();             // routesSnap is still the pre-preview route
+        rt.wps[d.wi] = { ...d.original, h: d.target.h, ri: d.target.ri | 0 };
         S.activeRoute = d.ri;      // the route you just adjusted is the one the card should describe
         computeRoute();
         return;
       }
     }
+    // Letting go outside the map, or losing the pointer, cancels the provisional move.
+    const rt = S.routes[d.ri];
+    if (rt?.wps[d.wi]) rt.wps[d.wi] = { ...d.original };
     computeRoute();                // clears the transform the marker was following the pointer with
     return;
   }
@@ -6274,7 +6317,12 @@ svg.addEventListener('pointercancel', e => {
     if (tokDrag) { tokDrag = null; renderTokens(); groups.hover.innerHTML = ''; }
     // Same for a waypoint the pointer was lost from — a cancelled drag has to put the marker back, and
     // recomputing is what clears the transform it was following the pointer with.
-    if (wpDrag) { wpDrag = null; computeRoute(); groups.hover.innerHTML = ''; }
+    if (wpDrag) {
+      const d = wpDrag; wpDrag = null;
+      const rt = S.routes[d.ri];
+      if (rt?.wps[d.wi]) rt.wps[d.wi] = { ...d.original };
+      computeRoute(); groups.hover.innerHTML = '';
+    }
   }
 });
 svg.addEventListener('contextmenu', e => {

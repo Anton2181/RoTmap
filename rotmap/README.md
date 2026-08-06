@@ -252,7 +252,7 @@ The readout also **steps out of Find's way**. Both defaulted to the bottom-right
 
 ## Waypoints are dragged
 
-A stop is moved by dragging its marker, and the march re-solves on drop. Before, the only removal was the *last* waypoint, so changing one in the middle of a route meant taking the whole tail off behind it and rebuilding — while the thing you could see and point at was the one thing that would not move.
+A stop is moved by dragging its marker, and the march re-solves live for each subhex the marker is held over, before it is dropped. Before, the only removal was the *last* waypoint, so changing one in the middle of a route meant taking the whole tail off behind it and rebuilding — while the thing you could see and point at was the one thing that would not move.
 
 Three details, each of which had to be got right for it to feel like moving a thing rather than operating a control. The marker follows the pointer directly and the hex under it is **outlined**, because a marker that jumped from node to node would hide which hex it was about to land on. It carries its **subhex**, unlike a counter, so dropping a stop on the far bank of a river means the far bank. And the route re-solves **on drop, not continuously**: each solve is a fresh pathfind over the whole march, and following the pointer with it would compute a dozen answers a second that nobody asked for.
 
