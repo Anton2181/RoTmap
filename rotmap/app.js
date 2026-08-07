@@ -2256,6 +2256,30 @@ function realmPalette(layer) {
   for (const c of realmCols.get(layer)?.values() || []) counts.set(c, (counts.get(c) || 0) + 1);
   return [...counts].sort((a, b) => b[1] - a[1]).map(([c]) => c);
 }
+/* Token colours are also valid Warlords paint, even before that colour holds any ground. One swatch per
+   colour is enough; prefer the parent legion token when detachments share it. */
+function tokenRealmColours() {
+  const byColour = new Map();
+  for (const t of S.tokens || []) {
+    if (!/^#[0-9a-f]{6}$/i.test(t.color || '')) continue;
+    const c = rgbKey(t.color.toLowerCase());
+    if (!byColour.has(c)) byColour.set(c, []);
+    byColour.get(c).push(t);
+  }
+  const out = new Map();
+  for (const [c, tokens] of byColour) {
+    const parent = tokens.find(t => t.label === tokenBase(t.label)) || tokens[0];
+    const base = tokenBase(parent.label);
+    const legion = ROMAN.includes(base) ? `Legion ${base}` : '';
+    const designation = String(parent.label || '').trim();
+    const commander = String(parent.name || '').trim();
+    out.set(c, legion
+      ? legion + (commander ? ` — ${commander}` : '')
+      : commander && designation ? `${commander} — ${designation}`
+      : commander || designation || 'Token');
+  }
+  return out;
+}
 /* Take the map to a realm colour: to the middle of the largest contiguous piece of ground that colour
    holds, panning only. The largest piece rather than the centre of everything it holds, because a realm
    with an island the far side of the map has a centre out at sea — the whole point of going there is to
@@ -2296,7 +2320,9 @@ function renderRealmPicker() {
   const layer = document.getElementById('realmLayer').value;
   const box = document.getElementById('realmSwatches');
   box.innerHTML = '';
-  const cols = realmPalette(layer);
+  const mapCols = realmPalette(layer);
+  const tokenCols = layer === 'warlords' ? tokenRealmColours() : new Map();
+  const cols = [...mapCols, ...[...tokenCols.keys()].filter(c => !mapCols.includes(c))];
   if (!cols.length) {
     box.innerHTML = '<div class="emptynote">Turn this layer on to load its colours.</div>';
     return;
@@ -2315,13 +2341,15 @@ function renderRealmPicker() {
   // A colour is renamed by double-clicking its name, the way a route is. The click underneath still
   // reaches the button and loads the brush, which is no loss: you were pointing at that realm anyway.
   const colourSwatch = c => {
-    const b = add(c, realmLabel(layer, c), `rgb(${c})`);
+    const stored = S.features.realmNames?.[layer]?.[c];
+    const label = stored || WARLORD_BY_RGB.get(c) || tokenCols.get(c) || rgbHex(c);
+    const b = add(c, label, `rgb(${c})`);
     /* Colours sharing a name are one polity: the label pass groups by name, so a federation is made by
        calling each member wash the same thing. Said in the tooltip because it is otherwise invisible —
        the swatches stay separate, as they must for painting, and nothing else on screen shows that two
        of them have been tied together. */
     const kin = realmKin(layer, c);
-    b.title = `${realmLabel(layer, c)} · ${rgbHex(c)}`
+    b.title = `${label} · ${rgbHex(c)}`
             + `\nDouble-click the swatch to go to it; double-click the name to rename.`
             + (kin > 1 ? `\nOne of ${kin} colours under this name; they are labelled as one polity.` : '');
     /* Double-clicking the swatch takes the map to the realm. The palette is read off the paint, so every
@@ -4569,7 +4597,9 @@ function startState(h, ri, o) {
   return [af, (af || o.fleet) ? 1 : 0];
 }
 
-const ROUTE_COLORS = PALETTE;
+// Routes start with the neutral colours. Legion colours remain available later in the picker, and a
+// route that starts under a token still adopts that token's colour below.
+const ROUTE_COLORS = [...PALETTE_SPARE, ...LEGION_COLORS, WARLORD_HEX['Blue Scarves']];
 
 // The quiet form is for callers that have already taken their own undo snapshot and mean the new
 // route to be part of that same step — clicking bare map places a waypoint *and* the route to hold
@@ -5620,7 +5650,7 @@ function splitRouteAt(ri, j) {
   const used = new Set(S.routes.map(r => r.color));
   const half = {
     name: 'Route ' + (S.routes.length + 1),
-    color: PALETTE.find(c => !used.has(c)) || PALETTE[S.routes.length % PALETTE.length],
+    color: ROUTE_COLORS.find(c => !used.has(c)) || ROUTE_COLORS[S.routes.length % ROUTE_COLORS.length],
     wps: tail, set: { ...(rt.set || SETTINGS) },
   };
   adoptTokenColor(half);      // a counter waiting at the cut names the second half too
@@ -5778,7 +5808,7 @@ function cloneRoute(i) {
   const used = new Set(S.routes.map(r => r.color));
   const copy = {
     name: nextCopyName(rt.name),
-    color: PALETTE.find(c => !used.has(c)) || rt.color,
+    color: ROUTE_COLORS.find(c => !used.has(c)) || rt.color,
     wps: rt.wps.map(w => ({ ...w })),          // waypoints carry forced-march marks; copy, don't share
     set: { ...(rt.set || SETTINGS) },
   };
@@ -7034,17 +7064,20 @@ document.getElementById('importInput').onchange = async e => {
   } catch { alert('Not a valid features.json'); }
   e.target.value = '';
 };
-document.getElementById('resetBtn').onclick = async () => {
+async function resetDrawing() {
   if (!confirm('Discard local drawing and reload data/features.json?')) return;
-  localStorage.removeItem(LS_KEY);
   const ff = await fetchFeaturesFile();
+  if (!ff) return alert('Could not load data/features.json.');
+  localStorage.removeItem(LS_KEY);
   // The fingerprint goes with it: what is in the browser is now this publication's file exactly, so the
   // next boot has no reason to think it stale.
-  if (ff) try { localStorage.setItem(FEAT_SRC_LS, ff.stamp); } catch {}
-  S.features = migrateFeatures(ff?.obj || { version: 2, features: [], labels: {}, strongholds: {} });
+  try { localStorage.setItem(FEAT_SRC_LS, ff.stamp); } catch {}
+  S.features = migrateFeatures(ff.obj);
   S.undoStack = [];
   commitFeatures();
-};
+}
+document.getElementById('resetBtn').onclick = resetDrawing;
+document.getElementById('drawResetBtn').onclick = resetDrawing;
 document.getElementById('newRoute').onclick = () => newRoute();
 document.getElementById('isoPick').onclick = () => {
   S.isoPick = !S.isoPick;
@@ -7315,7 +7348,7 @@ async function refreshLegionColours() {
 function commitTokens(opts) {
   if (!opts?.quiet) pushUndoEntry('tokens', tokensSnap ?? JSON.stringify(S.tokens), opts?.coalesce);
   tokensSnap = JSON.stringify(S.tokens);
-  renderTokens(); renderTokenList(); saveTokens();
+  renderTokens(); renderTokenList(); renderRealmPicker(); saveTokens();
 }
 
 // Two armies arriving in the same colour would defeat the point, so a new token takes the first

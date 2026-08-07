@@ -234,8 +234,8 @@
           <button class="btn" type="button" data-tool="realm">Map painting</button>
           <button class="btn" type="button" data-tool="erase">Erase</button>
         </div>
-        <!-- Only while the Map painting tool is up. Built by script from the colours each scan
-             actually uses, so the palette is whatever realms are on the map rather than a list to keep. -->
+        <!-- Only while the Map painting tool is up. Built from the scan and, for Warlords, token colours
+             so a commander can be painted before holding any ground. -->
         <div id="realmPick" hidden>
           <label class="field"><span>Paint on</span><select id="realmLayer">
             <option value="warlords">Warlords</option>
@@ -251,6 +251,7 @@
           <button class="btn" type="button" id="undoBtn">Undo</button>
           <button class="btn" type="button" id="exportBtn">Export JSON</button>
           <label class="btn file">Import<input type="file" id="importInput" accept=".json"></label>
+          <button class="btn danger" type="button" id="drawResetBtn" title="Reset the drawing to data/features.json.">Reset</button>
         </div>
         <p class="hint" id="saveInfo">Autosaved locally.</p>
         <p class="hint" data-pub>Drawing changes are saved in this browser. Use <b>Export JSON</b> to
@@ -278,7 +279,8 @@
           the active colour again removes your override. <b>Nobody</b> clears a claim from the source
           scan. Painted changes are included in the features JSON.
           <p><b>Custom colour…</b> adds a colour to the palette. <b>Pick from map</b> samples the next
-          subhex. Double-click a swatch to pan to the largest area using that colour.</p>
+          subhex. Warlords also includes colours assigned to tokens. Double-click a swatch to pan to
+          the largest area using that colour.</p>
           <p>Right-click the map to paint or clear one subhex, paint a whole commandery, undo, or clear
           all manual paint on the current layer. Commandery painting covers land only.</p>
           <p>Double-click a colour name to rename it. Colours with the same name are treated as one
