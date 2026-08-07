@@ -2298,7 +2298,7 @@ function renderRealmPicker() {
   box.innerHTML = '';
   const cols = realmPalette(layer);
   if (!cols.length) {
-    box.innerHTML = '<div class="emptynote">Switch that layer on once, so its colours are known.</div>';
+    box.innerHTML = '<div class="emptynote">Turn this layer on to load its colours.</div>';
     return;
   }
   if (realmPaint === null) realmPaint = cols[0];
@@ -5358,8 +5358,8 @@ function renderIso() {
   if (opt || relief) {
     const cap = document.createElement('div');
     cap.className = 'isocap';
-    cap.textContent = relief ? 'Days from the news dropping to the relief arriving — word out, then the march back:'
-                             : 'Day thrown away by rounding the order up:';
+    cap.textContent = relief ? 'Total days: news out, relief march back:'
+                             : 'Time lost by rounding up:';
     lg.appendChild(cap);
   }
   for (let b = 0; b < n; b++) {
@@ -5459,8 +5459,8 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
   if (!rt) { out.innerHTML = ''; return; }
   if (rt.wps.length < 2) { out.innerHTML = '<div class="hint">Add a destination hex.</div>'; return; }
   if (r.fail) {
-    out.innerHTML = `<div class="err">${rt.name}: no possible route between hex ${r.fail[0]} and hex ${r.fail[1]} with these settings ` +
-      `(water without embark or a trade route, blizzard off-road, a major river with no road across it, or weather forbids fording).</div>`;
+    out.innerHTML = `<div class="err">${rt.name}: no route between hex ${r.fail[0]} and hex ${r.fail[1]} with these settings. ` +
+      `Check water access, trade routes, river crossings, and weather.</div>`;
     return;
   }
   const game = r.irl * RULES.GAME_DAYS_PER_IRL;
@@ -5883,7 +5883,7 @@ document.getElementById('routeList').addEventListener('click', e => {
 
 function renderRouteList(results) {
   const list = document.getElementById('routeList');
-  list.innerHTML = S.routes.length ? '' : '<div class="emptynote">No routes yet — click a hex, or right-click one and Start a route here.</div>';
+  list.innerHTML = S.routes.length ? '' : '<div class="emptynote">No routes yet. Click a hex to start one.</div>';
   S.routes.forEach((rt, i) => {
     const div = document.createElement('div');
     div.className = 'rtitem' + (i === S.activeRoute ? ' on' : '');
@@ -6706,7 +6706,7 @@ function pickCoastSide(f, wx, wy) {
   f.seaPt = [wx, wy];    // exact clicked point — authoritative for the split
   S.coastPickFor = null;
   commitFeatures();
-  document.getElementById('saveInfo').textContent = `Sea set to the ${f.seaLeft ? 'left' : 'right'} of the coastline. Coast-tool click near a coast re-picks.`;
+  document.getElementById('saveInfo').textContent = `Sea set to the ${f.seaLeft ? 'left' : 'right'} of the coast. Click near the coast to change it.`;
 }
 function renderDrawing(cursor) {
   groups.edit.innerHTML = '';
@@ -7146,7 +7146,7 @@ function buildLayerUI() {
     row.innerHTML = `<label><input type="checkbox" ${L.def > 0 ? 'checked' : ''}> ${L.name}</label>
       <input type="range" min="0" max="1" step="0.05" value="${L.def || 1}">
       ${L.names ? `<button class="nam" title="${escHtml(L.names)}">A</button>` : ''}
-      ${LOCAL ? `<button class="inv" title="Invert this layer's colours — dark reference scans become light lines you can trace against">◐</button>` : ''}`;
+      ${LOCAL ? `<button class="inv" title="Invert the reference layer for easier tracing.">◐</button>` : ''}`;
     const [chk, rng] = row.querySelectorAll('input');
     const inv = row.querySelector('.inv');
     const nmb = row.querySelector('.nam');
@@ -8598,8 +8598,8 @@ function showPane(name, opts) {
   const ip = document.getElementById('isoPick');
   if (ip) {
     ip.classList.toggle('on', name === 'iso');
-    ip.title = name === 'iso' ? 'Clicking the map already sets the origin while this panel is open'
-                              : 'Then click the hex the shading should spread from';
+    ip.title = name === 'iso' ? 'Click or drag the map origin.'
+                              : 'Choose the origin on the next map click.';
   }
   if (!opts?.keepShut) openPanel();
   saveUI();
@@ -8930,7 +8930,7 @@ function renderRouteButtons(results) {
     const tm = r ? (r.fail ? '✗' : r.irl.toFixed(1) + 'd') : rt.wps.length + ' wp';
     b.innerHTML = `<span class="sw" style="background:${escHtml(rt.color)}"></span>` +
                   `<span class="nm">${escHtml(rt.name)}</span><span class="tm">${tm}</span>`;
-    b.title = `Show ${rt.name} — its column, conditions and step list. Right-click for more.`;
+    b.title = `Show ${rt.name}. Right-click for route actions.`;
     b.onclick = () => {
       if (act) return hideCard();
       S.activeRoute = i;

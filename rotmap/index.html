@@ -95,25 +95,15 @@
         <div id="routeList"></div>
         <details class="hint">
           <summary>How routing works</summary>
-          Click hexes to add waypoints to the active route, and <b>drag a waypoint marker</b> to move that
-          stop — the march re-solves live for the subhex you are holding it over, before you let go, and
-          that hex is outlined so there is no doubt where it will land. A stop in the middle of a route could only be changed by taking the
-          whole tail off behind it before. A press that does not move does nothing, so there is no risk of
-          planting a second stop on top of the one you meant to pick up. <b>Right-click</b> a hex to add one there
-          without clicking the map at all — which is how you keep building a route while another panel
-          has the map's clicks, the Isochrone one especially — or to start a fresh route there, or to
-          remove the last waypoint from this one; right-click a hex the route stops in to remove that
-          waypoint, wherever it sits in the route. <b>Remove last</b> does the same
-          for touchscreens, where there is no right button. <b>Ctrl+Z</b> undoes. Click a route's
-          swatch to recolour it, and <b>double-click the row for its hex breakdown</b> — the step table is what
-          a route is for, and it had no way in from here. Renaming is in its <b>⋯</b> menu; that menu — or a right-click
-          on the row, or on the <b>title bar of the breakdown card</b>, which describes the same route
-          — will rename it, duplicate it, empty it of waypoints, or copy its march and its column to the
-          clipboard as text you can keep and paste back. A route that sets out from a hex a
-          <b>token</b> is standing on takes that token's colour, so a legion's march is drawn in the
-          legion's own colour. In the readout, <b>right-click a
-          step</b> to force the march from there, end the push, or split the route in two at that hex
-          — each plants a waypoint, since the pace is solved leg by leg.
+          Click hexes to add waypoints. Drag a waypoint to move it; the route updates while you drag.
+          <b>Right-click</b> a hex for route actions, including adding or removing a waypoint and starting
+          a new route. <b>Remove last</b> is the touch-friendly way to remove the final waypoint.
+          <b>Ctrl+Z</b> undoes.
+          <p>Click a route to select it, click its swatch to recolour it, and double-click its row to open
+          the step table. The <b>⋯</b> menu renames, duplicates, clears, copies, or pastes a route. A route
+          starting under a token uses that token's colour.</p>
+          <p>In the step table, right-click a step to start or end a forced march, or to split the route
+          there.</p>
         </details>
       </div>
 
@@ -134,7 +124,7 @@
           <option value="rumour">Rumour — 90 mi/day, straight line</option>
           <option value="relief">Relief army — news spread and army travel</option>
         </select></label>
-        <label class="field" id="isoNewsWrap" hidden title="How word of it gets out — a siege, a battle, a landing, whatever is happening at the origin. Either way the news travels as the crow flies; the march back is pathfound."><span>News travels by</span><select id="isoNews">
+        <label class="field" id="isoNewsWrap" hidden title="News travels in a straight line at the selected speed. The relief march is pathfound."><span>News travels by</span><select id="isoNews">
           <option value="rumour">Rumour — 90 mi/day</option>
           <option value="message">Message — 240 mi/day</option>
         </select></label>
@@ -142,35 +132,23 @@
           <label class="field" id="isoBandWrap"><span>Band (IRL days)</span><input type="number" id="isoBand" value="1" step="0.5" min="0.25"></label>
           <label class="field" id="isoMaxWrap"><span id="isoMaxLbl">Max days</span><input type="number" id="isoMax" value="7" step="1" min="1"></label>
         </div>
-        <label class="chk" id="isoOptWrap" title="Orders are issued in whole days, so a march costing 3.2 days is paid for as 4 and the last 0.8 is thrown away. This shades every hex by how much of its final day it wastes, not by how far it is."><input type="checkbox" id="isoOpt"> Optimizer — shade by wasted day</label>
+        <label class="chk" id="isoOptWrap" title="Shade by the unused part of the final ordered day. A 3.2-day march wastes 0.8 days of a 4-day order."><input type="checkbox" id="isoOpt"> Optimizer — shade by wasted day</label>
         <div class="btnrow">
-          <button class="btn" type="button" id="isoAdd" title="Another origin, with its own colour and its own column. Contested ground goes to whichever origin reaches it first.">Add origin</button>
-          <button class="btn" type="button" id="isoPick" title="Then tap the hex to move the selected origin to.">Move origin</button>
+          <button class="btn" type="button" id="isoAdd" title="Add an origin with its own colour and column.">Add origin</button>
+          <button class="btn" type="button" id="isoPick" title="Move the selected origin on the next map tap.">Move origin</button>
           <button class="btn danger" type="button" id="isoClear">Clear all</button>
         </div>
         <div id="isoList"></div>
         <div id="isoLegend"></div>
         <details class="hint">
           <summary>How the isochrone works</summary>
-          While this panel is open, <b>clicking the map moves the selected origin</b>, and <b>dragging an
-          origin marker recalculates its reach live</b> before you let go — no waypoints are placed.
-          Elsewhere, <b>Shift</b>+click does the same. <b>Right-click</b> a hex to make a
-          new origin there, move the selected one, remove the one standing on it, or clear the lot —
-          the same three things this list offers, put where you are already pointing. The route
-          entries are on that menu too, so you can go on <b>adding waypoints</b> to a march while the
-          shading you are plotting it against stays up. With more than one origin each area
-          is <b>outlined in its own colour</b>, and contested ground goes to whichever origin reaches
-          it in fewer days; hovering a hex names the runner-up and says by how much it lost. Click an
-          origin's swatch to recolour it, double-click its name to rename; its <b>⋯</b> menu (or a
-          right-click on the row) will move it, duplicate it, or copy and paste its column. Each
-          origin marches under <b>its own column</b>, set below — so the line between two of them
-          moves if you change either force.
-          <p>Shading is by <b>subhex</b>, not by hex: where a coast or a major river has cut a hex in
-          two, each half is asked separately and only the half that can actually be reached is shaded.
-          A bay a fleet can enter no longer lights up the shore an army can't march to. Water is shaded only for a column that could
-          actually be afloat: one with a fleet, or with leave to go and secure one. A column with
-          neither is landlocked, and open sea is left out of its shading altogether. Whether the days
-          stretch to the seven a fleet costs is the search's business, not a separate guess.</p>
+          Click the map to move the selected origin. Drag an origin to update its reach live.
+          Outside this panel, <b>Shift</b>+click moves it. Right-click a hex to add, move, or remove an
+          origin. Each origin has its own colour and column settings.
+          <p>With several origins, each subhex belongs to the one that reaches it first. Hover to see the
+          runner-up and the time difference. Use an origin's swatch, name, or <b>⋯</b> menu to edit it.</p>
+          <p>Coasts and major rivers can split a hex into separate subhexes. Only reachable subhexes are
+          shaded. Open water is shown only if the column has a fleet or may secure one.</p>
         </details>
       </div>
 
@@ -179,48 +157,29 @@
       <!-- Why the column controls have gone. One line, and it stays visible: a fold would hide the
            answer to the question the missing boxes have just raised. -->
       <div class="group" id="isoNotArmy" hidden>
-        <p class="hint">No column here — a message and a rumour travel as the crow flies, so nothing
-        about the force that carries them changes the answer.</p>
+        <p class="hint">Messages and rumours travel in a straight line, so column settings do not apply.</p>
       </div>
 
       <!-- Shown only in relief mode, where the origin means something quite different from the
            other three: it is where the trouble is, not the force setting out. -->
       <div class="group" id="isoReliefNote" hidden>
-        <p class="hint">The origin is <b>where it is happening</b> — a siege, a battle, a landing;
-        what is shaded is where you could station a force and still have it arrive in time.</p>
+        <p class="hint">Place the origin at the siege, battle, or landing. Shading shows where a relief
+        force could start and still arrive within the time limit.</p>
         <details class="hint">
           <summary>How a relief army works</summary>
-          The place to be relieved is the <b>subhex</b> the origin stands on, taken exactly as placed
-          — on a hex a coast or a major river has cut up, that is the half you clicked, water
-          included, and the tooltip's header names which. Relief is then costed to <i>that</i> piece
-          of ground: a force can be a hex away and still pay a day to reach a bay its ships cannot
-          enter from where they are.
-          <p>Two journeys in opposite directions, not one. News of it reaches the force as the crow
-          flies, at the speed set above; then the column marches back over the roads, under the column
-          and conditions set below. A hex is shaded by the <b>total</b> — a 1-day rumour and a 3-day
-          march is a 4 — and hovering it breaks that back out into its two legs, with the unrounded
-          figures in brackets, since which leg is eating the budget is what you can do something
-          about. A hex held back by the march wants a road; one held back by the news wants a courier
-          posted rather than a garrison moved.</p>
-          <p><b>Each leg is billed in whole days, and then they are added.</b> Word arriving in the
-          afternoon still costs that day, and the column forms up and sets out on the next one; so
-          half a day of riding and half a day of marching are two days here, not one, and nothing but
-          the origin's own hex can come in under two.</p>
-          <p>The march is costed <b>inwards</b>, in the direction it is actually made. A hex is paid
-          for by the step that enters it, so relieving a fortress in the mountains pays the mountain
-          on the way in — a march solved outward from the origin would never pay it at all — and the
-          force sets out under the column of the hex it is standing in.</p>
+          The selected subhex is the destination. News travels outward in a straight line; the relief
+          force then marches back using the selected column and conditions. The shaded time is the sum
+          of both legs. Hover a subhex to see the split.
+          <p>Each leg is rounded up to a whole day before they are added. Half a day for the news and
+          half a day for the march therefore costs two days.</p>
+          <p>The return march is calculated toward the origin, so destination terrain and one-way costs
+          are charged correctly.</p>
         </details>
         <details class="hint"><summary>How long you actually have</summary>
-        <p>For a siege, the clock does not stop when the walls do. Taking a stronghold in hand after
-        it falls costs <b>5 in-game days</b> for a fortress — <b>1 IRL day</b> — while a town takes
-        <b>1d6 × 5</b> (1–6 IRL days, 3½ on average) and a city <b>2d6 × 5</b> (2–12 IRL days, 7 on
-        average). Add however long you expect the place to hold out before that, and you have the real
-        budget: a force that arrives while the enemy is still counting the grain has not arrived late.</p>
-        <p>For a battle it is whatever you judge the line can hold for, which the map cannot tell you.
-        The <b>4 days</b> this opens on is a working default, not a rule — set it to whatever the
-        thing in front of you is worth, and remember that a town's 1d6 is a gamble you are making
-        before the roll: 4 covers a town two times in three.</p>
+        <p>For a siege, add the expected siege length to the time needed to secure the stronghold after
+        it falls: <b>1 IRL day</b> for a fortress, <b>1d6</b> for a town, or <b>2d6</b> for a city.</p>
+        <p>For a battle, set the time to however long you expect the line to hold. The default of
+        <b>4 days</b> is only a starting estimate.</p>
         </details>
       </div>
     </section>
@@ -229,7 +188,7 @@
     <section class="pane" data-pane="tokens">
       <div class="group">
         <div class="btnrow">
-          <button class="btn" type="button" id="tokPlace" title="Then tap the hex to mark">Place token</button>
+          <button class="btn" type="button" id="tokPlace" title="Place a token on the next map tap.">Place token</button>
           <button class="btn danger" type="button" id="tokClear">Clear all</button>
         </div>
         <div id="tokenList"></div>
@@ -238,34 +197,22 @@
       <div class="group">
         <h2>Board</h2>
         <div class="btnrow">
-          <button class="btn" type="button" id="tokStart" title="Reload the positions shipped with the map (data/tokens.json)">Starting positions</button>
+          <button class="btn" type="button" id="tokStart" title="Reset all tokens to the shipped starting positions.">Starting positions</button>
           <button class="btn" type="button" id="tokExport">Export</button>
           <label class="btn file">Import<input type="file" id="tokImport" accept=".json"></label>
         </div>
-        <p class="hint">Tokens are yours alone — kept in this browser, never part of the map's own
-        data — so <b>Export</b> is how you keep or hand on a position. A fresh browser starts from
-        the legion positions shipped with the map. When the map's legion colours change, counters already
-        on your board are <b>recoloured to match without being moved</b> — your position is yours, the
-        colours are the map's — and one <b>Ctrl+Z</b> puts the old ones back if you preferred them.
-        <b>Starting positions</b> reloads the shipped board outright, positions and all.</p>
+        <p class="hint">Token positions are saved in this browser. Use <b>Export</b> to keep a backup or
+        share them. Legion colour updates recolour matching tokens without moving them; <b>Ctrl+Z</b>
+        restores the previous colours. <b>Starting positions</b> resets all tokens to the shipped board.</p>
       </div>
 
       <details class="hint">
         <summary>How tokens work</summary>
-        <b>Right-click</b> a hex and choose <b>Mark as</b> to drop a counter on it — I to XIV, or text
-        of your own. A counter's own menu — rename, commander, colour, split off, delete — is offered
-        while <b>this panel is open</b>, and not otherwise: with it shut, a counter on the hex you are
-        marching from is scenery, and the hex under it is what the right button should be about.
-        A counter named after a legion arrives <b>in that legion's colour</b>, the same
-        colour the Warlords map paints its ground, so a counter and the territory under it match; its
-        detachments wear it too, being part of the same command. A counter named anything else takes one
-        of the five colours no warlord uses, so a baggage train never reads as somebody's legion. After
-        that: <b>click</b> it to cycle its colour, <b>drag</b> it to another hex,
-        <b>right-click</b> it to rename, recolour, <b>split off</b> a detachment (V → V'a → V'b) or
-        remove. The rows above answer the right button the same way. <b>Ctrl+Z</b> takes back a
-        placement, a move, a colour or a deletion — one stack shared with the routes and the drawing,
-        so it always undoes whatever you did last. On a touchscreen, press <b>Place token</b> and then
-        tap a hex; hold a token for its menu.
+        Right-click a hex and choose <b>Mark as</b>, or press <b>Place token</b> and tap a hex.
+        Legion tokens use their legion's Warlords colour; other tokens use a separate palette.
+        <p><b>Drag</b> a token to move it. While this panel is open, right-click a token to rename,
+        recolour, split, or delete it. On touchscreens, hold the token for this menu. <b>Ctrl+Z</b>
+        undoes token, route, and drawing changes in the order they were made.</p>
       </details>
     </section>
 
@@ -306,122 +253,58 @@
           <label class="btn file">Import<input type="file" id="importInput" accept=".json"></label>
         </div>
         <p class="hint" id="saveInfo">Autosaved locally.</p>
-        <p class="hint" data-pub>Everything here is <b>yours alone</b> — kept in this browser, never
-        sent anywhere and never seen by anyone else opening the map. <b>Export JSON</b> is how you
-        keep a copy or hand your painting on.</p>
+        <p class="hint" data-pub>Drawing changes are saved in this browser. Use <b>Export JSON</b> to
+        back them up or share them.</p>
       </div>
 
       <div class="group">
         <h2>Using the tools</h2>
         <details class="hint" data-dev>
           <summary>Placing points</summary>
-          Click to add snapped points — corners, edge midpoints, centres, sub-points, and the vertices
-          of features you have already drawn, so new lines connect precisely — at most one hex ahead
-          per click, so nothing gets skipped. <b>Enter</b> or double-click finishes, <b>Esc</b>
-          cancels, <b>Ctrl+Z</b> undoes. Hold <b>Alt</b> for free placement, or <b>E</b> to snap
-          anywhere along the nearest hex edge.
+          Click to add snapped points. A new point may be at most one hex from the last.
+          <b>Enter</b> or double-click finishes; <b>Esc</b> cancels; <b>Ctrl+Z</b> undoes.
+          Hold <b>Alt</b> for free placement or <b>E</b> to snap along the nearest edge.
         </details>
         <details class="hint" data-dev>
           <summary>Coast</summary>
-          Locked to a single hex: the first click picks the hex, and points snap only to that hex's
-          corners, edges, centre and sub-points (hold <b>E</b> to snap anywhere along an edge). Points
-          also snap back onto <b>the line you are drawing</b> — once you have three, the starting node
-          turns into a teal ring, and clicking it closes the loop and finishes the line. That is how
-          you draw an <b>island smaller than a hex</b>. Then <b>click the side that is sea</b>. Coast
-          lines act as barriers, so two coasts can enclose an inner sea; works on land and sea hexes
-          alike. <b>Shift</b>+click a coast later to re-pick its sea side.
+          A coast stays within the first hex you click. Add its points, then click the sea side.
+          Click the starting point after at least three points to close a loop, such as a small island.
+          Hold <b>E</b> to snap anywhere along an edge. <b>Shift</b>+click an existing coast to change
+          which side is sea.
         </details>
         <details class="hint">
           <summary>Map painting</summary>
-          Paint who holds a subhex, on the Borders or the Warlords layer. Reaching for the tool
-          <b>switches that layer on</b> if it was off — you cannot paint a map you cannot see. The
-          first time it does, the Layers panel opens with the row it ticked flashing, so it is clear
-          what changed and where to change it back; after that it switches the layer on quietly. The palette is whatever
-          colours that scan actually uses, commonest first, named where the names are known — so a
-          realm added to a scan turns up here on its own. Click to paint, <b>drag to sweep</b>, and
-          click the same colour again to lift it and let the scan speak. <b>Nobody</b> clears ground
-          the scan claims, which nothing else can do. A hand-painted subhex beats the scan, the spit
-          inheritance and the warlords overlay alike, and travels in your features JSON.
-          <br><b>Custom colour…</b> mixes one the scan never used — for a realm that did not exist
-          when the scan was drawn — opening on whatever is currently loaded, since mixing is usually
-          an adjustment. It joins the palette straight away, so it can be picked up again without
-          reopening the dialog. <b>Double-click a swatch</b> to take the map to that colour — to the middle
-          of the largest piece of ground it holds, panning only, never zooming. The palette is read off
-          the paint, so everything in it is somewhere; but a wash of two subhexes on a coast three screens
-          away is a colour you can select and then not find. <b>Pick from map</b> arms the dropper: the next click loads the colour
-          under it instead of painting, reading what the map is <i>showing</i> there — an override, an
-          inherited spit and a warlord over the borders all answer alike. Ground nobody holds picks up
-          Nobody. Esc disarms.
-          <br><b>Right-click the map</b> while this tool is in hand for the things that act on what you are
-          pointing at: <b>Paint</b> puts the loaded colour on this subhex, <b>Paint commandery</b> puts it
-          over the whole province — one instruction for "this province is his now", and one Ctrl+Z
-          to take it back — rub this subhex out, undo, or drop every hand-painted colour on the layer and
-          let the scan speak again. A commandery covers the *land* it holds, so painting one stops at the
-          coast and leaves the bay in a shore hex alone.
-          <br><b>Double-click a colour's name to rename it.</b> The Warlords scan ships with a legend
-          of ten; the Borders washes have none and go by their hex code until you say otherwise. A name
-          is kept per layer and per colour, beats the legend, and shows in the hover readout as well as
-          the palette — clear the text to fall back to the legend, then to the hex. Names travel in
-          your features JSON with the paint. <b>Give two or more colours the same name and they are
-          labelled as one polity</b> — which is how a federation is made: the name is laid once across
-          the whole of their combined ground rather than repeated on each member, and it follows the
-          shape of the union. The swatches stay separate, since you still paint with them one at a time,
-          and each says in its tooltip how many colours share its name. On the readout <b>Borders speaks
-          only where you have named a wash</b> — unnamed, it would be a hex code, which tells nobody anything — plus the
-          realms that appear there in their own colour rather than the empire's, which today means the
-          Blue Scarves. Name a polity once and every hex of it answers from then on.
-          <br>A named realm can also be <b>written across its own ground</b>. The <b>A</b> button on the
-          Borders and Warlords rows of the Layers panel lays each name along the land it holds — fitted
-          to the shape, so it runs the length of the country and bends with it rather than sitting
-          straight across the middle. Only named colours appear, which makes this a third reading of the
-          same names the palette and the readout give. A realm split by sea gets its name on each piece
-          large enough to carry it, and where two names would land on top of one another the larger
-          upper layer keeps its and the other yields — first by being set smaller, and only then by going
-          without, since a name nudged aside to fit would be labelling somebody else's country. With
-          Warlords up, a legion's name beats the name of the imperial ground it sits on: the paint you
-          can see there is the legion's, so the name should be too. A name the two layers share, like
-          the Blue Scarves, is written once. Off by default: the layer is already colouring this ground, and the
-          lettering is a second answer to a question you may not be asking.
-          <br><b>Locally</b> there is a <b>Realm labels</b> panel on the rail, which is where all of this
-          is actually decided. Eight ways of finding the line a name is written along — a straight axis,
-          a parabola, a fitted arc, arcs all sharing one distant centre, and four kinds of walk along the
-          country's own spine — and a slider for every threshold in the fitting, answering live as you
-          drag. It also says what the last fit did: how many names were drawn, how many were dropped for
-          colliding, and which algorithm each one came from. The face and the ink are on the same panel;
-          three of the faces are fetched from the web and are auditions only, requested the first time
-          you pick one and never otherwise. None of it exists on the published map, which takes the
-          defaults — the settings this panel was used to arrive at.
+          Choose Borders or Warlords, then click to paint a subhex or drag to paint several. Selecting
+          the active colour again removes your override. <b>Nobody</b> clears a claim from the source
+          scan. Painted changes are included in the features JSON.
+          <p><b>Custom colour…</b> adds a colour to the palette. <b>Pick from map</b> samples the next
+          subhex. Double-click a swatch to pan to the largest area using that colour.</p>
+          <p>Right-click the map to paint or clear one subhex, paint a whole commandery, undo, or clear
+          all manual paint on the current layer. Commandery painting covers land only.</p>
+          <p>Double-click a colour name to rename it. Colours with the same name are treated as one
+          polity for map labels, while remaining separate paint colours. Clear a custom name to use
+          the built-in legend again.</p>
+          <p>The <b>A</b> button on the Borders and Warlords layer rows shows realm names on the map.
+          The local <b>Realm labels</b> panel controls their fitting, font, and collision settings.</p>
         </details>
         <details class="hint" data-dev>
           <summary>Stronghold</summary>
-          Click to place or restore the marker within its hex; <b>Shift</b>+click
-          toggles coastal/port — a blue ring means a port, where embarking and disembarking are
-          possible. A hex's right-click menu sets the <b>class</b>: ordinary, <b>fortress</b> (the same
-          marker with a purple square set inside the white), or major (the same marker drawn larger).
-          Size is a degree and the square is a kind, so the two say different things and only one class
-          holds at a time. Sea- and river-side strongholds are ports by default, and Shift+click overrides
-          that either way for the exceptions.
+          Click to place or restore a stronghold. <b>Shift</b>+click toggles port status; ports have a
+          blue ring. Right-click the hex to set it as ordinary, fortress, or major. Strongholds beside
+          the sea or a major river are ports by default.
         </details>
         <details class="hint">
           <summary>Label</summary>
-          Click any hex to name or rename it, which works on datasheet strongholds too; clear the text
-          to fall back to the datasheet name. A commandery is named for the grandest settlement inside
-          it, so renaming the right stronghold renames the commandery around it.
-          <br>The names come off the map without the markers: the <b>A</b> button on the Strongholds row
-          of the Layers panel switches the lettering alone, leaving every disc where it was. On by
-          default — a stronghold you cannot name is of limited use — but on a crowded stretch of coast
-          it is the names that collide rather than the markers, and reading the shape of the ground is
-          easier with them off. They are drawn <b>under</b> the realm lettering: a town's name is the
-          name of a place, a realm's is a claim on a whole stretch of ground, and the larger claim reads
-          over the smaller. The markers themselves stay on top of both, being small and being what you
-          click.
+          Click a hex to name or rename it. Clear the text to restore the datasheet name. Commandery
+          names follow their highest-ranked settlement.
+          <p>The <b>A</b> button on the Strongholds layer toggles names without hiding the markers.
+          Stronghold names are drawn below realm names.</p>
         </details>
         <details class="hint">
           <summary>Erase</summary>
-          Click a node to remove just it, click between nodes to cut that segment (which splits the
-          line), <b>Shift</b>+click to remove a whole line, or <b>drag</b> across the map to wipe
-          features and strongholds as you go. Clicking a stronghold marker removes it — <b>including
-          datasheet strongholds</b>, which are hidden persistently; Ctrl+Z brings them back.
+          Click a node to remove it, click a segment to cut it, or <b>Shift</b>+click to remove the
+          whole line. Drag to erase features and strongholds. Datasheet strongholds stay hidden until
+          restored or undone.
         </details>
       </div>
     </section>
@@ -440,8 +323,8 @@
     <!-- Built from the RN_FIELDS table in script rather than written out here: one row per knob, so
          adding a knob is adding a line, and the panel cannot drift out of step with what it sets. -->
     <section class="pane" data-pane="labels">
-      <p class="hint">Which line a realm's name is written along, and every threshold in the fitting.
-        Turn <b>Borders</b> or <b>Warlords</b> on with its <b>A</b> switched on, and drag.</p>
+      <p class="hint">Adjust how realm names are fitted. Turn on Borders or Warlords and its
+        <b>A</b> label switch to preview changes.</p>
       <div id="rnTuner"></div>
     </section>
 
@@ -502,9 +385,9 @@
   <!-- Outside #routeOut on purpose: that div is rewritten wholesale on every recompute, and these
        two buttons would go with it. -->
   <div class="btnrow" id="routeStepsIO">
-    <button class="btn" type="button" id="copySimple" title="Copy just the hex numbers: 948 -> 949 -> 950. Nothing else, and nothing to delete.">Copy simple</button>
-    <button class="btn" type="button" id="copyDetailed" title="Copy the whole march — every hex with its terrain, fords, ferries and where the column takes ship — under a summary line. This is what goes into written orders.">Copy detailed</button>
-    <button class="btn" type="button" id="pasteSteps" title="Read hex numbers out of pasted text and make them this route's waypoints. Everything else in the text is ignored.">Paste hexes</button>
+    <button class="btn" type="button" id="copySimple" title="Copy only the route's hex numbers.">Copy simple</button>
+    <button class="btn" type="button" id="copyDetailed" title="Copy the summary and every step, including terrain and crossings.">Copy detailed</button>
+    <button class="btn" type="button" id="pasteSteps" title="Use hex numbers from pasted text as this route's waypoints.">Paste hexes</button>
   </div>
 </div>
 
@@ -521,18 +404,18 @@
           <label class="field"><span>Noncombatants</span><input type="number" id="non" value="2500" step="100"></label>
         </div>
         <div class="btnrow">
-          <button class="btn" type="button" id="copyArmy" title="Copy this column and its conditions as one line of text, to keep somewhere and paste back later.">Copy column</button>
-          <button class="btn" type="button" id="pasteArmy" title="Read a column back out of pasted text. Anything the text does not mention returns to its default.">Paste column</button>
+          <button class="btn" type="button" id="copyArmy" title="Copy this column and its conditions as text.">Copy column</button>
+          <button class="btn" type="button" id="pasteArmy" title="Paste column settings. Unspecified values return to their defaults.">Paste column</button>
         </div>
       </div>
 
       <div class="group" id="condGroup">
         <h2>Conditions</h2>
         <!-- The detail lives in the tooltips; the labels stay short enough to scan. -->
-        <label class="chk" title="Double pace, at a cost — see the rules. Right-click a step in the readout to force only part of the march instead."><input type="checkbox" id="forced"> Forced march (whole route)</label>
-        <label class="chk" title="Marines tradition: put the army ashore anywhere, not only at a port. Taking ship still needs one."><input type="checkbox" id="marines"> Marines — land anywhere</label>
-        <label class="chk" title="This force may spend the month getting ships it does not have: +7 IRL days at a coastal or major-river port, boarding folded in. It governs nothing else — a force that already has ships boards on their account, not on this one. Turn it off for a column that will never commandeer a fleet."><input type="checkbox" id="embark" checked> Allow securing a fleet</label>
-        <label class="chk" title="This force owns ships already, so it never spends the month securing them: boarding costs the 1-day re-embark, wherever it stands and whatever the box above says. On land the ships are simply waiting in its harbour — it does not begin afloat. It begins afloat only where standing afloat is a real choice, which is a major-river subhex; on a sea subhex it is afloat regardless, and on land it cannot be. With this off, and no leave to secure a fleet either, the isochrone leaves sea subhexes out of the shading altogether — a column that can never be afloat has nowhere at sea to be. Given that leave, water shows as soon as the days stretch to the month it costs."><input type="checkbox" id="fleet"> Start as fleet</label>
+        <label class="chk" title="Use forced pace for the whole route. Right-click a step to force only part of it."><input type="checkbox" id="forced"> Forced march (whole route)</label>
+        <label class="chk" title="May land anywhere. Embarking still requires a port."><input type="checkbox" id="marines"> Marines — land anywhere</label>
+        <label class="chk" title="May secure ships at a sea or major-river port for 7 IRL days."><input type="checkbox" id="embark" checked> Allow securing a fleet</label>
+        <label class="chk" title="Starts with ships. Re-embarking costs 1 day; marching inland leaves the ships behind."><input type="checkbox" id="fleet"> Start as fleet</label>
         <label class="chk" title="Trade routes are used by default. They run end to end only, with no stops in between."><input type="checkbox" id="noTrade"> Avoid trade routes</label>
         <label class="field"><span>Weather</span><select id="weather">
           <option value="clear">Clear / light rain / hot</option>
