@@ -83,7 +83,7 @@ const LAYERS = [
   // implies. It needs no place above the sea fills, since it never paints water.
   // The Borders map draws the warlords' doing over the realms' own claims, so it needs that scan as
   // well — read here whether or not the Warlords layer is ever switched on.
-  { id: 'borders',  name: 'Borders',        def: 0, names: 'Realm names — the name each colour has been given, laid across the ground it holds', lazy: async () => {
+  { id: 'borders',  name: 'Borders',        def: 0, names: 'Realm names — the name each colour has been given, laid across the ground it holds', nameDef: true, lazy: async () => {
       await loadRealmScan('warlords', 'ref/warlords.png');
       await loadRealmScan('borders', 'ref/Borders_clean.png');
     } },
@@ -91,7 +91,7 @@ const LAYERS = [
   // that with both on, the warlord's claim is the one you see and the realm beneath shows only where
   // no warlord has taken it — which is the comparison the pair exists to make. It leaves nine tenths
   // of the map transparent, so most of Borders goes on showing through regardless.
-  { id: 'warlords', name: 'Warlords',       def: 0, names: 'Warlord names — the name each colour has been given, laid across the ground it holds', lazy: () => loadRealmScan('warlords', 'ref/warlords.png') },
+  { id: 'warlords', name: 'Warlords',       def: 0, names: 'Warlord names — the name each colour has been given, laid across the ground it holds', nameDef: true, lazy: () => loadRealmScan('warlords', 'ref/warlords.png') },
   // The thematic ref scans are underlays: over the terrain but under everything you draw, so your
   // own line always sits on top of the scan you traced it from. The Classic map is the exception —
   // see below.
