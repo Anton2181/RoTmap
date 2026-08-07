@@ -5346,8 +5346,12 @@ function renderIso() {
     if (og.h == null) return;
     const [ox, oy] = nodePoint(og.h, og.ri | 0);
     const act = i === S.iso.active;
+    // Origins are controls as well as symbols. A transparent disc makes the small ring easy to grab;
+    // the visible circle ignores pointer events so the group owns the whole gesture consistently.
+    const g = el('g', { 'data-iso-origin': i, style: 'cursor:grab' }, groups.iso);
+    el('circle', { cx: ox, cy: oy, r: (act ? 6.5 : 5.5) + 4, fill: 'transparent', stroke: 'none' }, g);
     el('circle', { cx: ox, cy: oy, r: act ? 6.5 : 5.5, fill: '#fff', stroke: og.color,
-                   'stroke-width': act ? 2.8 : 2 }, groups.iso);
+                   'stroke-width': act ? 2.8 : 2, 'pointer-events': 'none' }, g);
   });
   // Waste is not a distance, and five chips reading "0.4–0.6 d" would be taken for one if left
   // unlabelled beside the band legend they replace.
@@ -5374,7 +5378,7 @@ function renderIso() {
   }
 }
 
-function computeRoute({ preview = false } = {}) {
+function computeRoute({ preview = false, previewIso = false } = {}) {
   const out = document.getElementById('routeOut');
   groups.route.innerHTML = '';
   // A waypoint drag temporarily moves a stop so the answer can follow the pointer. It must not
@@ -5399,7 +5403,7 @@ function computeRoute({ preview = false } = {}) {
   // entirely, so for those the two origins differ only in where they stand. Relief keeps its two
   // legs alongside the total, because the total on its own does not say which of them is the
   // constraint — and that is the whole of what you do about it.
-  if (!preview) {
+  if (!preview || previewIso) {
     S.iso.parts = [];
     S.iso.data = S.iso.origins.map((og, i) => {
       if (og.h == null) return null;
@@ -5947,6 +5951,7 @@ function saveRoutes() {
 let pan = null, downPos = null, spaceHeld = false, edgeSnap = false;
 let tokDrag = null;   // { t, g, p, dx, dy, moved, target } while a token is under the pointer
 let wpDrag = null;    // route/waypoint, original stop and live preview while its marker is dragged
+let isoDrag = null;   // origin index, original node and live reach preview while its marker is dragged
 // The click that puts an open context menu away does nothing else — it must not also drop a waypoint
 // on whatever hex happened to be under it.
 let ctxDismiss = false;
@@ -6067,6 +6072,21 @@ svg.addEventListener('pointerdown', e => {
     tooltip.hidden = true; groups.hover.innerHTML = '';   // a new touch puts the last readout away
     startLongPress(e);
   }
+  /* An isochrone origin behaves like a one-point route: grab the marker itself, preview every subhex
+     it crosses, and do not let the underlying map click move some other selected origin as well. */
+  const grabbedIso = (e.button === 0 && !spaceHeld && S.mode !== 'draw')
+    ? e.target.closest?.('[data-iso-origin]') : null;
+  if (grabbedIso) {
+    const oi = +grabbedIso.dataset.isoOrigin, og = S.iso.origins[oi];
+    if (og?.h != null) {
+      isoDrag = { oi, g: grabbedIso, p: nodePoint(og.h, og.ri | 0), moved: false, target: null,
+                  original: { h: og.h, ri: og.ri | 0 }, oldActive: S.iso.active,
+                  previewKey: `${og.h}:${og.ri | 0}`, snapshot: snapRoutes() };
+      S.iso.active = oi;
+      svg.setPointerCapture(e.pointerId);
+      return;
+    }
+  }
   /* A press on a waypoint marker belongs to that waypoint, the same way a press on a counter belongs to
      the counter: it never pans, never draws, never plants a second waypoint on top of the first. Taken
      before the token test only because the two cannot overlap — a marker and a counter in one hex sit at
@@ -6119,6 +6139,36 @@ svg.addEventListener('pointermove', e => {
   // Sliding before the hold has registered is panning: the press has stopped being a long one.
   if (longPress && downPos && Math.hypot(e.clientX - downPos[0], e.clientY - downPos[1]) > tapSlop(e)) cancelLongPress();
   if (pinch) { if (ptrs.size >= 2) movePinch(); return; }
+  if (isoDrag) {
+    if (!isoDrag.moved && downPos && Math.hypot(e.clientX - downPos[0], e.clientY - downPos[1]) <= tapSlop(e)) return;
+    isoDrag.moved = true;
+    cancelLongPress();
+    const [wx, wy] = toWorld(e);
+    const h = nearestHex(wx, wy);
+    isoDrag.target = (h && S.hexes[h].t !== 'N/A') ? { h, ri: regionAt(h, [wx, wy]) } : null;
+    const key = isoDrag.target ? `${isoDrag.target.h}:${isoDrag.target.ri | 0}` : 'off-map';
+    if (key !== isoDrag.previewKey) {
+      const og = S.iso.origins[isoDrag.oi];
+      if (og) {
+        const at = isoDrag.target || isoDrag.original;
+        og.h = at.h; og.ri = at.ri | 0;
+        isoDrag.previewKey = key;
+        computeRoute({ preview: true, previewIso: true });
+        // The reach redraw replaces the marker group; keep its replacement under the pointer.
+        isoDrag.g = groups.iso.querySelector(`[data-iso-origin="${isoDrag.oi}"]`);
+        isoDrag.p = nodePoint(og.h, og.ri | 0);
+      }
+    }
+    isoDrag.g?.setAttribute('transform', `translate(${(wx - isoDrag.p[0]).toFixed(2)} ${(wy - isoDrag.p[1]).toFixed(2)})`);
+    groups.hover.innerHTML = '';
+    tooltip.hidden = true;
+    if (isoDrag.target) {
+      const [cx, cy] = hexCenter(isoDrag.target.h);
+      el('path', { d: hexPath(cx, cy), fill: 'rgba(255,255,255,.10)', stroke: '#fff',
+                   'stroke-width': 1.8, 'pointer-events': 'none' }, groups.hover);
+    }
+    return;
+  }
   if (wpDrag) {
     if (!wpDrag.moved && downPos && Math.hypot(e.clientX - downPos[0], e.clientY - downPos[1]) <= tapSlop(e)) return;
     wpDrag.moved = true;
@@ -6207,6 +6257,29 @@ svg.addEventListener('pointerup', e => {
   // press held long enough to have been asking about the hex instead.
   const afterPinch = !!pinch || tapDead || longPressed;
   dropPointer(e);
+  if (isoDrag) {
+    const d = isoDrag;
+    isoDrag = null;
+    pan = null; downPos = null;
+    groups.hover.innerHTML = '';
+    const og = S.iso.origins[d.oi];
+    if (d.moved && d.target && og) {
+      const changed = d.original.h !== d.target.h || d.original.ri !== (d.target.ri | 0);
+      if (changed) {
+        // Carry the exact pre-drag state. The ambient routesSnap can predate a saved-state load and
+        // is therefore not a safe description of where this particular gesture began.
+        pushUndoEntry('routes', d.snapshot);
+        routesSnap = null;
+        og.h = d.target.h; og.ri = d.target.ri | 0;
+        computeRoute();
+        return;
+      }
+    }
+    if (og) { og.h = d.original.h; og.ri = d.original.ri; }
+    // A click selects without moving; an off-map release cancels the provisional position.
+    computeRoute();
+    return;
+  }
   if (wpDrag) {
     const d = wpDrag;
     wpDrag = null;
@@ -6315,6 +6388,13 @@ svg.addEventListener('pointercancel', e => {
   if (!ptrs.size) {
     pan = null; tapDead = false; longPressed = false; S.dragErase = null; downPos = null;
     if (tokDrag) { tokDrag = null; renderTokens(); groups.hover.innerHTML = ''; }
+    if (isoDrag) {
+      const d = isoDrag; isoDrag = null;
+      const og = S.iso.origins[d.oi];
+      if (og) { og.h = d.original.h; og.ri = d.original.ri; }
+      S.iso.active = d.oldActive;
+      computeRoute(); groups.hover.innerHTML = '';
+    }
     // Same for a waypoint the pointer was lost from — a cancelled drag has to put the marker back, and
     // recomputing is what clears the transform it was following the pointer with.
     if (wpDrag) {
