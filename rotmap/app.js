@@ -2272,11 +2272,7 @@ function tokenRealmColours() {
     const base = tokenBase(parent.label);
     const legion = ROMAN.includes(base) ? `Legion ${base}` : '';
     const designation = String(parent.label || '').trim();
-    const commander = String(parent.name || '').trim();
-    out.set(c, legion
-      ? legion + (commander ? ` — ${commander}` : '')
-      : commander && designation ? `${commander} — ${designation}`
-      : commander || designation || 'Token');
+    out.set(c, legion || designation || 'Token');
   }
   return out;
 }
@@ -2287,8 +2283,8 @@ function tokenColourNames(colour) {
   for (const t of S.tokens || []) {
     if (String(t.color || '').toLowerCase() !== key) continue;
     const designation = String(t.label || '').trim();
-    const commander = String(t.name || '').trim();
-    const name = commander ? commander + (designation ? ` (${designation})` : '') : designation;
+    const base = tokenBase(designation);
+    const name = ROMAN.includes(base) ? `Legion ${base}` : designation;
     if (name && !names.includes(name)) names.push(name);
   }
   return names;
