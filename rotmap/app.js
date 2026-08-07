@@ -2280,6 +2280,19 @@ function tokenRealmColours() {
   }
   return out;
 }
+// Names shown when a shared-palette swatch is already in use by one or more tokens.
+function tokenColourNames(colour) {
+  const key = String(colour || '').toLowerCase();
+  const names = [];
+  for (const t of S.tokens || []) {
+    if (String(t.color || '').toLowerCase() !== key) continue;
+    const designation = String(t.label || '').trim();
+    const commander = String(t.name || '').trim();
+    const name = commander ? commander + (designation ? ` (${designation})` : '') : designation;
+    if (name && !names.includes(name)) names.push(name);
+  }
+  return names;
+}
 /* Take the map to a realm colour: to the middle of the largest contiguous piece of ground that colour
    holds, panning only. The largest piece rather than the centre of everything it holds, because a realm
    with an island the far side of the map has a centre out at sea — the whole point of going there is to
@@ -2349,7 +2362,9 @@ function renderRealmPicker() {
        the swatches stay separate, as they must for painting, and nothing else on screen shows that two
        of them have been tied together. */
     const kin = realmKin(layer, c);
+    const tokenNames = tokenColourNames(rgbHex(c));
     b.title = `${label} · ${rgbHex(c)}`
+            + (tokenNames.length ? `\n${tokenNames.length === 1 ? 'Token' : 'Tokens'}: ${tokenNames.join(', ')}` : '')
             + `\nDouble-click the swatch to go to it; double-click the name to rename.`
             + (kin > 1 ? `\nOne of ${kin} colours under this name; they are labelled as one polity.` : '');
     /* Double-clicking the swatch takes the map to the realm. The palette is read off the paint, so every
@@ -7576,6 +7591,9 @@ function buildColorPanel(box, palette, get, set) {
     const b = document.createElement('button');
     b.type = 'button';
     b.style.background = c;
+    const tokenNames = tokenColourNames(c);
+    b.title = tokenNames.length ? tokenNames.join(', ') : c;
+    b.setAttribute('aria-label', tokenNames.length ? `${c}: ${tokenNames.join(', ')}` : c);
     if (c.toLowerCase() === (get() || '').toLowerCase()) b.classList.add('on');
     b.addEventListener('click', e => { e.stopPropagation(); set(c); closeCtx(); });
     grid.appendChild(b);
