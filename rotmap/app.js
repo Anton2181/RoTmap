@@ -2152,13 +2152,17 @@ const realmOverride = (layer, h, ri) => S.features.realms?.[layer]?.[h]?.[ri | 0
    go by its own hex code. A name given here is stored per layer and per colour and beats the legend,
    which makes the legend a default rather than a fact: a legion that changes hands, a colour mixed
    for a realm that did not exist when the scan was drawn, and every unnamed Borders wash can all be
-   told what they are. Clearing the text falls back to the legend, and then to the hex — the same way
+   told what they are. On Warlords, a token supplies the legion name when its colour is absent from the
+   original legend. Clearing the text falls back to those defaults, and then to the hex — the same way
    clearing a stronghold's label falls back to the datasheet's name.
 
    Keyed by colour rather than by subhex, so naming one hex of a realm names the realm. It lives in
    the features file with everything else written by hand, and so exports, imports and undoes with the
    rest of it. */
-const realmName = (layer, c) => S.features.realmNames?.[layer]?.[c] ?? WARLORD_BY_RGB.get(c) ?? null;
+const realmName = (layer, c) => S.features.realmNames?.[layer]?.[c]
+  ?? WARLORD_BY_RGB.get(c)
+  ?? (layer === 'warlords' ? tokenColourNames(rgbHex(c))[0] : null)
+  ?? null;
 const realmLabel = (layer, c) => realmName(layer, c) || rgbHex(c);
 /* How many colours on this layer answer to the same name as this one — 1 for an ordinary realm, more for
    a federation. Counted over the colours the layer is actually *painting* rather than over the stored
