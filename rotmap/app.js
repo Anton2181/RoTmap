@@ -7680,19 +7680,6 @@ function paintCommandery(layer, ci, colour) {
   commitFeatures();
   return n;
 }
-// Every hand-painted override on one layer, dropped. The scan speaks again everywhere.
-function clearRealmPaint(layer) {
-  const byHex = S.features.realms?.[layer];
-  if (!byHex) return 0;
-  let n = 0;
-  for (const hx in byHex) n += Object.keys(byHex[hx]).length;
-  if (!n) return 0;
-  pushUndo();
-  delete S.features.realms[layer];
-  commitFeatures();
-  return n;
-}
-
 function hexMenu(h, pt, wp) {
   return box => {
     ctxHead(box, hexTitle(h));
@@ -7719,12 +7706,7 @@ function hexMenu(h, pt, wp) {
       if (cur || cm) ctxSep(box);
       if (cur) ctxItem(box, 'Rub out this subhex', () => { setRealmAt(layer, h, ri, null); closeCtx(); });
       ctxItem(box, 'Undo<span class="arw">Ctrl+Z</span>', () => { closeCtx(); undoLast(); });
-      const painted = Object.values(S.features.realms?.[layer] || {})
-        .reduce((n, o) => n + Object.keys(o).length, 0);
-      if (painted) ctxItem(box, `Clear painted colours<span class="arw">${painted}</span>`, () => {
-        closeCtx();
-        if (confirm(`Erase all ${painted} painted hexes?`)) clearRealmPaint(layer);
-      }, 'danger');
+      ctxItem(box, 'Reset painted hexes', () => { closeCtx(); resetDrawing(); }, 'danger');
       ctxSep(box);
     }
     /* Origins, while the Isochrone panel is the open one. A left-click on the map already moves the
