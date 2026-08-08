@@ -198,9 +198,55 @@ details.hint > summary:hover { color: var(--ink); }
   content: ''; position: absolute; left: -8px; top: 8px; bottom: 8px;
   width: 3px; border-radius: 0 3px 3px 0; background: var(--accent);
 }
+/* Local state that has drifted from the file the map ships with. Red on the button that would undo the
+   drift, and lit on the rail edge the way "you are here" is, because it is the same kind of statement:
+   something is true of this browser that is not true of the map. It is a warning rather than a fault —
+   authoring *is* drifting from the file until the next export — so it colours the icon and does not
+   shout. `.on` never applies to this button, so the two edge bars cannot both be lit. */
+.railbtn.drift { color: var(--warn); }
+.railbtn.drift:hover { color: var(--warn); background: var(--bg-raise); }
+.railbtn.drift::before {
+  content: ''; position: absolute; left: -8px; top: 8px; bottom: 8px;
+  width: 3px; border-radius: 0 3px 3px 0; background: var(--warn);
+}
+/* Saving switched off is not a warning — it is a mode, and the icon says so by going hollow: the same
+   grey as any unlit rail button, with the strike through it that the label spells out. */
+.railbtn.off svg { opacity: .55; }
 .railbtn svg { width: 19px; height: 19px; }
 .railbtn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* A rail button with nothing to do: dimmer than the others, and inert. `pointer-events: none` as well
+   as `:disabled`, so the hover label does not appear either — a name is an offer, and there is nothing
+   on offer here. */
+.railbtn:disabled { opacity: .3; cursor: default; pointer-events: none; }
 #rail .spacer { flex: 1; }
+
+/* The confirmation, as a tab that unfolds sideways out of the button it belongs to. A destructive
+   button that acts on the first click is a trap; a modal asking about it is a interruption out of all
+   proportion to one rail button. This is the middle: the question appears beside the thing it is about,
+   the second click lands on the answer rather than on the same button again — so a double-click cannot
+   confirm by accident — and anything else at all puts it away.
+
+   Animated on max-width rather than transform, so the tab wipes open from the button's edge instead of
+   sliding in from somewhere it never was. `max-width` is the honest property here because the tab's
+   real width is its text: an exact width would have to be measured and would go wrong the moment the
+   label changed. */
+.railslot { position: relative; display: flex; }
+.railconfirm {
+  position: absolute; left: calc(100% + 6px); top: 50%; transform: translateY(-50%);
+  display: flex; align-items: center; height: 30px;
+  max-width: 0; padding: 0; overflow: hidden; white-space: nowrap;
+  background: var(--bg-panel); color: var(--warn);
+  border: 1px solid var(--warn); border-radius: var(--r2);
+  font-size: var(--f2); cursor: pointer; opacity: 0;
+  box-shadow: var(--shadow-1); z-index: 40;
+  transition: max-width .18s var(--ease), padding .18s var(--ease), opacity .12s;
+}
+.railslot.armed .railconfirm { max-width: 260px; padding: 0 var(--s3); opacity: 1; }
+.railconfirm:hover { background: var(--bg-hover); }
+/* The hover label would sit exactly where the tab has just opened, saying something less useful. */
+.railslot.armed .railbtn::after { display: none; }
+/* Armed, the button is the way *out* of the question, so it stops looking like the way in. */
+.railslot.armed .railbtn { background: var(--bg-raise); color: var(--warn); }
 
 /* Name of the panel, shown on hover, since the icons alone are a guess. */
 .railbtn::after {
@@ -792,8 +838,16 @@ body.colsizing { cursor: col-resize; user-select: none; }
   }
   #rail .mark, #rail .spacer, #railShut { display: none; }
   .railbtn { width: 54px; height: 42px; }
-  .railbtn.on::before { left: 12px; right: 12px; top: -8px; bottom: auto; width: auto; height: 3px; border-radius: 0 0 3px 3px; }
+  .railbtn.on::before,
+  .railbtn.drift::before { left: 12px; right: 12px; top: -8px; bottom: auto; width: auto; height: 3px; border-radius: 0 0 3px 3px; }
   .railbtn::after { display: none; }   /* no hover on a finger; the sheet's own title says where you are */
+  /* The rail is a bar along the bottom here, so "to the right" would run the tab off the screen. It
+     opens upward instead, out of the same edge the button's own lit bar uses. */
+  .railconfirm {
+    left: 50%; right: auto; top: auto; bottom: calc(100% + 6px);
+    transform: translateX(-50%); height: 34px;
+    transition: max-width .18s var(--ease), padding .18s var(--ease), opacity .12s;
+  }
 
   #mapWrap { position: absolute; inset: 0; }
 

@@ -3249,10 +3249,24 @@ function migrateFeatures(f) {
   f.version = 2;
   return f;
 }
+/* ---------------- whether any of this outlives the tab ----------------
+   Everything drawn, moved or planned is written to this browser as it happens, which is right for a map
+   you are building over months and wrong for an afternoon of "what if he marched here instead". The
+   switch at the foot of the rail settles which of the two this session is.
+
+   Off means **nothing is written and nothing is read**: no save, no delete, and at the next load the
+   copies already in the browser are passed over in favour of the shipped files. So a reload comes up as
+   the map ships, and the work that was in storage is still in storage, untouched — switching saving
+   back on and reloading brings it back. The switch itself is a preference about this browser rather
+   than a change to the map, so it is kept whatever the switch says; it is the only thing that is. */
+const saveOn = () => UI.save !== false;
 function saveLocal() {
-  localStorage.setItem(LS_KEY, JSON.stringify(S.features));
-  document.getElementById('saveInfo').textContent =
-    `Autosaved locally — ${S.features.features.length} features.`;
+  const n = S.features.features.length;
+  if (saveOn()) localStorage.setItem(LS_KEY, JSON.stringify(S.features));
+  document.getElementById('saveInfo').textContent = saveOn()
+    ? `Autosaved locally — ${n} features.`
+    : `Not saving — ${n} features, and a reload clears these edits.`;
+  markDrift();
 }
 // computeRoute rebuilds S.adj, so the borders repaint picks up the coastline that was just drawn.
 // `commanderiesChanged` because a commandery is named for the settlement inside it: erasing, adding,
@@ -6474,7 +6488,7 @@ function recolorRoute(i) {
 function saveRoutes() {
   const j = snapRoutes();
   routesSnap = j;              // what undo restores to, should the next change be to a route
-  try { localStorage.setItem('rotmap_routes_v1', j); } catch {}
+  if (saveOn()) try { localStorage.setItem('rotmap_routes_v1', j); } catch {}
 }
 
 /* ---------------- interactions ---------------- */
@@ -7610,20 +7624,142 @@ document.getElementById('importInput').onchange = async e => {
   } catch { alert('Not a valid features.json'); }
   e.target.value = '';
 };
+/* ---------------- how far this browser has drifted from the shipped map ----------------
+   Two files ship with the map and two are edited from it: the drawing and the board. The reset button
+   lights when what is in front of you differs from either, which is a question about *content* and not
+   about whether anything has been touched — draw a road and rub it out again and the answer is no,
+   which is the answer a flag counting edits would get wrong.
+
+   Compared as text with the keys sorted, because two objects holding the same map need not hold it in
+   the same order: everything added since the file was written was added at the end, and a round trip
+   through a browser's storage is under no obligation to preserve that. Sorting costs a few
+   milliseconds on a half-megabyte drawing, which is why it is done after the fact rather than in the
+   middle of a stroke — the check is deferred to the next idle moment and the frames in between are
+   left alone. */
+function stableJson(v) {
+  if (v === null || typeof v !== 'object') return JSON.stringify(v) ?? 'null';
+  if (Array.isArray(v)) return '[' + v.map(stableJson).join(',') + ']';
+  return '{' + Object.keys(v).sort().map(k => JSON.stringify(k) + ':' + stableJson(v[k])).join(',') + '}';
+}
+// The shipped files as fetched, kept whole: the reset needs to hand them back and the drift check needs
+// to compare against them, and re-fetching for either would be a network round trip to answer a
+// question already answered.
+const canon = { features: null, featText: null, featSig: null, tokens: null, tokSig: null };
+function driftParts() {
+  const out = [];
+  if (canon.featSig != null && stableJson(S.features) !== canon.featSig) out.push('drawing');
+  if (canon.tokSig != null && stableJson(S.tokens) !== canon.tokSig) out.push('board');
+  return out;
+}
+let driftTimer = null;
+function markDrift() {
+  clearTimeout(driftTimer);
+  driftTimer = setTimeout(() => {
+    const btn = document.getElementById('resetAll');
+    if (!btn) return;
+    /* Nothing to undo means nothing to press: with the map exactly as its files have it, the button
+       goes grey and stops answering, which says "there is no work here" without a word — where a
+       label explaining that a live-looking button would do nothing is a sentence spent on a
+       non-event. It also disarms, since a question already asked about a state that has since gone
+       back to the files has stopped being a question. */
+    const parts = driftParts();
+    btn.classList.toggle('drift', parts.length > 0);
+    btn.disabled = !parts.length;
+    if (!parts.length) armReset(false);
+    btn.dataset.label = 'Reset map';
+  }, 200);
+}
+/* Everything back to the files, in one gesture. The two panel buttons that already did half of this
+   each are still there — this is the one that does not require knowing which panel owns what — and it
+   is the only one that says, before it acts, what it is about to throw away.
+
+   Routes and isochrone origins are left alone deliberately. They are planning laid *over* the map
+   rather than part of it, no file ships with them, and their own Clear all buttons are a click away in
+   the panel where they belong. */
+/* Armed by the first click on Reset and disarmed by anything else: a second click on the button, a
+   click anywhere on the page, Esc, or five seconds of nothing. The tab is a separate button, so the
+   confirming click lands somewhere the first one was not — a double-click cannot answer a question it
+   never saw. */
+let resetArmTimer = null;
+function armReset(on) {
+  const slot = document.getElementById('resetSlot'), tab = document.getElementById('resetConfirm');
+  if (!slot) return;
+  clearTimeout(resetArmTimer);
+  slot.classList.toggle('armed', on);
+  if (!on) return;
+  // One question, always the same one. What is at stake is already on the button's own label and in
+  // the colour it is wearing; the tab is the answer slot, and a slot that reworded itself would be
+  // asking to be read again every time rather than clicked.
+  tab.textContent = 'Are you sure?';
+  resetArmTimer = setTimeout(() => armReset(false), 5000);
+}
+async function resetEverything() {
+  armReset(false);
+  if (!canon.featText) return toast('The shipped data/features.json could not be read', true);
+  S.features = migrateFeatures(JSON.parse(canon.featText));
+  S.tokens = normalizeTokens(JSON.parse(JSON.stringify(canon.tokens || []))) || [];
+  S.undoStack = [];
+  tokensSnap = JSON.stringify(S.tokens);
+  // Storage is only ever touched while saving is on — off means off in both directions, so a reset made
+  // in a throwaway session does not quietly delete the work the switch was turned off to protect.
+  if (saveOn()) try {
+    localStorage.removeItem(LS_KEY);
+    localStorage.removeItem(TOK_LS);
+    if (canon.features.stamp) localStorage.setItem(FEAT_SRC_LS, canon.features.stamp);
+    localStorage.setItem(FEAT_BASE_LS, canon.featText);   // reset to the file: the file is the parent
+    if (startingTokensStamp) localStorage.setItem(TOK_SRC_LS, startingTokensStamp);
+  } catch {}
+  commitFeatures();
+  commitTokens({ quiet: true });          // the shipped board is not a change to take back
+  markDrift();
+  toast('Map reset to the data files');
+}
+function showSaving() {
+  const btn = document.getElementById('saveToggle'), on = saveOn();
+  if (!btn) return;
+  btn.classList.toggle('on', on);
+  btn.classList.toggle('off', !on);
+  btn.dataset.label = on ? 'Saving — keeps edits on reload'
+                         : 'Not saving — clears edits on reload';
+}
+function setSaving(on) {
+  UI.save = on;
+  saveUI();
+  showSaving();
+  // Switching it on makes what is on screen the saved state at once, rather than waiting for the next
+  // edit: the alternative is a browser that says it is saving while holding something older.
+  if (on) { saveLocal(); saveTokens(); saveRoutes(); }
+}
+
 async function resetDrawing() {
   if (!confirm('Discard local drawing and reload data/features.json?')) return;
   const ff = await fetchFeaturesFile();
   if (!ff) return alert('Could not load data/features.json.');
-  localStorage.removeItem(LS_KEY);
-  // The fingerprint goes with it: what is in the browser is now this publication's file exactly, so the
-  // next boot has no reason to think it stale.
-  try { localStorage.setItem(FEAT_SRC_LS, ff.stamp); } catch {}
+  // Only while saving is on — off means storage is not written to *or* deleted from, so a reset made in
+  // a throwaway session leaves the saved work the switch was turned off to protect.
+  if (saveOn()) try {
+    localStorage.removeItem(LS_KEY);
+    // The fingerprint and the parent both go with it: what is in the browser is now this file exactly,
+    // so the next load has nothing to think stale and nothing to merge.
+    localStorage.setItem(FEAT_SRC_LS, ff.stamp);
+    localStorage.setItem(FEAT_BASE_LS, JSON.stringify(ff.obj));
+  } catch {}
   S.features = migrateFeatures(ff.obj);
   S.undoStack = [];
   commitFeatures();
 }
 document.getElementById('resetBtn').onclick = resetDrawing;
 document.getElementById('drawResetBtn').onclick = resetDrawing;
+document.getElementById('saveToggle').onclick = () => setSaving(!saveOn());
+document.getElementById('resetAll').onclick = () =>
+  armReset(!document.getElementById('resetSlot').classList.contains('armed'));
+document.getElementById('resetConfirm').onclick = resetEverything;
+// Anything else at all puts the question away. Capture, so it hears the click before whatever the
+// click was actually for — which goes ahead as normal; dismissing is not a click the map loses.
+document.addEventListener('pointerdown', e => {
+  if (!e.target.closest?.('#resetSlot')) armReset(false);
+}, true);
+addEventListener('keydown', e => { if (e.key === 'Escape') armReset(false); });
 document.getElementById('newRoute').onclick = () => newRoute();
 /* Which ends are held is asked at the moment of asking rather than kept as a setting, because it is a
    fact about the march in front of you — a supply run comes home, a campaign does not — and a setting
@@ -7881,7 +8017,8 @@ async function fetchStartingTokens() {
 const TOK_RIM_DARK = '#14181e', TOK_RIM_LIGHT = '#fff';
 const tokenRim = t => t.rim === TOK_RIM_LIGHT ? TOK_RIM_LIGHT : TOK_RIM_DARK;
 function saveTokens() {
-  try { localStorage.setItem(TOK_LS, JSON.stringify({ version: 1, tokens: S.tokens })); } catch {}
+  if (saveOn()) try { localStorage.setItem(TOK_LS, JSON.stringify({ version: 1, tokens: S.tokens })); } catch {}
+  markDrift();
 }
 /* A board already in this browser, brought up to date with the map's colours — and with its **colours
    only**. Where the counters *are* is the reader's own; a position they have been playing for a month
@@ -7905,7 +8042,7 @@ async function refreshLegionColours() {
     const want = legionColorFor(t.label);
     return want && t.color !== want;
   });
-  try { localStorage.setItem(TOK_SRC_LS, startingTokensStamp); } catch {}
+  if (saveOn()) try { localStorage.setItem(TOK_SRC_LS, startingTokensStamp); } catch {}
   if (!changed.length) return false;
   for (const t of changed) t.color = legionColorFor(t.label);
   commitTokens();
@@ -8605,7 +8742,7 @@ document.getElementById('tokStart').onclick = async () => {
   S.tokens = arr;
   // Taking the shipped board wholesale also takes its colours, so this browser is up to date with that
   // publication by definition — recording it stops the recolour pass finding work to do on next boot.
-  if (startingTokensStamp) try { localStorage.setItem(TOK_SRC_LS, startingTokensStamp); } catch {}
+  if (startingTokensStamp && saveOn()) try { localStorage.setItem(TOK_SRC_LS, startingTokensStamp); } catch {}
   commitTokens();
 };
 function clearAllTokens() {
@@ -8654,33 +8791,97 @@ function quickHash(s) {
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = (h * 0x01000193) >>> 0; }
   return s.length + '-' + h.toString(36);
 }
-/* Which drawing to open with: the browser's own copy, or the one shipped with the map.
+/* ---------------- carrying local edits onto a republished file ----------------
+   Which drawing to open with was, for a long time, a choice between two answers that were each wrong
+   half the time. Locally the browser's copy won, so a features.json pulled from someone else was
+   invisible until the copy was thrown away by hand. On the published map the *file* won whenever it
+   changed, so a reader who had named a dozen realms lost the lot the next time the map was
+   republished — which is the fault this section exists to fix, and it is not a choice at all. It is a
+   **merge**: the copy in the browser and the file on the server are two descendants of the same
+   parent, and what is wanted is both sets of changes.
 
-   Locally the browser's copy always wins. It is the author's working state — everything drawn since the
-   last export — and a file on disk that happens to be newer must not be allowed to throw it away.
+   So the parent is kept. Beside the working copy sits the file it was made against, and when a new one
+   arrives the three are merged: for every part of the drawing, whoever changed it since the parent
+   wins, and where both changed the same part the local edit is kept — a reader's own work is the thing
+   they will notice missing, and the file's version of it is one republication away from arriving again
+   anyway. Where neither changed anything the parent's value simply passes through.
 
-   On the **published** map that answer is wrong, and wrong in a way that hides work rather than losing
-   it. The Draw tools survive publication, so any reader who draws a line, or erases one by accident,
-   gets a copy of the whole drawing written to their browser — and from that moment the shipped file is
-   never read again in that browser. Republish the map with sixteen realms newly named and that reader
-   sees none of them, for as long as they keep the browser: the names are on the server and cannot get
-   past the copy in front of them. Which is exactly what happened.
+   The drawn lines are not merged that way, because a line has no key to merge under: they are matched
+   by their whole content, so what the browser has is the new file's lines, less the ones erased
+   locally, plus the ones drawn locally. Editing a line in place therefore reads as an erase and a
+   draw, which is what it is here — a line is a value, not a thing with an identity.
 
-   So on the published map the browser's copy is kept only while the shipped file is *the same file it
-   was made against*. The fingerprint of that file is stored beside it; when a new publication changes
-   the fingerprint, the new file wins and the stale copy is dropped. A reader's own sketch still survives
-   any number of reloads — it is only superseded by an actual republication, which is the one event that
-   should supersede it. */
+   It costs one more copy of the file in storage, which is the whole of the price. */
 const FEAT_SRC_LS = 'rotmap_features_src_v1';
-// Where a superseded browser copy goes, so that being superseded is recoverable rather than final.
+// Where a superseded browser copy goes, so that being superseded is recoverable rather than final. Kept
+// for the case the merge cannot run: a copy from before the parent was ever recorded.
 const FEAT_PREV_LS = 'rotmap_features_prev_v1';
-function chooseFeatures(ls, file) {
+// The file the working copy was made against — the parent of both sides of the merge.
+const FEAT_BASE_LS = 'rotmap_features_base_v1';
+// What the last merge did, for the line it says afterwards. Null when no merge was needed.
+let featureMerge = null;
+
+const sameJson = (a, b) => stableJson(a) === stableJson(b);
+/* Three-way merge of plain JSON. The rules are the ordinary ones and they are worth stating plainly:
+   a side that changed nothing yields to the side that did; a key that only one side has is taken from
+   whoever has it; a key one side deleted stays deleted; and where both sides changed the same value,
+   the local one is kept. Objects recurse, so two edits inside one hex do not collide unless they are
+   to the same field. Anything that is not a plain object — a number, a string, an array of markers —
+   is atomic, which is right for this data: a stronghold's marker list is one statement about that hex,
+   and half of one side's list mixed with half of the other's would be a hex neither of them meant. */
+function merge3(base, mine, theirs, tally) {
+  if (sameJson(mine, base)) return theirs;              // untouched here: take the update
+  if (sameJson(theirs, base)) { tally.kept++; return mine; }   // the file left it alone: keep mine
+  const plain = v => v && typeof v === 'object' && !Array.isArray(v);
+  if (!plain(mine) || !plain(theirs)) { tally.conflicts++; return mine; }
+  const out = {};
+  const keys = new Set([...(plain(base) ? Object.keys(base) : []), ...Object.keys(mine), ...Object.keys(theirs)]);
+  for (const k of keys) {
+    const v = merge3(plain(base) ? base[k] : undefined, mine[k], theirs[k], tally);
+    if (v !== undefined) out[k] = v;
+  }
+  return out;
+}
+// The drawn lines, matched whole: the new file's, less what was erased here, plus what was drawn here.
+function mergeFeatureList(base, mine, theirs, tally) {
+  const key = f => stableJson(f);
+  const mk = new Set(mine.map(key));
+  const erased = new Set(base.filter(f => !mk.has(key(f))).map(key));
+  const bk = new Set(base.map(key));
+  const drawn = mine.filter(f => !bk.has(key(f)));
+  const out = theirs.filter(f => !erased.has(key(f)));
+  const have = new Set(out.map(key));
+  for (const f of drawn) if (!have.has(key(f))) { out.push(f); have.add(key(f)); }
+  tally.drawn += drawn.length; tally.erased += erased.size;
+  return out;
+}
+function mergeFeatureFiles(base, mine, theirs) {
+  const tally = { kept: 0, conflicts: 0, drawn: 0, erased: 0 };
+  const strip = o => { const c = { ...o }; delete c.features; return c; };
+  const out = merge3(strip(base), strip(mine), strip(theirs), tally);
+  out.features = mergeFeatureList(base.features || [], mine.features || [], theirs.features || [], tally);
+  tally.total = tally.kept + tally.conflicts + tally.drawn + tally.erased;
+  return { obj: migrateFeatures(out), tally };
+}
+
+function chooseFeatures(ls, file, baseTxt) {
+  featureMerge = null;
   const parsed = (() => { try { return ls ? JSON.parse(ls) : null; } catch { return null; } })();
   if (!file) return parsed;                       // nothing shipped: the local copy is all there is
   if (!parsed) return file.obj;
-  if (LOCAL) return parsed;                       // authoring: the working state always wins
   const seen = localStorage.getItem(FEAT_SRC_LS);
-  if (seen === file.stamp) return parsed;         // the copy was made against this same publication
+  if (seen === file.stamp) return parsed;         // the copy was made against this same file
+  // A new file, and the parent of the local copy is on hand: merge rather than choose.
+  const base = (() => { try { return baseTxt ? migrateFeatures(JSON.parse(baseTxt)) : null; } catch { return null; } })();
+  if (base) {
+    const r = mergeFeatureFiles(base, migrateFeatures(parsed), migrateFeatures(JSON.parse(JSON.stringify(file.obj))));
+    featureMerge = r.tally;
+    return r.obj;
+  }
+  // No parent recorded — a copy made before any of this existed. The old rules, which are the best
+  // that can be done without one: the author's working state wins, a reader's is superseded and
+  // stashed. From this load on there is a parent, so it happens at most once per browser.
+  if (LOCAL) return parsed;
   /* Republished since: the map's own answer wins. The superseded copy is **stashed rather than deleted**,
      because "a reader's sketch" is not the only thing it can be. Anyone authoring against a non-local
      hostname — a LAN address, a tunnel, the deployed site itself — is an author whose unexported work
@@ -8706,17 +8907,43 @@ async function boot() {
      between the two means knowing whether the file has changed since that copy was made. One fetch of a
      file the map needs anyway. */
   const ff = await fetchFeaturesFile();
-  const chosen = chooseFeatures(localStorage.getItem(LS_KEY), ff);
-  if (chosen) S.features = chosen;
-  // Recorded after the choice, so from here on a local edit counts as made against *this* publication.
-  if (ff) try { localStorage.setItem(FEAT_SRC_LS, ff.stamp); } catch {}
+  /* Kept for the reset button and the drift check, both of which need the file as it shipped rather
+     than the working copy about to be made from it — and kept as **text**, because the object is not
+     safe to hold onto: with nothing in storage `chooseFeatures` hands back that very object as the
+     working state, and every edit after that would quietly be an edit to the map's own idea of what
+     it shipped with. So the canon is a string nobody can draw on, and both the working copy and the
+     reset are parsed out of it. */
+  canon.features = ff;
+  if (ff) {
+    canon.featText = JSON.stringify(ff.obj);
+    canon.featSig = stableJson(migrateFeatures(JSON.parse(canon.featText)));
+  }
+  // With saving off the browser's copy is passed over rather than deleted: this session starts from
+  // the shipped map, and whatever was stored is still there for a session that wants it.
+  const chosen = chooseFeatures(saveOn() ? localStorage.getItem(LS_KEY) : null, ff,
+                                saveOn() ? localStorage.getItem(FEAT_BASE_LS) : null);
+  // A copy from storage is already this browser's own; the shipped object is not, and is re-parsed.
+  if (chosen) S.features = chosen === ff?.obj ? JSON.parse(canon.featText) : chosen;
+  /* Recorded after the choice, so from here on a local edit counts as made against *this* file — and
+     the file itself is kept beside the fingerprint, since telling that the file has changed is only
+     half of what the next load needs. The other half is what it changed *from*. */
+  if (ff && saveOn()) try {
+    localStorage.setItem(FEAT_SRC_LS, ff.stamp);
+    localStorage.setItem(FEAT_BASE_LS, canon.featText);
+  } catch {}
   migrateFeatures(S.features);
   renderFeatures(); renderLabels();
   buildLayerUI();
   for (const L of LAYERS) L._apply?.();
   // A browser that has moved tokens before keeps its own board, exactly as it left it. One that
   // never has starts from the positions shipped with the map rather than from nothing.
-  const tls = localStorage.getItem(TOK_LS);
+  /* Fetched whether or not this browser has a board of its own, which it did not used to be: the reset
+     button and the drift light both need to know what the shipped board *is*, and answering "does this
+     differ" by fetching the file at the moment of asking would put a network round trip inside a
+     tooltip. */
+  canon.tokens = await fetchStartingTokens() || [];
+  canon.tokSig = stableJson(canon.tokens);
+  const tls = saveOn() ? localStorage.getItem(TOK_LS) : null;
   if (tls) {
     try { S.tokens = normalizeTokens(JSON.parse(tls).tokens) || []; } catch {}
     // The board as loaded is what the first Ctrl+Z should restore to, so record it as the snapshot
@@ -8727,12 +8954,12 @@ async function boot() {
   } else {
     // Saved as soon as it is seeded, so the shipped board becomes *this* browser's board: clearing
     // it and reloading then leaves it clear, rather than quietly putting every legion back.
-    S.tokens = await fetchStartingTokens() || [];
+    S.tokens = normalizeTokens(JSON.parse(JSON.stringify(canon.tokens))) || [];
     commitTokens({ quiet: true });   // the board as it arrives is not a change to take back
-    if (startingTokensStamp) try { localStorage.setItem(TOK_SRC_LS, startingTokensStamp); } catch {}
+    if (startingTokensStamp && saveOn()) try { localStorage.setItem(TOK_SRC_LS, startingTokensStamp); } catch {}
   }
   try {
-    const rr = JSON.parse(localStorage.getItem('rotmap_routes_v1'));
+    const rr = JSON.parse(saveOn() ? localStorage.getItem('rotmap_routes_v1') : null);
     if (rr && Array.isArray(rr.routes)) {
       S.routes = rr.routes;
       S.activeRoute = Math.min(rr.active ?? S.routes.length - 1, S.routes.length - 1);
@@ -8743,6 +8970,21 @@ async function boot() {
     }
   } catch {}
   computeRoute();
+  showSaving();                     // the switch says what it is doing before anything is asked of it
+  markDrift();
+  /* A merge is not a thing to do silently. The map on screen is now neither the file that was fetched
+     nor the copy that was stored, and saying so — with a count of what was carried across — is the
+     difference between a feature and a mystery. Saved at once, too: the merged state is what this
+     browser means from here on, and leaving it unwritten until the next edit would mean a reload in
+     between quietly doing the merge all over again against the same parent. */
+  if (featureMerge) {
+    const t = featureMerge;
+    saveLocal();
+    const bits = [t.drawn && `${t.drawn} drawn`, t.erased && `${t.erased} erased`,
+                  (t.kept + t.conflicts) && `${t.kept + t.conflicts} edited`].filter(Boolean);
+    toast(t.total ? `Map file updated — your local changes kept (${bits.join(', ')})`
+                  : 'Map file updated');
+  }
   document.getElementById('dataInfo').textContent =
     `Terrain snapshot: ${Object.keys(S.hexes).length} hexes (fetched ${T.fetched}).`;
   document.getElementById('saveInfo').textContent =

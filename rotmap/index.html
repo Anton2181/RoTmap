@@ -42,6 +42,15 @@
     <g id="i-collapse" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
       <path d="M12.5 5 6.5 11l6 6"/>
     </g>
+    <!-- A floppy: the one picture of "saved" that survived the thing itself. -->
+    <g id="i-save" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round">
+      <path d="M4 3.8h10.5L18.2 7.5V18a.7.7 0 0 1-.7.7H4.5a.7.7 0 0 1-.7-.7V4.5a.7.7 0 0 1 .7-.7z"/>
+      <path d="M7.2 3.8v4.4h6.4V3.8"/><path d="M6.4 18.7v-5.4h9.2v5.4"/>
+    </g>
+    <!-- A circle come almost the whole way round, with the arrow that says it is going back. -->
+    <g id="i-reset" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M18 11a7 7 0 1 1-2.4-5.3"/><path d="M18.4 3.6v4.2h-4.2"/>
+    </g>
     <g id="i-hex" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
       <path d="M11 2.2 18.6 6.6v8.8L11 19.8 3.4 15.4V6.6z"/>
     </g>
@@ -70,6 +79,17 @@
        reading: it exists so the questions can be settled by looking, and goes with the other two. -->
   <button class="railbtn" type="button" data-pane="labels" data-label="Realm labels" hidden><svg viewBox="0 0 22 22"><use href="#i-type"/></svg></button>
   <div class="spacer"></div>
+  <!-- The two switches that decide what survives a reload, at the foot of the rail because they are
+       about the session rather than about any one panel. Their labels are written by script: both say
+       what is true now, not what the button is called. -->
+  <button class="railbtn" type="button" id="saveToggle" data-label="Saving locally"><svg viewBox="0 0 22 22"><use href="#i-save"/></svg></button>
+  <!-- Reset asks first, and asks *here* rather than in a browser dialog: the question is about one
+       button, and a modal that greys the whole map to ask it is louder than the thing it guards. The
+       tab unfolds to the right of the button and is itself the confirmation. -->
+  <div class="railslot" id="resetSlot">
+    <button class="railbtn" type="button" id="resetAll" data-label="Reset map"><svg viewBox="0 0 22 22"><use href="#i-reset"/></svg></button>
+    <button class="railconfirm" type="button" id="resetConfirm" tabindex="-1">Are you sure?</button>
+  </div>
   <button class="railbtn" type="button" id="railShut" data-label="Hide panel"><svg viewBox="0 0 22 22"><use href="#i-collapse"/></svg></button>
 </nav>
 
@@ -255,8 +275,9 @@
           <button class="btn danger" type="button" id="drawResetBtn" title="Reset the drawing to data/features.json.">Reset</button>
         </div>
         <p class="hint" id="saveInfo">Autosaved locally.</p>
-        <p class="hint" data-pub>Drawing changes are saved in this browser. Use <b>Export JSON</b> to
-        back them up or share them.</p>
+        <p class="hint" data-pub>Drawing changes are saved in this browser, and are carried over when a
+        new version of the map is published — where both changed the same thing, your change is kept.
+        Use <b>Export JSON</b> to back them up or share them.</p>
       </div>
 
       <div class="group">
