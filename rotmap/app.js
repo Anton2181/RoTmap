@@ -87,6 +87,15 @@ const LAYERS = [
       await loadRealmScan('warlords', 'ref/warlords.png');
       await loadRealmScan('borders', 'ref/Borders_clean.png');
     } },
+  /* How the ground is *administered*, between the two maps of who holds it. Above Borders because a
+     province is a finer division than a realm and would be buried under it; below Warlords because a
+     legion sitting on a province is a fact about this month and the province is a fact about the
+     century — what a warlord holds should read over the administration he is holding it from.
+
+     Unlike its two neighbours this one is not read off a scan: the commanderies are in the datasheet
+     already, refined to subhexes against your own coastlines, and named after whichever settlement
+     they hold. So it needs no image, and its names come with it. */
+  { id: 'comm', name: 'Commanderies', def: 0, names: 'Commandery names — the settlement each province is named for, laid across its ground', nameDef: true, lazy: () => paintCommanderies() },
   // Who holds what *now*, over the top of who holds what by right. It goes directly above Borders so
   // that with both on, the warlord's claim is the one you see and the realm beneath shows only where
   // no warlord has taken it — which is the comparison the pair exists to make. It leaves nine tenths
@@ -145,7 +154,7 @@ const LAYERS = [
 // fills/lines stay paired at the top, right under Terrain.
 // The tracing refs sit next, because they're what you flick on and off against the coast you're
 // drawing; the river/road/etc. layers you're producing come below them.
-const PANEL_ORDER = ['terrain', 'coast', 'coastLines', 'borders', 'warlords',
+const PANEL_ORDER = ['terrain', 'coast', 'coastLines', 'borders', 'comm', 'warlords',
                      'refClassic', 'refRivers', 'refRoads', 'refNames', 'refCities', 'refBorders',
                      'sheetRivers', 'riverMajor', 'riverMinor',
                      'iso', 'grid', 'hexIds', 'roads', 'trade', 'labels', 'tokens'];
@@ -655,8 +664,80 @@ function overlayWarlords(cols) {
 }
 // Repaint every scan that has been loaded, or just the one named. Both are redone whenever the land
 // changes shape, since region indices move with it and nothing here may be cached against them.
+/* ---------------- the commanderies, as a layer ----------------
+   The other two realm layers are read off a picture. This one is read off the datasheet: the
+   commanderies are already worked out per subhex, against your own coastlines, and already named
+   after whichever settlement they hold. What is missing is the one thing a map needs and the data has
+   no opinion about — a colour each.
+
+   So a colour is **made from the name**. Hashed rather than handed out in order, which buys three
+   things worth having: a province keeps its colour when another is added, renamed or split, since
+   nothing depends on position in a list; the same province is the same colour in two browsers a week
+   apart with nothing stored anywhere to make it so; and renaming the settlement a province is named
+   for recolours it, which is honest — on this map that *is* renaming the province.
+
+   Hue takes the whole circle and saturation and lightness take a narrow band, so seventy-two colours
+   differ in the way a reader can actually tell apart at a glance rather than in three ways at once.
+   Two names hashing to the same colour would be drawn as one province and labelled once, so a taken
+   colour is nudged around the circle until it is free — an ugly little loop that saves an ugly bug. */
+function hslRgb(hh, s, l) {
+  const a = s * Math.min(l, 1 - l);
+  const f = n => { const k = (n + hh / 30) % 12; return l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)); };
+  return [f(0), f(8), f(4)].map(v => Math.round(v * 255)).join(',');
+}
+function nameColor(s, taken) {
+  let x = 2166136261;                               // FNV-1a: short, stable, and well spread
+  for (let i = 0; i < s.length; i++) { x = Math.imul(x ^ s.charCodeAt(i), 16777619); }
+  x >>>= 0;
+  const sat = 0.42 + (x >>> 9 & 31) / 31 * 0.22, li = 0.40 + (x >>> 14 & 31) / 31 * 0.16;
+  for (let k = 0; k < 360; k++) {                   // 37° steps: coprime with 360, so every hue is tried
+    const c = hslRgb((x + k * 37) % 360, sat, li);
+    if (!taken || !taken.has(c)) return c;
+  }
+  return hslRgb(x % 360, sat, li);
+}
+// Colour -> the name it was made from, which is how the label pass asks what to write. Rebuilt with
+// the paint, since a renamed settlement changes both halves at once.
+const commColorName = new Map();
+function paintCommanderies() {
+  const g = groups.comm;
+  if (!g) return;
+  g.innerHTML = '';
+  if (!S.adj) deriveAdj();
+  if (!commIndex) commanderyBuild();
+  commColorName.clear();
+  const taken = new Set(), colOf = new Map(), cols = new Map();
+  for (const [key, i] of commanderyCells()) {
+    let c = colOf.get(i);
+    if (c === undefined) {
+      // A province holding no named settlement still covers ground and still wants telling apart, so
+      // it is coloured from what it *is* rather than from what it is called. It gets no label: there
+      // is nothing to write.
+      const nm = commSeats[i]?.name;
+      c = nameColor(nm || `${S.commanderies[i]?.tier || 'tier'}#${i}`, taken);
+      taken.add(c); colOf.set(i, c);
+      if (nm) commColorName.set(c, nm);
+    }
+    cols.set(key, c);
+  }
+  realmCols.set('comm', cols);                      // what the label pass reads, exactly as a scan's
+  const byColour = new Map();
+  for (const [key, c] of cols) {
+    const i = key.indexOf(':'), r = regionsOf(+key.slice(0, i))[+key.slice(i + 1)];
+    if (r) byColour.set(c, (byColour.get(c) || '') + regionShape(+key.slice(0, i), r));
+  }
+  for (const [c, d] of byColour)
+    el('path', { d, fill: `rgb(${c})`, 'fill-rule': 'evenodd', stroke: 'none' }, g);
+  realmNameG.comm?.replaceChildren();               // stale the moment the ground moved; refitted below
+}
+
 function paintRealms(only) {
   for (const id of realmScans.keys()) if (!only || id === only) paintRealm(id);
+  /* The commanderies answer to the same ground as the scans do — a coastline redrawn moves which
+     subhexes are administered, and a stronghold renamed renames the province around it — so they are
+     repainted on the same beat. Only while someone is looking: the layer starts off, and until it is
+     asked for there is nothing on screen to be stale. */
+  if ((!only || only === 'comm') && groups.comm?.style.display !== 'none') paintCommanderies();
   // The names are fitted to the ground, so they cannot outlive a repaint: what has just been rewritten
   // is which subhex belongs to whom, and a label placed against the old answer is in the wrong country.
   // Once, after all the painting, because placing them is a joint pass over both layers at once.
@@ -823,7 +904,8 @@ const RN_DEFAULT = {
   fsMax: 48,             // above this the biggest realms start shouting
   trackMax: 1,           // most extra advance a gap may take, in ems
   thickPct: 0.35,        // percentile of the thickness profile the size is taken from
-  thickFrac: 0.52,       // how much of that thickness a font size may be
+  thickFrac: 0.36,       // how much of that thickness a font size may be — settled with the provinces
+                         // on the map, where 0.52 had the names filling their ground edge to edge
   /* Both of the taper protections are **off**. They were written for a fitted curve, which will happily
      run a name into the point of a spit; an arc through the spine stays much closer to the middle of
      the ground, so the letters do not need holding back from the ends and the map reads better for the
@@ -834,13 +916,20 @@ const RN_DEFAULT = {
      an arc is a firmer shape than a fitted curve and will leave the land for longer where a country
      turns — and because the alternative to stepping over the gap is losing half the name. */
   gapTol: 11,
-  sagMax: 0.16,          // hard cap on bend, as sag ÷ span, whatever the baseline asked for
+  sagMax: 0.18,          // hard cap on bend, as sag ÷ span, whatever the baseline asked for
 
-  tiltMax: 50,           // degrees; past this a label reads as text turned on its side
+  /* Degrees; past this a label reads as text turned on its side. Settled at 29 against a real map:
+     fifty let the long thin provinces stand nearly diagonal, which is faithful to the ground and
+     hard to read across a sheet of them, and the names sit level enough at this to be scanned in
+     rows while still leaning the way the country leans. */
+  tiltMax: 29,
   // At 1 nothing counts as round, so every block is given its own axis rather than being levelled.
   roundRatio: 1,
   pull: 3.8,             // how strongly the spine is pulled off the border towards the middle
-  turnMax: 490,          // degrees of total turn past which a baseline is unwritable
+  /* Degrees of total turn past which a baseline is unwritable. Settled at 190 against a real map:
+     490 let a name follow a country round a hook until the word had turned further than a reader
+     will, and refusing those leaves the name to a straighter piece of the same ground. */
+  turnMax: 190,
   polyDeg: 3,            // degree of the fit through the spine
   smoothMix: 0.6,        // 0 = the raw walk, 1 = the fit; between = pulled back towards the walk
   avgPasses: 2,          // averaging passes, for the smoothed-spine baseline
@@ -1604,7 +1693,35 @@ let nameSeq = 0;   // ids for the curves the labels ride on; unique across rebui
 let rnLastStats = null;   // what the last fit did, for the panel to report
 // Which layer keeps a name when the two of them make the same one and it comes to a tie. Warlords is
 // the upper layer and the one whose scan the shared legend belongs to, so it goes first.
-const RN_LAYER_ORDER = ['warlords', 'borders'];
+// Who keeps a name when two layers want to write the same one in the same place. The commanderies go
+// last: a province named for its seat and a realm named the same thing are the same word about the
+// same ground, and of the two the realm is the larger claim.
+const RN_LAYER_ORDER = ['warlords', 'borders', 'comm'];
+/* The three layers that paint ground, in the order they are stacked — bottom first. Only these can
+   bury one another, and only in this direction. */
+const REALM_STACK = ['borders', 'comm', 'warlords'];
+/* The cells this layer is painting but nobody can see, because a layer above it is on and painting
+   the same ground. A name belongs on ground that is showing the colour it names: a commandery lying
+   wholly under a warlord's wash was still having its name written across him, which says the ground
+   is one province's while every pixel of it says otherwise. Partly covered, the name is refitted to
+   what is left — the label pass takes a set of cells and asks no questions about where they came
+   from, so cutting the set is the whole of it — and where too little is left to write on legibly,
+   the fitting declines and there is no label, which is the right answer for a province with nothing
+   of itself in view.
+
+   Visibility only, not opacity. A wash dimmed to a quarter is still that layer's answer showing
+   through, and reading a threshold off the slider would refit sixty times a second while it was
+   being dragged. */
+function realmCovered(id) {
+  const i = REALM_STACK.indexOf(id);
+  if (i < 0) return null;
+  const out = new Set();
+  for (const above of REALM_STACK.slice(i + 1)) {
+    if (groups[above]?.style.display === 'none') continue;
+    for (const k of realmCols.get(above)?.keys() || []) out.add(k);
+  }
+  return out.size ? out : null;
+}
 /* Every label one layer *wants*, fitted but not yet placed. Placement is a separate pass because it is
    not a per-layer question — see renderRealmNames below.
 
@@ -1624,8 +1741,10 @@ const RN_LAYER_ORDER = ['warlords', 'borders'];
 function realmLabelCandidates(id) {
   const cols = realmCols.get(id);
   if (!cols) return [];
+  const buried = realmCovered(id);
   const byName = new Map();   // name -> { cells: Set, colour: Map(cell -> the wash it came from) }
   for (const [k, c] of cols) {
+    if (buried?.has(k)) continue;                  // ground this layer is no longer showing on
     const name = realmName(id, c);
     if (!name) continue;                           // unnamed washes have nothing to write
     let g = byName.get(name);
@@ -2175,7 +2294,12 @@ const realmOverride = (layer, h, ri) => S.features.realms?.[layer]?.[h]?.[ri | 0
    Keyed by colour rather than by subhex, so naming one hex of a realm names the realm. It lives in
    the features file with everything else written by hand, and so exports, imports and undoes with the
    rest of it. */
-const realmName = (layer, c) => S.features.realmNames?.[layer]?.[c]
+/* A commandery's name is not a name given to a colour; it is the settlement the province is named
+   for, and the colour was made from it. So it answers from the paint rather than from the stored
+   names, and is not renamable here — rename the stronghold and the province follows, which is how
+   commandery names have always worked on this map. */
+const realmName = (layer, c) => layer === 'comm' ? (commColorName.get(c) ?? null)
+  : S.features.realmNames?.[layer]?.[c]
   ?? WARLORD_BY_RGB.get(c)
   ?? (layer === 'warlords' ? tokenColourNames(rgbHex(c))[0] : null)
   ?? null;
@@ -7618,6 +7742,10 @@ function buildLayerUI() {
     // renderers can ask — a name group is rebuilt from scratch whenever the ground under it changes,
     // and has to come back up in the state the button is showing.
     if (L.names) L._names = L.nameDef ?? false;
+    // What the switch was last time apply() ran, so a wash going on or off can be told apart from the
+    // sixty calls an opacity drag makes. Seeded with the layer's own default, or the first call would
+    // read as a change and refit the labels for nothing.
+    L._was = L.def > 0;
     const apply = () => {
       if (chk.checked && L.lazy && !L._built) { L.lazy(); L._built = true; } // build on first use
       if (chk.checked && L._img && !L._img.getAttribute('href')) L._img.setAttribute('href', L.img); // fetch on first use
@@ -7633,7 +7761,14 @@ function buildLayerUI() {
         // CSS filter, so it costs nothing and never touches the underlying geometry or colours
         g.style.filter = L._inv ? 'invert(1)' : '';
       }
-      if (L.names) applyNameGroup(L, chk.checked);
+      /* A wash going on or off changes what the layers *under* it are still showing, and a name now
+         belongs on ground you can see — so switching one of the stacked realm layers refits every
+         label on the map, not only its own. Guarded on the switch actually having flipped, since
+         apply() also runs on every frame of an opacity drag. */
+      const flipped = REALM_STACK.includes(L.id) && L._was !== chk.checked;
+      L._was = chk.checked;
+      if (L.names) applyNameGroup(L, chk.checked, flipped);
+      else if (flipped) renderRealmNames();
     };
     chk.onchange = apply; rng.oninput = apply;
     if (inv) inv.onclick = () => { L._inv = !L._inv; inv.classList.toggle('on', L._inv); apply(); };
@@ -7661,7 +7796,7 @@ function buildLayerUI() {
    Which is why the rebuild is guarded rather than unconditional: `apply` also runs on every frame of an
    opacity drag, and refitting there would refit sixty times a second. It fires when a group's visibility
    actually flipped, or when a visible one has nothing in it yet. */
-function applyNameGroup(L, on) {
+function applyNameGroup(L, on, flipped) {
   const show = on && !!L._names;
   if (L.id === 'labels') {
     if (groups.shNames) groups.shNames.style.display = show ? '' : 'none';
@@ -7671,7 +7806,9 @@ function applyNameGroup(L, on) {
   if (!g) return;
   const was = g.style.display !== 'none';
   g.style.display = show ? '' : 'none';
-  if (was !== show || (show && !g.firstChild)) renderRealmNames();
+  // `flipped` is this layer's *wash* having been switched, which changes the ground the other layers
+  // may write on even when this one's own names never appear.
+  if (was !== show || flipped || (show && !g.firstChild)) renderRealmNames();
 }
 
 /* ---------------- tokens ----------------
