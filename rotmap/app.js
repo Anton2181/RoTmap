@@ -571,11 +571,18 @@ const PALETTE_SPARE = ['#eceff3', '#2b3440', '#00c8d4', '#ffd93d', '#ff5e9c'];
    detachments, the routes and the isochrone origins. Two palettes meant a route and a token could be
    "the same colour" without matching, and meant learning the swatch grid twice.
 
-   Twenty: the fourteen legions in numeral order, then the Blue Scarves — who are on both realm maps in
-   their own right and so have a colour of their own to match — then the five spares. Twenty rather than
-   fifteen because fourteen legions took all but one of the old fifteen and left nothing to draw a route
-   with, and because twenty is four even rows of five in the swatch grid where fifteen was three. */
-const PALETTE = [...LEGION_COLORS, WARLORD_HEX['Blue Scarves'], ...PALETTE_SPARE];
+   Twenty: the five spares first, then the fourteen legions in numeral order, then the Blue Scarves —
+   who are on both realm maps in their own right and so have a colour of their own to match. Twenty
+   rather than fifteen because fourteen legions took all but one of the old fifteen and left nothing
+   to draw a route with, and because twenty is four even rows of five in the swatch grid where fifteen
+   was three.
+
+   The spares lead for two reasons, and one order is the point of both. Handing out: the first colour
+   offered to a thing that is not a legion should not be a legion's — a route in Legion V's red is a
+   claim about whose march it is. Reading: the grid is the same grid wherever it opens, so the swatch
+   in the top-left corner is the same colour in the token menu as in the route menu, and the shape of
+   it is learnt once. It was learnt twice, the routes having quietly reordered it for themselves. */
+const PALETTE = [...PALETTE_SPARE, ...LEGION_COLORS, WARLORD_HEX['Blue Scarves']];
 /* Detachments are named off the parent: the 5th's first is V'a, the next V'b. So a token's "base" is
    whatever stands before the apostrophe, and every token sharing a base belongs to one command — which is
    also how the next free letter is found, and how a detachment knows whose colour to wear. */
@@ -2093,6 +2100,15 @@ function renderLabels() {
 function shName(h, m) {
   if (m && m.name !== undefined) return m.name;
   return S.features.labels[h] ?? S.names.hexes[h] ?? '';
+}
+/* What to call a piece of ground, asked of the subhex rather than the hex: the stronghold standing
+   on it names it, and only failing that does the hex's own label answer. The readout has always done
+   this — it is why hovering says Ephialtas — but the step table and the step menu asked the hex
+   alone, so a place whose name lives on its marker (every stronghold moved or added by hand) went
+   nameless in the very list you write orders from. One rule, in one place, for all three. */
+function placeName(h, ri) {
+  const m = shAt(h, ri | 0);
+  return (m ? shName(h, m) : (S.features.labels[h] ?? S.names.hexes[h])) || '';
 }
 
 /* ---------------- coasts (split hexes into land/sea parts) ---------------- */
@@ -4170,10 +4186,13 @@ function commanderyBuild() {
     for (const h of c.hexes) commIndex.set(h, i);
     let best = null;
     for (const h of c.hexes) {                    // ascending, so ties fall to the lowest hex
-      const list = shList(h).filter(m => !m.removed);
-      // A datasheet stronghold with no marker of its own still counts, and counts as ordinary —
-      // the sheet says one is there, not what kind.
-      for (const m of (list.length ? list : (S.hexes[h]?.s ? [{}] : []))) {
+      /* Exactly the settlements the map draws, by asking the same function the renderer does. A
+         datasheet stronghold with no marker of its own still counts, and counts as ordinary — the
+         sheet says one is there, not what kind. One that has been **erased** does not: this used to
+         fall back to the sheet whenever the filtered list came out empty, which quietly resurrected
+         the very stronghold that had just been removed, and the province went on being named after
+         a town that was no longer on the map. */
+      for (const { m } of shEntries(h)) {
         const name = shName(h, m);
         if (!name) continue;
         const kind = shKindOf(m);
@@ -4618,7 +4637,7 @@ function startState(h, ri, o) {
 
 // Routes start with the neutral colours. Legion colours remain available later in the picker, and a
 // route that starts under a token still adopts that token's colour below.
-const ROUTE_COLORS = [...PALETTE_SPARE, ...LEGION_COLORS, WARLORD_HEX['Blue Scarves']];
+const ROUTE_COLORS = PALETTE;   // the one palette, in the one order — see PALETTE
 
 // The quiet form is for callers that have already taken their own undo snapshot and mean the new
 // route to be part of that same step — clicking bare map places a waypoint *and* the route to hold
@@ -4969,24 +4988,15 @@ function optimiseRouteOrder(rt, mode) {
     }
   }
 
-  // The finish. Arriving is a halt, so whatever is still running is rounded up — and for a round trip
-  // the way home is one more leg, charged before that rounding like any other.
+  // The finish. Arriving is a halt whatever the boxes say, so whatever is still running is rounded up.
   let best = null;
   for (let last = 0; last < n; last++) {
     if (fixedEnd >= 0 && last !== fixedEnd) continue;
-    if (mode === 'loop' && last === 0 && n > 1) continue;
     for (const st of statesAt(last)) {
       for (const e of dp.get(key(full, last, st)) || []) {
-        let pend = e.pending, exact = e.exact, home = false;
-        if (mode === 'loop') {
-          let back;
-          for (const [, c] of costsFrom(last, st)[0]) if (back === undefined || c < back) back = c;
-          if (back === undefined) continue;
-          pend += back; exact += back; home = true;
-        }
-        const days = e.days + optDays(pend);
-        if (!best || days < best.days || (days === best.days && exact < best.exact - 1e-9))
-          best = { days, exact, end: e, home };
+        const days = e.days + optDays(e.pending);
+        if (!best || days < best.days || (days === best.days && e.exact < best.exact - 1e-9))
+          best = { days, exact: e.exact, end: e };
       }
     }
   }
@@ -4995,7 +5005,7 @@ function optimiseRouteOrder(rt, mode) {
   const order = [];
   for (let e = best.end; e; e = e.prev) order.push(e.at);
   order.reverse();
-  return { order, days: best.days, exact: best.exact, home: best.home };
+  return { order, days: best.days, exact: best.exact };
 }
 
 /* The button and the menu both come here. The search is a second or two of pathfinding on a big
@@ -5021,7 +5031,6 @@ async function runOptimise(i, mode) {
   const before = orderedOf(rt, lastResults[i]);
   const wps = rt.wps;
   const next = res.order.map(k => wps[k]);
-  if (res.home) next.push({ ...wps[0] });     // the way home is a stop of its own, not the same object
   const same = next.length === wps.length && next.every((w, k) => w === wps[k]);
   if (same) return toast(`${rt.name} is already in the best order — ${res.days} d`);
   pushUndoRoutes();
@@ -5039,8 +5048,6 @@ function optimiseMenu(i) {
             () => { closeCtx(); runOptimise(i, 'start'); });
     ctxItem(box, 'Keep both ends<span class="arw">first and last stay</span>',
             () => { closeCtx(); runOptimise(i, 'ends'); });
-    ctxItem(box, 'Return to the start<span class="arw">adds the way home</span>',
-            () => { closeCtx(); runOptimise(i, 'loop'); });
   };
 }
 
@@ -5404,10 +5411,16 @@ function reliefAll(fromNode, o, newsSpeed, maxD) {
 
    Each origin marches as its own army, so the race is between forces rather than between points. That
    is deliberate but worth remembering when reading a border: it moves if you change either column. */
-const ISO_COLORS = PALETTE;
+const ISO_COLORS = PALETTE;      // the grid an origin's swatch opens, in the one order
+/* Handing out is a different question from reading. An origin's colour is drawn as a thin outline
+   around the ground it claims, and the two quietest spares — near-white and charcoal — are the two
+   worst lines to draw over a map that is already pale in the north and dark in the mountains. So a
+   new origin is offered the strong hues first, while its picker still shows the same grid as
+   everything else. */
+const ISO_PICK = [...LEGION_COLORS, WARLORD_HEX['Blue Scarves'], ...PALETTE_SPARE];
 function freeIsoColor() {
   const used = new Set(S.iso.origins.map(o => o.color));
-  return ISO_COLORS.find(c => !used.has(c)) || ISO_COLORS[S.iso.origins.length % ISO_COLORS.length];
+  return ISO_PICK.find(c => !used.has(c)) || ISO_PICK[S.iso.origins.length % ISO_PICK.length];
 }
 function freeIsoName() {
   const taken = new Set(S.iso.origins.map(o => o.name));
@@ -5841,7 +5854,7 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
   let prevH = null;
   const rows = r.steps.map((st, j) => {
     cum += st.irl;
-    const name = S.features.labels[st.h] ?? S.names.hexes[st.h];
+    const name = placeName(st.h, st.ri);
     const hexLbl = (name ? name + ' ' : '') + st.h;
     // The ⌂ marks a stronghold the column is actually standing in, which on a split hex is a question
     // about the bank, not the hex.
@@ -6926,14 +6939,26 @@ function drawClick(wx, wy, scale, e) {
     const ri = regionAt(h, [wx, wy]);
     const m = shAt(h, ri);
     const sub = isSplit(h) ? ` subhex ${ri}` : '';
-    const cur = m ? shName(h, m) : (S.features.labels[h] ?? S.names.hexes[h] ?? '');
-    const name = prompt(`Name for hex ${h}${sub}${m ? ' (stronghold)' : ''} — rename or clear:`, cur);
+    const sheet = S.names.hexes[h];
+    const cur = m ? shName(h, m) : (S.features.labels[h] ?? sheet ?? '');
+    /* Clearing means clearing. It used to mean "put the datasheet's name back", which made a name
+       from the sheet impossible to be rid of: emptying the box handed it straight back, so a hex
+       went on calling itself Ephialtas long after the stronghold there had been erased and the town
+       redrawn a hex away. The sheet's own name is offered in the message instead, which makes
+       putting it back a matter of retyping what is in front of you rather than a gesture nobody
+       could have guessed. */
+    const name = prompt(`Name for hex ${h}${sub}${m ? ' (stronghold)' : ''} — rename, or clear to remove.` +
+                        (!m && sheet ? `\nThe datasheet calls it ${sheet}.` : ''), cur);
     if (name === null) return;
     pushUndo();
+    const t = name.trim();
     // A blank name on a stronghold is an empty name, not a deletion — the keep is still there, just
-    // unlabelled. Only a bare hex label is removed outright.
-    if (m) shEnsure(h, ri).name = name.trim();
-    else if (name.trim()) S.features.labels[h] = name.trim();
+    // unlabelled.
+    if (m) shEnsure(h, ri).name = t;
+    else if (t) S.features.labels[h] = t;
+    // The blank is kept only where there is a datasheet name for it to overrule. On a hex the sheet
+    // never named, blank is simply the absence of a label, and is stored as one.
+    else if (sheet) S.features.labels[h] = '';
     else delete S.features.labels[h];
     commitFeatures();
     return;
@@ -7321,7 +7346,7 @@ function onHover(e) {
   // than whichever one the hex happens to contain.
   const hoverRi = regionAt(h, [wx, wy]);
   const hoverM = shAt(h, hoverRi);
-  const name = hoverM ? shName(h, hoverM) : (S.features.labels[h] ?? S.names.hexes[h]);
+  const name = placeName(h, hoverRi);
   /* What kind of place it is, as one phrase: "Port Fortress", "Inland Major City". Whether it can be
      reached by ship is the first thing anyone wants of a stronghold on a map with a fleet on it, so it
      leads rather than trailing in a bracket — and a bracket after a bracketed hex number was one pair
@@ -8014,8 +8039,10 @@ function openColorPanelAt(anchor, title, palette, get, set) {
   });
 }
 
-function hexTitle(h) {
-  const name = S.features.labels[h] ?? S.names.hexes[h];
+// Given the subhex the pointer is on, the menu's heading names what is standing there rather than
+// what the sheet once called the hex — the same answer the readout under the cursor is giving.
+function hexTitle(h, ri) {
+  const name = ri == null ? (S.features.labels[h] ?? S.names.hexes[h] ?? '') : placeName(h, ri);
   return (name ? `<b>${escHtml(name)}</b> — ` : '') + `hex ${h}`;
 }
 // The numerals, plus a way out to free text. A numeral already on the map is still offered — two
@@ -8073,7 +8100,7 @@ function paintCommandery(layer, ci, colour) {
 }
 function hexMenu(h, pt, wp) {
   return box => {
-    ctxHead(box, hexTitle(h));
+    ctxHead(box, hexTitle(h, pt ? regionAt(h, pt) : 0));
     /* The Map tool's own entries, at the top, and only while that tool is in hand. Everything the tool can
        do was in the panel or on the pointer; the one thing a right-click is for is acting on *what you are
        pointing at*, and the two entries below are exactly that — this subhex, and the province it is part
@@ -8348,7 +8375,7 @@ document.getElementById('routeOut').addEventListener('dblclick', e => {
 function stepMenu(ri, j) {
   const rt = S.routes[ri], st = lastResults[ri]?.steps?.[j];
   return box => {
-    const name = S.features.labels[st.h] ?? S.names.hexes[st.h];
+    const name = placeName(st.h, st.ri);
     ctxHead(box, (name ? `<b>${escHtml(name)}</b> — ` : '') + `hex ${st.h} · step ${j}`);
     const anyForced = rt.wps.some(w => w.f);
     const pending = !!(fmPending && fmPending.ri === ri);
@@ -8655,7 +8682,9 @@ function searchPlaces(raw) {
   const num = raw.trim();
   // A bare number is a hex id. The step table is full of them, so looking one up is worth doing.
   if (/^\d+$/.test(num) && S.hexes[num])
-    hits.push({ h: +num, name: S.features.labels[num] || S.names.hexes[num] || '', rank: -1 });
+    // `??`, not `||`: a hex whose name has been cleared has no name, and must not answer to the one
+    // the datasheet used to give it.
+    hits.push({ h: +num, name: S.features.labels[num] ?? S.names.hexes[num] ?? '', rank: -1 });
   // How wrong the spelling may be, in letters. One or two letters have to be exact — at that length
   // a single wrong letter would match half the map. Right spellings always rank above near ones, so
   // being generous here only ever adds rows below the good answers.
@@ -8760,7 +8789,7 @@ function searchRows() {
         tier: S.commanderies[it.comm]?.tier, hexes: commanderySize(it.comm) }
     // Rebuilt from the marker where there is one, so a renamed stronghold's pin renames with it.
     : { h: it.h, ri: it.ri, name: (it.ri != null && shAt(it.h, it.ri) ? shName(it.h, shAt(it.h, it.ri)) : null)
-                                  || S.features.labels[it.h] || S.names.hexes[it.h] || '' });
+                                  ?? S.features.labels[it.h] ?? S.names.hexes[it.h] ?? '' });
   const keys = new Set(pinned.map(selKey));
   const hits = searchPlaces(searchInput.value).filter(x => !keys.has(selKey(x)));
   return { pinned, hits, rows: [...pinned, ...hits] };
