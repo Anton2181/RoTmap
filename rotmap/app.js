@@ -2,6 +2,16 @@
 /* Ravages vector hex map — terrain from the datasheet, hand-drawn overlays, travel calculator. */
 
 const SHEET_URL = 'https://docs.google.com/spreadsheets/d/1jC2kO_Hidhg4WoL-jBGw1lKKD5s6a1-xoqv1omTZR_k/gviz/tq?tqx=out:csv&gid=0';
+/* `no-cache` on every data file, which means *revalidate*, not "fetch it again": the browser still
+   sends its ETag and still gets a 304 with an empty body when nothing has changed, so the cost is one
+   round trip and the payload is only ever sent when the file has actually moved.
+
+   Without it a static host's cache headers decide when a republished map arrives, and GitHub Pages
+   serves these with ten minutes of freshness — so a file uploaded and then looked at reads as "the
+   change did not go through", which is the one failure that sends you hunting through the JSON for a
+   change that is sitting right there in it. The map is small and republished by hand; a stale one is
+   far more expensive than a conditional request. */
+const DATA_FETCH = { cache: 'no-cache' };
 const LS_KEY = 'rotmap_features_v1';
 // Drawing is authoring, not viewing. The published map is something you read, so the Draw tools only
 // exist when the app is served from your own machine — everything else works the same either way.
@@ -7994,7 +8004,7 @@ function normalizeTokens(arr) {
 let startingTokensStamp = null;
 async function fetchStartingTokens() {
   try {
-    const r = await fetch('data/tokens.json');
+    const r = await fetch('data/tokens.json', DATA_FETCH);
     if (!r.ok) return null;
     const txt = await r.text();
     startingTokensStamp = quickHash(txt);
@@ -8776,7 +8786,7 @@ document.getElementById('tokImport').onchange = async e => {
    what lets a republished map reach a browser that has been here before — see chooseFeatures. */
 async function fetchFeaturesFile() {
   try {
-    const r = await fetch('data/features.json');
+    const r = await fetch('data/features.json', DATA_FETCH);
     if (!r.ok) return null;
     const txt = await r.text();
     const j = JSON.parse(txt);
@@ -8891,12 +8901,12 @@ function chooseFeatures(ls, file, baseTxt) {
   return file.obj;
 }
 async function boot() {
-  const T = await (await fetch('data/terrain.json')).json();
+  const T = await (await fetch('data/terrain.json', DATA_FETCH)).json();
   S.G = T.grid; S.hexes = T.hexes;
-  try { S.names = await (await fetch('data/strongholds.json')).json(); } catch {}
+  try { S.names = await (await fetch('data/strongholds.json', DATA_FETCH)).json(); } catch {}
   // Shipped with the map and never edited from it, so unlike the drawing it is simply read: a missing
   // or broken file costs the commandery readout and its search rows and nothing else.
-  try { S.commanderies = (await (await fetch('data/commanderies.json')).json()).commanderies || []; }
+  try { S.commanderies = (await (await fetch('data/commanderies.json', DATA_FETCH)).json()).commanderies || []; }
   catch { S.commanderies = []; }
   initGeom();
   buildScaffold();
