@@ -3893,13 +3893,17 @@ function armyOpts(set) {
 /* The panel is a view of one settings object. Writing a box writes through to whichever object is
    active and recomputes; changing the active route rereads the boxes from it. */
 const SETTING_NUMS = ['li', 'cav', 'inf', 'wag', 'non'];
-const SETTING_CHKS = ['forced', 'marines', 'embark', 'fleet', 'noTrade'];
+const SETTING_CHKS = ['forced', 'marines', 'embark', 'fleet', 'noTrade', 'stops'];
+/* Boxes that are on unless something says otherwise. Every route saved before a box existed has no
+   opinion about it, and reading a missing key as "off" would silently change what those routes mean —
+   `stops` in particular, where off would stop billing halts on marches that were planned with them. */
+const SETTING_CHK_ON = { stops: true };
 let syncingForm = false;
 function syncRouteForm() {
   const st = activeSettings();
   syncingForm = true;
   for (const id of SETTING_NUMS) document.getElementById(id).value = st[id] ?? 0;
-  for (const id of SETTING_CHKS) document.getElementById(id).checked = !!st[id];
+  for (const id of SETTING_CHKS) document.getElementById(id).checked = st[id] ?? !!SETTING_CHK_ON[id];
   document.getElementById('weather').value = st.weather || 'clear';
   const rt = S.routes[S.activeRoute], og = activeIsoOrigin();
   // Each panel says whose column it is showing, and they no longer agree: the Routes panel edits the
@@ -4803,6 +4807,243 @@ function routeLeg(rt, o) {
            ends, fail: null };
 }
 
+/* ---------------- the march as orders: whole days, one order per halt ----------------
+   A column marches under orders written in whole days, so the fraction left over when it halts is
+   spent whether it was needed or not: a run of 3.2 days is a four-day order, and the 0.8 is gone.
+   That is the figure a plan is actually made in, so it is the one a route now reports — with the
+   exact total kept beside it, because the difference between the two *is* the waste, and the waste
+   is what a better order of waypoints removes.
+
+   A waypoint the column only **passes through** breaks no march. No order ends there, so its leg
+   runs straight on into the next and the rounding waits for the next halt. Arriving is always a
+   halt: the march is over, and the day it ends in is spent. Setting out is never one — nothing has
+   been ordered yet. */
+/* Two switches, one question. The route's box says whether the column halts at its waypoints at all;
+   a waypoint's own flag excuses just that one. Absent means yes on both counts — a waypoint is
+   somewhere to be, and being somewhere takes a day. Arrival is not asked about: the march ends there
+   whatever the boxes say, so the callers that care about arriving handle it themselves. */
+const routeStops = rt => rt?.set?.stops !== false;
+const wpHalt = (rt, wi) => routeStops(rt) && !rt?.wps?.[wi]?.thru;
+
+function legCosts(rt, r) {
+  const legs = new Array(Math.max(0, rt.wps.length - 1)).fill(0);
+  for (const st of r.steps) if (st.leg < legs.length) legs[st.leg | 0] += st.irl;
+  return legs;
+}
+// Ordered days for a march over `legs`, asking `isHalt(wi)` whether the column stops at each waypoint
+// it reaches, with `final` deciding whether the end of the list is an arrival (it is, for a whole
+// route) or a stop the column is about to march on from (it is not, for the hover preview).
+function orderedFor(legs, isHalt, final = true) {
+  let days = 0, pending = 0, exact = 0, halts = 0;
+  for (let i = 0; i < legs.length; i++) {
+    pending += legs[i]; exact += legs[i];
+    const last = i === legs.length - 1;
+    if ((last && final) || isHalt(i + 1)) { days += optDays(pending); pending = 0; halts++; }
+  }
+  return { days, exact, pending, halts, waste: days + pending - exact };
+}
+// What a solved route costs in orders. Null when there is nothing solved to bill.
+function orderedOf(rt, r) {
+  if (!rt || !r || r.fail || rt.wps.length < 2) return null;
+  return orderedFor(legCosts(rt, r), wi => wpHalt(rt, wi));
+}
+// The short form the row, the map button and the card heading all say: whole days if the march is
+// solved, and the exact figure only in the tooltip, where there is room to explain itself.
+function routeDays(rt, r) {
+  const o = orderedOf(rt, r);
+  return o ? o.days + 'd' : r.irl.toFixed(1) + 'd';
+}
+function routeDaysTitle(rt, r) {
+  const o = orderedOf(rt, r);
+  return o ? `${o.days} IRL days ordered — ${o.exact.toFixed(1)} marched, ${o.waste.toFixed(1)} wasted at ${o.halts} halt${o.halts === 1 ? '' : 's'}` : '';
+}
+
+/* ---------------- the best order to visit them in ----------------
+   Given a set of places a column has to reach, the order it reaches them in is a decision worth as
+   much as the roads it takes: on ground this size the difference between a sensible-looking order and
+   the best one is routinely several days. Done by hand it is dragging waypoints about and reading the
+   total off the card, one arrangement at a time, which is exactly the kind of search a machine should
+   be doing.
+
+   It is billed in **orders**, not in exact days, because that is what the reordering is for. Two
+   arrangements that march 11.4 and 11.9 days cost the same twelve days of orders if they halt in the
+   same places, and an arrangement that marches *further* can cost a day less by landing its halts
+   more tidily. Sorting on the exact total would hand back the wrong answer with great precision.
+
+   Held-Karp over subsets: exact, and small enough here to stay exact — a dozen waypoints is 4,096
+   subsets, and the real cost is the pathfinding, one field per waypoint per state it can set out in,
+   built only when the search actually needs it. What makes it more than a plain travelling-salesman
+   problem is the state the column carries between legs (afloat, ashore with ships, ashore without)
+   and the rounding, which is not additive: a run through pass-through waypoints is rounded once at
+   its end, so a partial answer is described by a pair — orders already spent, and the fraction still
+   running — and neither alone decides which of two partial answers is worth keeping. Both are kept,
+   as a small Pareto frontier per subset, and the pair that dominates wins. With every waypoint a halt
+   the frontier is one entry deep and this reduces to the ordinary DP. */
+// Where the exact search stops being instant. Measured, not guessed: fifteen waypoints is about
+// eight-tenths of a second all in, and the subsets double with every one after that.
+const OPT_MAX_WPS = 15;
+
+function optimiseRouteOrder(rt, mode) {
+  const wps = rt.wps, n = wps.length;
+  const o = armyOpts(rt.set);
+  // With halts switched off the whole march is one order and the arrangement is judged on the exact
+  // total after all — every order rounds once, at the end, so the rounding stops discriminating.
+  const stops = routeStops(rt);
+  // The forced-march flag says "push on from here", so it belongs to the waypoint and travels with it
+  // when the order changes — a leg is solved at the pace of the stop it sets out from.
+  const oAt = k => (wps[k].f && !o.forced ? { ...o, forced: true } : o);
+  const statesAt = k => {
+    const f = forcedAf(region(wps[k].h, wps[k].ri | 0));
+    return STATES.filter(([af]) => f === null || af === f).map(([af, sh]) => af * 2 + sh);
+  };
+  /* One Dijkstra field per (waypoint, departure state), read for the cost to every other waypoint in
+     every state it can arrive in — the whole cost matrix from a handful of searches. Memoised and
+     built on demand, so a state no arrangement can actually leave in is never searched from. */
+  const fields = new Map();
+  const costsFrom = (k, st) => {
+    const id = k + ':' + st;
+    const hit = fields.get(id);
+    if (hit) return hit;
+    const F = dijkstraField(wps[k].h, wps[k].ri | 0, st >> 1, st & 1, oAt(k));
+    const out = wps.map((w, j) => {
+      const m = new Map();
+      if (j === k) return m;
+      for (const [af, sh] of STATES) {
+        let best;
+        for (let g = 0; g < 8; g++) {
+          const c = F.dist.get(sk(w.h, w.ri | 0, af, sh, g));
+          if (c !== undefined && (best === undefined || c < best)) best = c;
+        }
+        if (best !== undefined) m.set(af * 2 + sh, best);
+      }
+      return m;
+    });
+    fields.set(id, out);
+    return out;
+  };
+
+  const full = (1 << n) - 1;
+  const key = (mask, last, st) => (mask * n + last) * 4 + st;
+  const dp = new Map();
+  // A partial answer is kept unless another is no worse on every count. Orders spent and the fraction
+  // still running are both compared, because a smaller number of orders bought by leaving a nearly
+  // full day running is not obviously better — the next halt may pay for it.
+  const push = (k, e) => {
+    const a = dp.get(k);
+    if (!a) { dp.set(k, [e]); return; }
+    for (const x of a)
+      if (x.days <= e.days && x.pending <= e.pending + 1e-9 && x.exact <= e.exact + 1e-9) return;
+    const keep = a.filter(x => !(e.days <= x.days && e.pending <= x.pending + 1e-9 && e.exact <= x.exact + 1e-9));
+    keep.push(e);
+    dp.set(k, keep);
+  };
+
+  const [af0, sh0] = startState(wps[0].h, wps[0].ri | 0, o);
+  push(key(1, 0, af0 * 2 + sh0), { days: 0, pending: 0, exact: 0, prev: null, at: 0 });
+
+  const fixedEnd = mode === 'ends' ? n - 1 : -1;
+  for (let mask = 1; mask <= full; mask++) {
+    if (!(mask & 1)) continue;                       // every arrangement sets out from the first stop
+    for (let last = 0; last < n; last++) {
+      if (!(mask & (1 << last))) continue;
+      for (const st of statesAt(last)) {
+        const a = dp.get(key(mask, last, st));
+        if (!a || !a.length) continue;
+        const cs = costsFrom(last, st);
+        for (let j = 0; j < n; j++) {
+          if (mask & (1 << j)) continue;
+          const next = mask | (1 << j);
+          // A fixed finish is only ever reached last, so it is not allowed to be stepped on early.
+          if (j === fixedEnd && next !== full) continue;
+          for (const [st2, c] of cs[j]) {
+            const halt = stops && !wps[j].thru;
+            for (const e of a) {
+              const pend = e.pending + c;
+              push(key(next, j, st2), halt
+                ? { days: e.days + optDays(pend), pending: 0, exact: e.exact + c, prev: e, at: j }
+                : { days: e.days, pending: pend, exact: e.exact + c, prev: e, at: j });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // The finish. Arriving is a halt, so whatever is still running is rounded up — and for a round trip
+  // the way home is one more leg, charged before that rounding like any other.
+  let best = null;
+  for (let last = 0; last < n; last++) {
+    if (fixedEnd >= 0 && last !== fixedEnd) continue;
+    if (mode === 'loop' && last === 0 && n > 1) continue;
+    for (const st of statesAt(last)) {
+      for (const e of dp.get(key(full, last, st)) || []) {
+        let pend = e.pending, exact = e.exact, home = false;
+        if (mode === 'loop') {
+          let back;
+          for (const [, c] of costsFrom(last, st)[0]) if (back === undefined || c < back) back = c;
+          if (back === undefined) continue;
+          pend += back; exact += back; home = true;
+        }
+        const days = e.days + optDays(pend);
+        if (!best || days < best.days || (days === best.days && exact < best.exact - 1e-9))
+          best = { days, exact, end: e, home };
+      }
+    }
+  }
+  if (!best) return null;
+
+  const order = [];
+  for (let e = best.end; e; e = e.prev) order.push(e.at);
+  order.reverse();
+  return { order, days: best.days, exact: best.exact, home: best.home };
+}
+
+/* The button and the menu both come here. The search is a second or two of pathfinding on a big
+   route, which is a second or two the page cannot paint through, so the button says what it is doing
+   and is given a frame to say it in before the work starts. */
+async function runOptimise(i, mode) {
+  const rt = S.routes[i];
+  if (!rt) return;
+  if (rt.wps.length < 3) return toast('Nothing to reorder — a route needs three waypoints or more', true);
+  if (rt.wps.length > OPT_MAX_WPS)
+    return toast(`Too many waypoints to search exactly — ${OPT_MAX_WPS} is the limit`, true);
+  if (mode === 'ends' && rt.wps.length < 4)
+    return toast('With both ends held there is nothing left to reorder', true);
+  if (!S.adj) deriveAdj();
+  const btn = document.getElementById('optRoute');
+  const was = btn?.textContent;
+  if (btn) { btn.textContent = 'Optimising…'; btn.disabled = true; }
+  await new Promise(r => setTimeout(r, 20));
+  let res = null;
+  try { res = optimiseRouteOrder(rt, mode); }
+  finally { if (btn) { btn.textContent = was; btn.disabled = false; } }
+  if (!res) return toast('No order reaches every waypoint with these settings', true);
+  const before = orderedOf(rt, lastResults[i]);
+  const wps = rt.wps;
+  const next = res.order.map(k => wps[k]);
+  if (res.home) next.push({ ...wps[0] });     // the way home is a stop of its own, not the same object
+  const same = next.length === wps.length && next.every((w, k) => w === wps[k]);
+  if (same) return toast(`${rt.name} is already in the best order — ${res.days} d`);
+  pushUndoRoutes();
+  rt.wps = next;
+  S.activeRoute = i;
+  computeRoute();
+  toast(before ? `${rt.name}: ${before.days} d → ${res.days} d` : `${rt.name}: ${res.days} d`);
+}
+// The three questions the button can be asking, kept in one place so the panel and the route menu
+// cannot offer different ones.
+function optimiseMenu(i) {
+  return box => {
+    ctxHead(box, `<b>${escHtml(S.routes[i]?.name || 'Route')}</b> — best order`);
+    ctxItem(box, 'Keep the start<span class="arw">finish anywhere</span>',
+            () => { closeCtx(); runOptimise(i, 'start'); });
+    ctxItem(box, 'Keep both ends<span class="arw">first and last stay</span>',
+            () => { closeCtx(); runOptimise(i, 'ends'); });
+    ctxItem(box, 'Return to the start<span class="arw">adds the way home</span>',
+            () => { closeCtx(); runOptimise(i, 'loop'); });
+  };
+}
+
 /* ---------------- where the next click would get you ---------------- */
 /* Placing a waypoint answers "how long does that take"; the readout under the cursor answers it
    before the click, which is the order the question is actually asked in — you are hunting for the
@@ -4821,7 +5062,9 @@ function routeLeg(rt, o) {
 let routeProbe = null;
 function routeProbeFields() {
   if (routeProbe) return routeProbe.fields;
-  routeProbe = { fields: [], base: 0 };
+  // `banked` is the orders already spent at the last halt and `pending` the run still going, so the
+  // preview can bill a further leg the way the route does: the fraction only rounds when it stops.
+  routeProbe = { fields: [], banked: 0, pending: 0, baseExact: 0 };
   const rt = S.routes[S.activeRoute];
   if (!rt || !rt.wps.length) return routeProbe.fields;
   const o = armyOpts(rt.set);
@@ -4838,7 +5081,14 @@ function routeProbeFields() {
     // every hex on the map for it.
     if (!r || r.fail || !r.ends) { routeProbe.broken = true; return routeProbe.fields; }
     ends = r.ends;
-    routeProbe.base = r.irl;
+    // Not billed as an arrival: the column is standing at the last waypoint about to march on, so a
+    // run that has not halted yet is still running and rounds only when it finally stops.
+    const o = orderedFor(legCosts(rt, r), wi => wpHalt(rt, wi), false);
+    routeProbe.banked = o.days; routeProbe.pending = o.pending;
+    // Lookups come back as an exact total from the route's first waypoint; this is what to subtract
+    // to leave the part that is new. A state dearer to arrive in carries its surcharge with it, which
+    // is right: paying a day for ships to reach the hovered hex is a day this leg costs.
+    routeProbe.baseExact = r.irl;
   }
   // The forced-march flag sits on the waypoint a push starts *from*, so a forced last leg means the
   // leg being previewed is forced too — solved at that pace, not rescaled after the fact.
@@ -5560,10 +5810,17 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
          `data-wp` is what the pointer handler grabs by; the ring is given a transparent disc behind it so
          the whole marker is a target rather than just its outline, which at five pixels is nothing to aim
          at. Only that hit area is filled — the ring itself still reads as hollow. */
+      /* A waypoint the column only passes through is drawn smaller and thinner. It is a lesser thing
+         than a stop — no halt, no order ending on it, nothing spent there — and the marker says so by
+         being less of a marker, rather than by taking a symbol of its own that would have to be
+         learnt. The hit area stays the size a finger needs either way. */
+      const thru = !wpHalt(rt, wi) && wi !== rt.wps.length - 1;   // arriving is a halt whatever the boxes say
+      const rad = (act ? 6 : 5) * (thru ? 0.62 : 1);
       const g = el('g', { 'data-wp': i + ':' + wi, style: 'cursor:grab' }, groups.route);
       el('circle', { cx, cy, r: (act ? 6 : 5) + 4, fill: 'transparent', stroke: 'none' }, g);
-      el('circle', { cx, cy, r: act ? 6 : 5, fill: sea ? rt.color : 'none', stroke: rt.color,
-                     'stroke-width': act ? 2.4 : 1.8, opacity: act ? 1 : 0.7, 'data-rt': i,
+      el('circle', { cx, cy, r: rad, fill: sea ? rt.color : 'none', stroke: rt.color,
+                     'stroke-width': (act ? 2.4 : 1.8) * (thru ? 0.75 : 1),
+                     opacity: (act ? 1 : 0.7) * (thru ? 0.8 : 1), 'data-rt': i,
                      'pointer-events': 'none' }, g);
     });
     results.push(r);
@@ -5614,8 +5871,18 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
     paceRow = `<tr><td>Pace</td><td><span style="color:#6ef3a5">exclusively cavalry — forced ×2 speed</span></td></tr>`;
   else if (o.forced && o.army.inf === 0 && o.army.cav > 0 && o.army.wag)
     paceRow = `<tr><td>Pace</td><td><span class="warn">not cavalry-only (wagons) — no ×2. Zero them for the bonus.</span></td></tr>`;
+  /* Ordered days lead, marched days follow. What a plan is made of is the orders — a column cannot be
+     told to march three-tenths of a day — so the whole-day figure is the answer to "how long", and the
+     exact one is the working behind it. The gap between them is the waste, and the waste is the thing
+     the order of the waypoints can actually change. */
+  const ord = orderedOf(rt, r);
+  const wasteRow = ord
+    ? `<tr><td>Orders</td><td>${ord.days} whole days over ${ord.halts} halt${ord.halts === 1 ? '' : 's'}` +
+      `${ord.waste > 0.05 ? ` — <span class="warn">${ord.waste.toFixed(1)} d wasted</span>` : ''}</td></tr>`
+    : '';
   out.innerHTML =
-    `<div class="big" style="color:${rt.color}">${rt.name}: ${r.irl.toFixed(1)} IRL days <span style="color:#9aa4b2">(${game.toFixed(0)} in-game)</span></div>` +
+    `<div class="big" style="color:${rt.color}">${rt.name}: ${ord ? ord.days + ' IRL days' : r.irl.toFixed(1) + ' IRL days'} ` +
+    `<span style="color:#9aa4b2">(${r.irl.toFixed(1)} marched · ${game.toFixed(0)} in-game)</span></div>` +
     (() => {
       const legs = rt.wps.filter(w => w.f).length;
       if (!legs) return '';
@@ -5625,7 +5892,7 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
       return `<div class="fmnote">Forced march: ${runs} section${runs > 1 ? 's' : ''}, ` +
              `${legs} of ${Math.max(1, rt.wps.length - 1)} legs — right-click a step to change where.</div>`;
     })() +
-    `<table><tr><td>Distance</td><td>${r.hexes} hexes ≈ ${Math.round(r.miles ?? r.hexes * RULES.HEX_MILES)} mi</td></tr>` +
+    `<table>${wasteRow}<tr><td>Distance</td><td>${r.hexes} hexes ≈ ${Math.round(r.miles ?? r.hexes * RULES.HEX_MILES)} mi</td></tr>` +
     `<tr><td>Column</td><td>${o.colMiles.toFixed(1)} mi${o.colMiles > RULES.LONG_COLUMN.limit ? ' <span class="warn">(over 6 mi — slowed)</span>' : ''}</td></tr>${paceRow}</table>` +
     `<div class="steps"><table class="stepstbl" id="stepsTbl">` +
     `<colgroup><col class="c-hex"><col class="c-terr"><col class="c-via">` +
@@ -5797,8 +6064,10 @@ function stepsToText(ri, simple) {
   const miles = Math.round(r.miles ?? r.hexes * RULES.HEX_MILES);
   // The summary goes on its own line so it can be deleted with one keystroke by anyone who only
   // wanted the chain — and so its numbers stay off the line the importer reads.
-  return `${rt.name} — ${r.irl.toFixed(1)} IRL days (${game.toFixed(0)} in-game), ` +
-         `${r.hexes} hexes ≈ ${miles} mi\n` + parts.join(' -> ');
+  // Orders first here too: an order written out of this line is written in whole days.
+  const ord = orderedOf(rt, r);
+  return `${rt.name} — ${ord ? ord.days + ' IRL days ordered (' + r.irl.toFixed(1) + ' marched, ' : r.irl.toFixed(1) + ' IRL days ('}` +
+         `${game.toFixed(0)} in-game), ${r.hexes} hexes ≈ ${miles} mi\n` + parts.join(' -> ');
 }
 /* A pause named plainly, for the simple chain. The solver's own notes say how the cost was arrived at
    — "secure ships +7d" is a month of shipwrighting, "re-embark +1d" is going back aboard after a
@@ -5934,6 +6203,9 @@ function openRouteMenu(i, x, y) {
       if (n) { pushUndoRoutes(); rt.name = n; computeRoute(); }
     });
     ctxItem(box, 'Duplicate route', () => { closeCtx(); cloneRoute(i); });
+    // The same three questions the panel button asks, on the route this menu was opened for rather
+    // than on the selected one — the menu is the handle for *this* route in every other entry too.
+    if (rt.wps.length > 2) ctxFlyout(ctxItem(box, 'Optimise order<span class="arw">▸</span>'), optimiseMenu(i));
     ctxSep(box);
     ctxItem(box, 'Copy hexes — simple<span class="arw">948 -&gt; 949</span>',
             () => { closeCtx(); copySteps(i, true); });
@@ -6005,11 +6277,11 @@ function renderRouteList(results) {
     div.className = 'rtitem' + (i === S.activeRoute ? ' on' : '');
     div.title = 'Click to activate · double-click for the hex breakdown';
     const r = results[i];
-    const tm = r ? (r.fail ? '✗' : r.irl.toFixed(1) + 'd') : rt.wps.length + ' wp';
+    const tm = r ? (r.fail ? '✗' : routeDays(rt, r)) : rt.wps.length + ' wp';
     div.innerHTML = `<span class="sw" style="background:${rt.color}" title="Change colour"></span>` +
       `<span class="nm">${rt.name}</span>` +
 
-      `<span class="tm">${tm}</span>` +
+      `<span class="tm" title="${escHtml(routeDaysTitle(rt, r))}">${tm}</span>` +
       `<span class="mn" title="More — duplicate, copy hexes or column, clear waypoints">⋯</span>` +
       `<span class="x" title="Delete route">×</span>`;
     div.querySelector('.mn').onclick = e => {
@@ -6989,12 +7261,16 @@ function routeTip(h, ri) {
     // weather has shut. Said quietly, since a whole sea can be in that state at once.
     return `<br><span class="eta"><i>no march to here — check ships, fords, weather</i></span>`;
   }
-  // One line: the march from the start, and in brackets what this leg adds to it. The in-game figure
-  // is left to the readout card — the question a hovered hex asks is how much further, not what the
-  // date would be, and a second number in a line you are reading while moving is one too many.
-  const base = routeProbe?.base || 0;
-  return `<br><span class="eta" style="color:${escHtml(rt.color)}">arrives in ${total.toFixed(1)} IRL days` +
-         (base > 0.005 ? ` <i>(+${(total - base).toFixed(1)} d)</i>` : '') + '</span>';
+  /* One line: the march from the start, and in brackets what this leg adds to it. Both in ordered
+     whole days, the same billing the route reports — a preview in exact days would quietly disagree
+     with the card the moment you clicked. Hovering a hex the column could reach in a fraction of the
+     day it is already marching therefore adds nothing at all, which is the truth about it and the
+     whole reason the figure is worth showing before the click rather than after. */
+  const banked = routeProbe?.banked || 0, pending = routeProbe?.pending || 0;
+  const arrive = banked + optDays(pending + total - (routeProbe?.baseExact || 0));
+  const base = rt.wps.length > 1 ? banked + optDays(pending) : 0;
+  return `<br><span class="eta" style="color:${escHtml(rt.color)}">arrives in ${arrive} IRL days` +
+         (base ? ` <i>(+${arrive - base} d)</i>` : '') + '</span>';
 }
 
 const tooltip = document.getElementById('tooltip');
@@ -7200,6 +7476,15 @@ async function resetDrawing() {
 document.getElementById('resetBtn').onclick = resetDrawing;
 document.getElementById('drawResetBtn').onclick = resetDrawing;
 document.getElementById('newRoute').onclick = () => newRoute();
+/* Which ends are held is asked at the moment of asking rather than kept as a setting, because it is a
+   fact about the march in front of you — a supply run comes home, a campaign does not — and a setting
+   would have to be remembered and checked before every use. The menu drops from the button, so the
+   answer is one click further on rather than one screen away. */
+document.getElementById('optRoute').onclick = e => {
+  if (S.activeRoute < 0) return toast('Select a route first', true);
+  const r = e.currentTarget.getBoundingClientRect();
+  openCtx(r.left, r.bottom + 6, optimiseMenu(S.activeRoute));
+};
 document.getElementById('isoPick').onclick = () => {
   S.isoPick = !S.isoPick;
   document.getElementById('isoPick').classList.toggle('on', S.isoPick);
@@ -7253,7 +7538,7 @@ function removeLastWaypoint() {
 }
 document.getElementById('undoWp').onclick = removeLastWaypoint;
 document.getElementById('undoWpFloat').onclick = removeLastWaypoint;
-for (const id of ['inf', 'cav', 'wag', 'non', 'li', 'forced', 'marines', 'fleet', 'embark', 'noTrade', 'weather'])
+for (const id of ['inf', 'cav', 'wag', 'non', 'li', 'forced', 'marines', 'fleet', 'embark', 'noTrade', 'stops', 'weather'])
   document.getElementById(id).addEventListener('change', () => readRouteForm(id));
 
 document.getElementById('refetchBtn').onclick = async () => {
@@ -7873,6 +8158,23 @@ function hexMenu(h, pt, wp) {
                   : wp.wi === rt.wps.length - 1 ? 'last waypoint'
                   : `waypoint ${wp.wi + 1} of ${rt.wps.length}`;
       const name = wp.ri === S.activeRoute ? '' : `<span class="arw">${escHtml(rt.name)}</span>`;
+      /* Whether the column *halts* here, which is a different question from whether it comes here.
+         Orders are written in whole days, so a halt spends whatever is left of the day it lands in —
+         and a waypoint put down only to send the march over a particular pass or ford was never
+         meant to cost that. Offered on the first waypoint too, where it reads oddly but does no
+         harm: nothing is billed before the column sets out, and a route that gets reordered may not
+         start there for long. The last one is a genuine halt, since arriving is arriving. */
+      const w = rt.wps[wp.wi];
+      // With the route's own switch off nothing halts anywhere, so the entry says so rather than
+      // offering to change a flag that is not being read.
+      const off = !routeStops(rt) ? '<span class="arw">route halts nowhere</span>' : '';
+      ctxItem(box, w.thru ? `Halt here${off || '<span class="arw">now passes through</span>'}`
+                          : `Pass through — no halt${off || '<span class="arw">now a stop</span>'}`, () => {
+        closeCtx();
+        pushUndoRoutes();
+        if (w.thru) delete w.thru; else w.thru = true;
+        computeRoute();
+      });
       ctxItem(box, `Remove ${which}${name}`, () => { removeWaypoint(wp.ri, wp.wi); closeCtx(); });
     }
     // What right-click used to do on its own, kept within one click of where it was — and first,
@@ -8837,7 +9139,7 @@ function placeSettings(pane) {
              : pane === 'route' ? 'routeSettingsSlot' : 'settingsPark');
   const park = document.getElementById('settingsPark');
   if (!slot || !park) return;
-  for (const id of ['colGroup', 'condGroup']) {
+  for (const id of ['colGroup', 'marchGroup', 'condGroup']) {
     const g = document.getElementById(id);
     if (g && g.parentElement !== slot) slot.appendChild(g);
   }
@@ -8855,6 +9157,11 @@ function updateIsoSettingsShown() {
   const slot = document.getElementById('isoSettingsSlot');
   const note = document.getElementById('isoNotArmy');
   if (slot) slot.hidden = iso && !column;
+  // An isochrone has an origin and a horizon, not a list of places to be at, so there is nothing for
+  // it to halt at and nothing to put in a better order. The group travels with the other two rather
+  // than being left behind on the Routes panel, and hides itself where it has no question to answer.
+  const march = document.getElementById('marchGroup');
+  if (march) march.hidden = iso;
   if (note) note.hidden = !(iso && !column);
   const rNote = document.getElementById('isoReliefNote');
   if (rNote) rNote.hidden = !(iso && relief);
@@ -9066,9 +9373,10 @@ function renderRouteButtons(results) {
     b.type = 'button';
     b.className = 'maptool rtbtn' + (act ? ' on' : '');
     const r = results?.[i];
-    const tm = r ? (r.fail ? '✗' : r.irl.toFixed(1) + 'd') : rt.wps.length + ' wp';
+    const tm = r ? (r.fail ? '✗' : routeDays(rt, r)) : rt.wps.length + ' wp';
     b.innerHTML = `<span class="sw" style="background:${escHtml(rt.color)}"></span>` +
-                  `<span class="nm">${escHtml(rt.name)}</span><span class="tm">${tm}</span>`;
+                  `<span class="nm">${escHtml(rt.name)}</span>` +
+                  `<span class="tm" title="${escHtml(routeDaysTitle(rt, r))}">${tm}</span>`;
     b.title = `Show ${rt.name}. Click the swatch to recolour it, right-click for route actions.`;
     b.onclick = () => {
       if (act) return hideCard();
@@ -9136,7 +9444,7 @@ function updateRouteCard(results) {
   if (first) placeCard();
   const r = results?.[S.activeRoute];
   routeCard.querySelector('.floathead h3').textContent =
-    rt.name + (r ? (r.fail ? ' · no route' : ' · ' + r.irl.toFixed(1) + 'd') : '');
+    rt.name + (r ? (r.fail ? ' · no route' : ' · ' + routeDays(rt, r)) : '');
   // The floating Remove last only appears once there is a waypoint it could take back.
   undoFloat.hidden = !narrow() || !rt.wps.length;
   renderRouteButtons(results);

@@ -420,6 +420,33 @@
         </div>
       </div>
 
+      <!-- Between the column and the conditions, because it is about neither: the column is who is
+           marching and the conditions are what they are marching through, while this is how the march
+           is *ordered*. It travels with those two groups, and goes away on the Isochrone panel, which
+           has origins rather than waypoints and so has nothing to halt at. -->
+      <div class="group" id="marchGroup">
+        <h2>March</h2>
+        <div class="stoprow">
+          <label class="chk" title="The column halts at every waypoint, so each leg is ordered in whole days and the rest of the arrival day is spent. Right-click a single waypoint to make just that one a pass-through."><input type="checkbox" id="stops" checked> Stop at waypoints</label>
+          <button class="btn" type="button" id="optRoute"
+                  title="Reorder this route's waypoints for the fewest whole days of orders.">Optimise order</button>
+        </div>
+        <details class="hint">
+          <summary>Halts, and the best order</summary>
+          A route is billed in <b>whole days of orders</b>: the column halts at each waypoint, and the
+          rest of the day it arrives in is spent. The card shows the ordered total, with the exact
+          distance marched beside it and the wasted fraction under it.
+          <p>Clear <b>Stop at waypoints</b> and the column halts nowhere on the way — the whole march is
+          one order and only the arrival is rounded. To make a single waypoint a pass-through, right-click
+          it and choose <b>Pass through</b>: the column still goes there, it just does not break the
+          march, so that leg runs on into the next and the rounding waits for the next halt. Waypoints
+          the column does not stop at are drawn smaller. Arriving is always a halt.</p>
+          <p><b>Optimise order</b> reorders the waypoints for the fewest ordered days and asks which ends
+          to hold: keep the start, keep both ends, or return to the start (which adds the way home).
+          The search is exact up to 15 waypoints. <b>Ctrl+Z</b> puts the old order back.</p>
+        </details>
+      </div>
+
       <div class="group" id="condGroup">
         <h2>Conditions</h2>
         <!-- The detail lives in the tooltips; the labels stay short enough to scan. -->
