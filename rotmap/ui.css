@@ -313,7 +313,14 @@ body.panel-shut #panel { display: none; }
 #routeBtns { display: flex; flex-direction: column; align-items: flex-end; gap: var(--s2); max-height: 46vh; overflow-y: auto; }
 #routeBtns:empty { display: none; }
 .rtbtn { min-width: 148px; }
-.rtbtn .sw { flex: 0 0 11px; width: 11px; height: 11px; border: 1px solid #0007; border-radius: 3px; }
+/* A control inside a control: the button shows the route, the swatch recolours it. At 11px it needs
+   to say so on approach, so it lifts a ring on hover — the button around it is already a pointer,
+   and without that nothing would distinguish the one part of it that does something else. */
+.rtbtn .sw {
+  flex: 0 0 11px; width: 11px; height: 11px;
+  border: 1px solid #0007; border-radius: 3px; cursor: pointer;
+}
+.rtbtn .sw:hover { box-shadow: 0 0 0 2px var(--ink-2); }
 .rtbtn .nm { flex: 1; text-align: left; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .rtbtn .tm { color: var(--ink-3); font-variant-numeric: tabular-nums; }
 .rtbtn.on .tm { color: var(--ink-2); }
@@ -609,11 +616,13 @@ body.colsizing { cursor: col-resize; user-select: none; }
 
 /* Draw tools -------------------------------------------------------------- */
 .tools { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s2); }
-/* Erase is last and there is an odd number of tools either way — nine locally, three published — so
-   left to itself it sat alone in half of the bottom row with a gap beside it. It takes the whole row
-   instead, which squares the block off and suits the one tool that is not a thing you draw with. The
-   span survives the single-column layout below 820px, where `1 / -1` is simply the one column. */
-.tools button[data-tool="erase"] { grid-column: 1 / -1; }
+/* There is an odd number of tools either way — nine locally, one published — so the last button,
+   left to itself, sat alone in half of the bottom row with a gap beside it. It takes the whole row
+   instead, which squares the block off. Said of whichever button ends up last rather than of Erase
+   by name, so dropping tools from the published row cannot leave the rule pointing at a button that
+   is no longer there. The span survives the single-column layout below 820px, where `1 / -1` is
+   simply the one column. */
+.tools button:last-child { grid-column: 1 / -1; }
 
 /* ------------------------------------------------------------------- map */
 
@@ -671,6 +680,12 @@ body.colsizing { cursor: col-resize; user-select: none; }
    the name, not a second fact about the hex. */
 #tooltip .cm { color: #9adcff; }
 #tooltip .cm i { color: var(--ink-3); font-style: normal; }
+/* When the route would arrive, if you clicked here. It is the one line in the readout that is about
+   something you have not done yet, so it is set apart from the facts above it — in the route's own
+   colour, the way the readout card's heading is, so with two marches on the map it is obvious which
+   one is being offered. The in-game figure stays quiet after it, like a commandery's tier. */
+#tooltip .eta { color: var(--ink); font-variant-numeric: tabular-nums; }
+#tooltip .eta i { color: var(--ink-3); font-style: normal; }
 /* Which of the two realm maps a line came from, said only when both are on and the pair would
    otherwise be two chips and two names with nothing to tell them apart. Quiet, like the tier after a
    commandery: it qualifies the name rather than adding a second fact about the hex. */

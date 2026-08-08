@@ -4713,10 +4713,16 @@ function routeLeg(rt, o) {
     if (next.size === 0) { fail = [wps[i].h, wps[i + 1].h]; break; }
     dp = next;
   }
-  if (fail) return { irl: 0, hexes: 0, miles: 0, steps: [], pts: [], fail };
+  if (fail) return { irl: 0, hexes: 0, miles: 0, steps: [], pts: [], ends: null, fail };
   let best = null;
   for (const v of dp.values()) if (!best || v.cost < best.cost) best = v;
-  if (!best) return { irl: 0, hexes: 0, miles: 0, steps: [], pts: [], fail: null };
+  if (!best) return { irl: 0, hexes: 0, miles: 0, steps: [], pts: [], ends: null, fail: null };
+  /* What it cost to reach the last waypoint in each state the column could be standing there in —
+     the DP's final column, handed on rather than thrown away. The route itself only needs the
+     cheapest of them, but anything asking what a *further* leg would cost needs all three: arriving
+     with ships is dearer and leaving with them may be cheaper, and which wins is not settled until
+     the next destination is known. The hover preview below is the one thing that asks. */
+  const ends = new Map([...dp].map(([k, v]) => [k, v.cost]));
 
   // The ordered drawn geometry a step traces from prevH into st.h (road or trade line, or a drawn
   // river for a sailing step). null when the step has no feature to follow (plain off-road).
@@ -4793,7 +4799,69 @@ function routeLeg(rt, o) {
     const last = flat[flat.length - 1].st, np = endPoint(last.h, last.ri), lp = allPts[allPts.length - 1];
     if (!lp || Math.hypot(lp[0] - np[0], lp[1] - np[1]) > 0.5) allPts.push(np);
   }
-  return { irl: best.cost, hexes: totHex, miles: totMiles, steps, pts: throughSharedEdges(allPts), fail: null };
+  return { irl: best.cost, hexes: totHex, miles: totMiles, steps, pts: throughSharedEdges(allPts),
+           ends, fail: null };
+}
+
+/* ---------------- where the next click would get you ---------------- */
+/* Placing a waypoint answers "how long does that take"; the readout under the cursor answers it
+   before the click, which is the order the question is actually asked in — you are hunting for the
+   hex the column can reach in four days, not checking one you have already committed to.
+
+   One Dijkstra field out of the route's last stop answers it for every hex on the map at once, so
+   the work is done once per change to the route and each hover is a lookup. That field is exactly
+   what a leg costs to solve — dijkstraLeg builds the same thing and then reads one hex out of it —
+   so this is one extra leg's worth of work, paid on the first hover after a change rather than
+   eagerly, since a route nobody is measuring should cost nothing.
+
+   Up to three fields, one per state the column can be standing at the last waypoint in (afloat,
+   ashore with ships, ashore without), because which of them is cheapest to *leave* from is not
+   settled until the destination is known. Taking the minimum over all of them at lookup time is the
+   same joint optimisation routeLeg does across its legs. */
+let routeProbe = null;
+function routeProbeFields() {
+  if (routeProbe) return routeProbe.fields;
+  routeProbe = { fields: [], base: 0 };
+  const rt = S.routes[S.activeRoute];
+  if (!rt || !rt.wps.length) return routeProbe.fields;
+  const o = armyOpts(rt.set);
+  const last = rt.wps[rt.wps.length - 1], lh = last.h, lri = last.ri | 0;
+  let ends;
+  if (rt.wps.length === 1) {
+    // A route of one waypoint has not set out: the column is standing on it having spent nothing.
+    const [af, sh] = startState(lh, lri, o);
+    ends = new Map([[af * 2 + sh, 0]]);
+  } else {
+    const r = lastResults[S.activeRoute];
+    // A route that cannot be walked as far as its last stop has nothing to add a leg to. The panel
+    // already says which pair of hexes defeated it; the readout stays quiet rather than blaming
+    // every hex on the map for it.
+    if (!r || r.fail || !r.ends) { routeProbe.broken = true; return routeProbe.fields; }
+    ends = r.ends;
+    routeProbe.base = r.irl;
+  }
+  // The forced-march flag sits on the waypoint a push starts *from*, so a forced last leg means the
+  // leg being previewed is forced too — solved at that pace, not rescaled after the fact.
+  const lo = last.f && !o.forced ? { ...o, forced: true } : o;
+  for (const [state, cost] of ends)
+    routeProbe.fields.push({ cost, F: dijkstraField(lh, lri, state >> 1, state & 1, lo) });
+  return routeProbe.fields;
+}
+// The cheapest the column could be standing on this subhex, whatever state it arrives in and
+// whichever road it arrives on — the same minimisation dijkstraLeg makes at a fixed destination.
+function routeProbeCost(h, ri) {
+  const fields = routeProbeFields();
+  if (!fields.length) return null;
+  let best;
+  for (const f of fields)
+    for (const [af, sh] of STATES)
+      for (let g = 0; g < 8; g++) {
+        const c = f.F.dist.get(sk(h, ri, af, sh, g));
+        if (c === undefined) continue;
+        const t = f.cost + c;
+        if (best === undefined || t < best) best = t;
+      }
+  return best === undefined ? null : best;
 }
 
 /* ---------------- isochrone ---------------- */
@@ -5426,6 +5494,9 @@ function renderIso() {
 function computeRoute({ preview = false, previewIso = false } = {}) {
   const out = document.getElementById('routeOut');
   groups.route.innerHTML = '';
+  // Anything that recomputes the route — a waypoint placed or dragged, a settings box, an undo, a
+  // road drawn — moves the ground the hover preview was measured from, so the cached field goes.
+  routeProbe = null;
   // A waypoint drag temporarily moves a stop so the answer can follow the pointer. It must not
   // overwrite the saved route (or the undo snapshot) until the pointer is actually released.
   if (!preview) saveRoutes();
@@ -5977,8 +6048,13 @@ function recolorRoute(i) {
     e.setAttribute('stroke', rt.color);
     if (e.getAttribute('fill') !== 'none') e.setAttribute('fill', rt.color);  // sea waypoints are filled
   }
-  const sw = document.querySelectorAll('#routeList .rtitem')[i]?.querySelector('.sw');
-  if (sw) sw.style.background = rt.color;
+  // Both swatches: the sidebar row and the map button. Either can be the one on screen — the panel
+  // is often shut while the buttons never are — and a live picker that repainted only one of them
+  // would leave whichever was showing behind the colour it was being dragged away from.
+  for (const sel of ['#routeList .rtitem', '#routeBtns .rtbtn']) {
+    const sw = document.querySelectorAll(sel)[i]?.querySelector('.sw');
+    if (sw) sw.style.background = rt.color;
+  }
   if (i === S.activeRoute) {
     const big = document.querySelector('#routeOut .big');
     if (big) big.style.color = rt.color;
@@ -6892,6 +6968,35 @@ function isoTip(h, ri) {
   return s;
 }
 
+/* What clicking here would cost the active route, said while the pointer is still over the hex. The
+   figure is the whole march from the start, not the leg alone — "when does it arrive" is the
+   question a route is drawn to answer, and the leg on its own answers a smaller one. Both are given
+   where they differ, the total first and what it added under it.
+
+   Only in route mode, and not while a click means something else: with the Isochrone panel open, or
+   Set origin armed, the map is taking origins rather than waypoints, and offering a march time for a
+   click that will not make one is worse than saying nothing. */
+function routeTip(h, ri) {
+  if (S.mode !== 'route' || S.isoPick || UI.pane === 'iso') return '';
+  const rt = S.routes[S.activeRoute];
+  if (!rt || !rt.wps.length) return '';
+  const last = rt.wps[rt.wps.length - 1];
+  if (last.h === h && (last.ri | 0) === (ri | 0)) return '';   // where the column already stands
+  const total = routeProbeCost(h, ri | 0);
+  if (total === null) {
+    if (routeProbe?.broken) return '';
+    // Unreachable is an answer, and a useful one: a hex across water with no fleet, or a shore the
+    // weather has shut. Said quietly, since a whole sea can be in that state at once.
+    return `<br><span class="eta"><i>no march to here — check ships, fords, weather</i></span>`;
+  }
+  // One line: the march from the start, and in brackets what this leg adds to it. The in-game figure
+  // is left to the readout card — the question a hovered hex asks is how much further, not what the
+  // date would be, and a second number in a line you are reading while moving is one too many.
+  const base = routeProbe?.base || 0;
+  return `<br><span class="eta" style="color:${escHtml(rt.color)}">arrives in ${total.toFixed(1)} IRL days` +
+         (base > 0.005 ? ` <i>(+${(total - base).toFixed(1)} d)</i>` : '') + '</span>';
+}
+
 const tooltip = document.getElementById('tooltip');
 function onHover(e) {
   const [wx, wy, s] = toWorld(e);
@@ -6968,7 +7073,8 @@ function onHover(e) {
     (cm?.name ? `<br><span class="cm">${escHtml(cm.name)} commandery <i>(${cm.tier})</i></span>` : '') +
     realmTip(h, hoverRi) +                                // who holds it, while those layers are up
     tokenTip(h) +                                         // and who is standing on it
-    isoTip(h, hoverRi);
+    isoTip(h, hoverRi) +
+    routeTip(h, hoverRi);                                 // and when the marching route would get here
   tooltip.hidden = false;
   const wr = svg.parentElement.getBoundingClientRect();
   tooltip.style.left = (e.clientX - wr.left + 14) + 'px';
@@ -7043,17 +7149,17 @@ document.getElementById('realmCustomInput')?.addEventListener('input', e => {
   realmPaint = c;
   setRealmDropper(false);
 });
-/* The published map keeps the Draw panel, but only the tools that annotate the map rather than build
-   it: Label, Map painting and Erase. Someone reading it may well want to move a front line, name a
-   place the sheet never named, or take a road off their own copy — none of which touches anyone
-   else's, since it all lives in their browser. The line tools and the Stronghold tool are how the map
-   itself is made, and are dropped — buttons and their help alike — rather than hidden, along with the
-   Data panel's sheet refetch. Marked in the HTML so the two lists cannot drift apart. */
+/* The published map keeps the Draw panel, but only Map painting: someone reading it may well want to
+   move a front line on their own copy, which touches nobody else's, since it lives in their browser.
+   The line tools, the Stronghold tool and — because naming places and rubbing out roads are the map's
+   own making rather than a reader's business — Label and Erase are dropped, buttons and their help
+   alike, rather than hidden, along with the Data panel's sheet refetch. Marked in the HTML so the two
+   lists cannot drift apart. */
 for (const el of document.querySelectorAll(`[data-pane="draw"] [data-${LOCAL ? 'pub' : 'dev'}]`))
   el.remove();
 // Whichever tool is left first is the one the panel opens on, so the default is read off the row
-// rather than assumed: locally that is Road, published it is Label — which arms nothing and fetches
-// nothing, unlike Map painting, whose first click is what pulls the scan down.
+// rather than assumed: locally that is Road, published it is Map painting — armed, but it still
+// fetches nothing until it is clicked and paints nothing until a colour is chosen.
 {
   const first = document.querySelector('#toolBtns button');
   if (first) { S.tool = first.dataset.tool; first.classList.add('on'); }
@@ -8963,7 +9069,7 @@ function renderRouteButtons(results) {
     const tm = r ? (r.fail ? '✗' : r.irl.toFixed(1) + 'd') : rt.wps.length + ' wp';
     b.innerHTML = `<span class="sw" style="background:${escHtml(rt.color)}"></span>` +
                   `<span class="nm">${escHtml(rt.name)}</span><span class="tm">${tm}</span>`;
-    b.title = `Show ${rt.name}. Right-click for route actions.`;
+    b.title = `Show ${rt.name}. Click the swatch to recolour it, right-click for route actions.`;
     b.onclick = () => {
       if (act) return hideCard();
       S.activeRoute = i;
@@ -8971,6 +9077,18 @@ function renderRouteButtons(results) {
       computeRoute();          // the panel and the readout both follow the active route
       showCard();
     };
+    /* The swatch is the same control it is on the sidebar row, raising the same palette. With the
+       panel shut this strip is the only thing on screen naming the routes, so telling two marches
+       apart by colour is exactly the job it is doing — and the colour was the one part of it you had
+       to open the Routes panel to change. `stopPropagation`, or the click would bubble on to the
+       button behind it and the palette would open onto a card that had just been shown or hidden. */
+    const sw = b.querySelector('.sw');
+    sw.title = 'Change colour';
+    sw.addEventListener('click', e => {
+      e.stopPropagation();
+      openColorPanelAt(sw, `<b>${escHtml(rt.name)}</b> — colour`, ROUTE_COLORS, () => rt.color,
+                       c => { pushUndoRoutes('rtcolor' + i); rt.color = c; recolorRoute(i); });
+    });
     // The same menu the list row has. This button stands for the route just as much as that row does,
     // and with the panel shut it is the only handle on it — so duplicating or emptying a route from
     // here should not mean opening the panel first to find the identical menu.

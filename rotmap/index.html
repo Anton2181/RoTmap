@@ -219,10 +219,11 @@
     <!-- ---------------------------------------------------------- Draw -->
     <section class="pane" data-pane="draw">
       <div class="group">
-        <!-- `data-dev` marks a tool the published map drops: the ones that build the map rather than
-             annotate it. What survives is Label, Map painting and Erase — and Label is first, so it
-             is what the published panel opens on, which costs nothing to arm. Erase stays last in
-             either case, where the stylesheet gives it the whole bottom row. -->
+        <!-- `data-dev` marks a tool the published map drops: the ones that build or annotate the map
+             rather than read it. What survives is Map painting alone — a reader may want to move a
+             front line on their own copy, but naming places and rubbing out roads is the map's own
+             making. Whichever tool is left last takes the whole bottom row: Erase locally, Map
+             painting published, and the stylesheet reads that off the row rather than being told. -->
         <div class="tools" id="toolBtns">
           <button class="btn" type="button" data-tool="road" data-dev>Road</button>
           <button class="btn" type="button" data-tool="river_major" data-dev>River (major)</button>
@@ -230,9 +231,9 @@
           <button class="btn" type="button" data-tool="trade" data-dev>Trade route</button>
           <button class="btn" type="button" data-tool="coast" data-dev>Coast</button>
           <button class="btn" type="button" data-tool="stronghold" data-dev>Stronghold</button>
-          <button class="btn" type="button" data-tool="label">Label</button>
+          <button class="btn" type="button" data-tool="label" data-dev>Label</button>
           <button class="btn" type="button" data-tool="realm">Map painting</button>
-          <button class="btn" type="button" data-tool="erase">Erase</button>
+          <button class="btn" type="button" data-tool="erase" data-dev>Erase</button>
         </div>
         <!-- Only while the Map painting tool is up. Built from the scan and, for Warlords, token colours
              so a commander can be painted before holding any ground. -->
@@ -295,14 +296,22 @@
           blue ring. Right-click the hex to set it as ordinary, fortress, or major. Strongholds beside
           the sea or a major river are ports by default.
         </details>
-        <details class="hint">
+        <details class="hint" data-dev>
           <summary>Label</summary>
           Click a hex to name or rename it. Clear the text to restore the datasheet name. Commandery
           names follow their highest-ranked settlement.
           <p>The <b>A</b> button on the Strongholds layer toggles names without hiding the markers.
           Stronghold names are drawn below realm names.</p>
         </details>
-        <details class="hint">
+        <!-- The half of the Label help that is about reading the map rather than writing it. The
+             published panel has no Label tool to hang it off, and the A button is still there. -->
+        <details class="hint" data-pub>
+          <summary>Names</summary>
+          The <b>A</b> button on the Strongholds layer toggles names without hiding the markers.
+          Stronghold names are drawn below realm names. Commandery names follow their highest-ranked
+          settlement.
+        </details>
+        <details class="hint" data-dev>
           <summary>Erase</summary>
           Click a node to remove it, click a segment to cut it, or <b>Shift</b>+click to remove the
           whole line. Drag to erase features and strongholds. Datasheet strongholds stay hidden until
