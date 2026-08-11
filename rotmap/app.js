@@ -7096,7 +7096,16 @@ const relightRoutes = () => { if (S.G && groups.route) computeRoute({ preview: t
 
 function computeRoute({ preview = false, previewIso = false } = {}) {
   const out = document.getElementById('routeOut');
-  groups.route.innerHTML = '';
+  const liveWaypoint = preview && !previewIso && !!wpDrag;
+  if (liveWaypoint) {
+    // A waypoint drag changes one route. Keep every other route's existing SVG in place and replace
+    // only the dragged route; clearing the whole layer made a one-marker gesture rebuild every line,
+    // arrowhead and timeline overlay on every crossed hex.
+    const i = wpDrag.ri;
+    for (const e of groups.route.querySelectorAll(
+      `[data-rt="${i}"], [data-route-owner="${i}"]`)) e.remove();
+  }
+  else groups.route.innerHTML = '';
   // Anything that recomputes the route — a waypoint placed or dragged, a settings box, an undo, a
   // road drawn — moves the ground the hover preview was measured from, so the cached field goes.
   routeProbe = null;
@@ -7147,6 +7156,10 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
   const results = [];
   const singled = routeIsSubject();
   S.routes.forEach((rt, i) => {
+    if (liveWaypoint && i !== wpDrag.ri) {
+      results[i] = lastResults[i] || null;
+      return;
+    }
     /* Faint means "not the one being talked about", and that only means anything while something on
        screen is doing the talking. With the Routes panel away and the readout card dismissed, the
        active route is a fact about the state and about nothing the reader can see — so dimming the
@@ -7163,7 +7176,7 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
     const r = rt.wps.length > 1 ? routeLeg(rt, armyOpts(rt.set)) : null;
     if (r && r.pts.length > 1) {
       const sw = act ? 2.8 : 2, op = act ? 0.95 : 0.55;
-      const schedule = routeTimelineSchedule(rt, r);
+      const schedule = liveWaypoint ? null : routeTimelineSchedule(rt, r);
       // The stops, wanted before the line is drawn so the arrowheads can be kept off them.
       const stops = rt.wps.map(w => endPoint(w.h, w.ri | 0));
       const fanned = fanOutRetraced(r.pts, wpR(act), stops);
@@ -7176,43 +7189,55 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
       // Bright copies are revealed from the beginning by the campaign clock. Keep one per SVG
       // subpath: dash patterns restart at M, so applying one dash to a compound route would reveal the
       // same fraction of every later leg at once instead of advancing chronologically through them.
-      const routeParts = [[]];
-      for (const p of pts) {
-        if (p[4] && routeParts.at(-1).length) routeParts.push([]);
-        routeParts.at(-1).push(p);
+      if (!liveWaypoint) {
+        const routeParts = [[]];
+        for (const p of pts) {
+          if (p[4] && routeParts.at(-1).length) routeParts.push([]);
+          routeParts.at(-1).push(p);
+        }
+        const partLengths = routeParts.map(part => part.slice(1).reduce((sum, p, pi) =>
+          sum + Math.hypot(p[0] - part[pi][0], p[1] - part[pi][1]), 0));
+        const routeLength = partLengths.reduce((a, b) => a + b, 0) || 1;
+        let partStart = 0;
+        routeParts.forEach((part, pi) => {
+          const partEnd = partStart + partLengths[pi] / routeLength;
+          if (part.length > 1 && partLengths[pi] > 0)
+            el('path', { d: routePathD(part), fill: 'none', stroke: rt.color, 'stroke-width': sw,
+                         'stroke-linecap': 'round', 'stroke-linejoin': 'round', opacity: 0,
+                         pathLength: 1, 'stroke-dasharray': '0 1',
+                         'data-rt': i, 'data-route-progress': 1,
+                         'data-progress-start': partStart, 'data-progress-end': partEnd,
+                         'data-full-opacity': op, 'pointer-events': 'none' }, groups.route);
+          partStart = partEnd;
+        });
       }
-      const partLengths = routeParts.map(part => part.slice(1).reduce((sum, p, pi) =>
-        sum + Math.hypot(p[0] - part[pi][0], p[1] - part[pi][1]), 0));
-      const routeLength = partLengths.reduce((a, b) => a + b, 0) || 1;
-      let partStart = 0;
-      routeParts.forEach((part, pi) => {
-        const partEnd = partStart + partLengths[pi] / routeLength;
-        if (part.length > 1 && partLengths[pi] > 0)
-          el('path', { d: routePathD(part), fill: 'none', stroke: rt.color, 'stroke-width': sw,
-                       'stroke-linecap': 'round', 'stroke-linejoin': 'round', opacity: 0,
-                       pathLength: 1, 'stroke-dasharray': '0 1',
-                       'data-rt': i, 'data-route-progress': 1,
-                       'data-progress-start': partStart, 'data-progress-end': partEnd,
-                       'data-full-opacity': op, 'pointer-events': 'none' }, groups.route);
-        partStart = partEnd;
-      });
       const ringTime = (cx, cy) => {
         let t = Infinity;
         stops.forEach((p, wi) => {
           if (Math.hypot(p[0] - cx, p[1] - cy) < 1)
-            t = Math.min(t, schedule.arrivals[wi] ?? schedule.total);
+            t = Math.min(t, schedule?.arrivals[wi] ?? schedule?.total ?? 0);
         });
-        return Number.isFinite(t) ? t : schedule.total;
+        return Number.isFinite(t) ? t : schedule?.total ?? 0;
       };
-      for (const [cx, cy, radius] of fanned.rings || [])
-        el('circle', { cx, cy, r: radius, fill: 'none', stroke: rt.color, 'stroke-width': sw,
-                       opacity: op, 'data-rt': i, 'data-route-time': ringTime(cx, cy),
-                       'data-full-opacity': op, 'pointer-events': 'none' }, groups.route);
+      for (const [cx, cy, radius] of fanned.rings || []) {
+        const attrs = { cx, cy, r: radius, fill: 'none', stroke: rt.color, 'stroke-width': sw,
+                        opacity: op, 'data-rt': i, 'pointer-events': 'none' };
+        if (!liveWaypoint) {
+          attrs['data-route-time'] = ringTime(cx, cy);
+          attrs['data-full-opacity'] = op;
+        }
+        el('circle', attrs, groups.route);
+      }
       const arrows = arrowsAlong(pts, ARROW_GAP, arrowLen(sw), stops, wpR(act) + 4);
-      arrows.forEach((a, ai) =>
-        el('path', { d: arrowPathD(a, sw), fill: rt.color, stroke: 'none', opacity: op,
-                     'data-rt': i, 'data-route-arrow': (ai + 0.5) / arrows.length,
-                     'data-full-opacity': op, 'pointer-events': 'none' }, groups.route));
+      arrows.forEach((a, ai) => {
+        const attrs = { d: arrowPathD(a, sw), fill: rt.color, stroke: 'none', opacity: op,
+                        'data-rt': i, 'pointer-events': 'none' };
+        if (!liveWaypoint) {
+          attrs['data-route-arrow'] = (ai + 0.5) / arrows.length;
+          attrs['data-full-opacity'] = op;
+        }
+        el('path', attrs, groups.route);
+      });
     }
     rt.wps.forEach((w, wi) => {
       const [cx, cy] = endPoint(w.h, w.ri | 0); // every waypoint is a stop, and stops sit at the marker
@@ -7231,19 +7256,26 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
          learnt. The hit area stays the size a finger needs either way. */
       const thru = !wpHalt(rt, wi) && wi !== rt.wps.length - 1;   // arriving is a halt whatever the boxes say
       const rad = wpR(act) * (thru ? 0.62 : 1);
-      const arrival = r && !r.fail ? routeTimelineSchedule(rt, r).arrivals[wi] : 0;
-      const g = el('g', { 'data-wp': i + ':' + wi, 'data-timeline-rt': i,
-                          'data-route-time': arrival ?? 0,
-                          'data-full-opacity': 1, style: 'cursor:grab' }, groups.route);
+      const attrs = { 'data-wp': i + ':' + wi, 'data-route-owner': i, style: 'cursor:grab' };
+      if (!liveWaypoint) {
+        const arrival = r && !r.fail ? routeTimelineSchedule(rt, r).arrivals[wi] : 0;
+        attrs['data-timeline-rt'] = i;
+        attrs['data-route-time'] = arrival ?? 0;
+        attrs['data-full-opacity'] = 1;
+      }
+      const g = el('g', attrs, groups.route);
       el('circle', { cx, cy, r: wpR(act) + 4, fill: 'transparent', stroke: 'none' }, g);
       el('circle', { cx, cy, r: rad, fill: sea ? rt.color : 'none', stroke: rt.color,
                      'stroke-width': wpSW(act) * (thru ? 0.75 : 1),
                      opacity: (act ? 1 : 0.7) * (thru ? 0.8 : 1), 'data-rt': i,
                      'pointer-events': 'none' }, g);
     });
-    results.push(r);
+    results[i] = r;
   });
   lastResults = results;
+  // The map is the live feedback. Route lists, the potentially hundreds-row readout, form syncing
+  // and timeline controls do not change the answer under the pointer and are rebuilt once on release.
+  if (liveWaypoint) return;
   renderRouteList(results);
   syncRouteForm();
   const rt = S.routes[S.activeRoute], r = results[S.activeRoute];
@@ -7823,7 +7855,29 @@ function saveRoutes() {
 let pan = null, downPos = null, spaceHeld = false, edgeSnap = false;
 let tokDrag = null;   // { t, g, p, dx, dy, moved, target } while a token is under the pointer
 let wpDrag = null;    // route/waypoint, original stop and live preview while its marker is dragged
+let wpPreviewFrame = 0;
 let isoDrag = null;   // origin index, original node and live reach preview while its marker is dragged
+function cancelWaypointPreview() {
+  if (wpPreviewFrame) cancelAnimationFrame(wpPreviewFrame);
+  wpPreviewFrame = 0;
+}
+function scheduleWaypointPreview() {
+  if (wpPreviewFrame) return;
+  wpPreviewFrame = requestAnimationFrame(() => {
+    wpPreviewFrame = 0;
+    if (!wpDrag) return;
+    const rt = S.routes[wpDrag.ri];
+    if (!rt?.wps[wpDrag.wi]) return;
+    computeRoute({ preview: true });
+    // computeRoute replaces only this route and marker during a drag.
+    wpDrag.g = groups.route.querySelector(`[data-wp="${wpDrag.ri}:${wpDrag.wi}"]`);
+    const cur = rt.wps[wpDrag.wi];
+    wpDrag.p = endPoint(cur.h, cur.ri | 0);
+    if (wpDrag.world)
+      wpDrag.g?.setAttribute('transform', `translate(${(wpDrag.world[0] - wpDrag.p[0]).toFixed(2)} ` +
+        `${(wpDrag.world[1] - wpDrag.p[1]).toFixed(2)})`);
+  });
+}
 // The click that puts an open context menu away does nothing else — it must not also drop a waypoint
 // on whatever hex happened to be under it.
 let ctxDismiss = false;
@@ -8055,6 +8109,7 @@ svg.addEventListener('pointermove', e => {
        — dropping a stop on the far bank of a river has to mean the far bank. And unlike a token it may
        land on water, since fleets sail: what it may not land on is off-map filler. */
     wpDrag.target = (h && S.hexes[h].t !== 'N/A') ? { h, ri: regionAt(h, [wx, wy]) } : null;
+    wpDrag.world = [wx, wy];
     const key = wpDrag.target ? `${wpDrag.target.h}:${wpDrag.target.ri | 0}` : 'off-map';
     if (key !== wpDrag.previewKey) {
       const rt = S.routes[wpDrag.ri];
@@ -8064,11 +8119,9 @@ svg.addEventListener('pointermove', e => {
           : { ...wpDrag.original };
         wpDrag.previewKey = key;
         S.activeRoute = wpDrag.ri;
-        computeRoute({ preview: true });
-        // computeRoute rebuilt the marker group. Keep the newly drawn one under the pointer too.
-        wpDrag.g = groups.route.querySelector(`[data-wp="${wpDrag.ri}:${wpDrag.wi}"]`);
-        const cur = rt.wps[wpDrag.wi];
-        wpDrag.p = endPoint(cur.h, cur.ri | 0);
+        // Coalesce several pointer events into one redraw. Crossing four tiny subhexes in one browser
+        // frame should solve the final one, not make the pointer wait for all four intermediate maps.
+        scheduleWaypointPreview();
       }
     }
     wpDrag.g?.setAttribute('transform', `translate(${(wx - wpDrag.p[0]).toFixed(2)} ${(wy - wpDrag.p[1]).toFixed(2)})`);
@@ -8153,6 +8206,7 @@ svg.addEventListener('pointerup', e => {
     return;
   }
   if (wpDrag) {
+    cancelWaypointPreview();
     const d = wpDrag;
     wpDrag = null;
     pan = null; downPos = null;
@@ -8269,6 +8323,7 @@ svg.addEventListener('pointercancel', e => {
     // Same for a waypoint the pointer was lost from — a cancelled drag has to put the marker back, and
     // recomputing is what clears the transform it was following the pointer with.
     if (wpDrag) {
+      cancelWaypointPreview();
       const d = wpDrag; wpDrag = null;
       const rt = S.routes[d.ri];
       if (rt?.wps[d.wi]) rt.wps[d.wi] = { ...d.original };
