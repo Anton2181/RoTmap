@@ -3422,7 +3422,7 @@ function deriveAdj() {
   const coastHexes = new Set();
   const majorPairs = new Set(); // pairKey -> a drawn MAJOR river crosses this edge (river mouths)
   const geom = new Map();      // pairKey -> {a, pts}: drawn road geometry between adjacent hexes
-  const riverGeom = new Map(); // same, for drawn rivers (so sailing follows the river visually)
+  const riverGeom = new Map(); // same, for drawn major rivers (so sailing follows the river visually)
   const addAdjFromLine = (pts, set, geomMap = geom) => {
     // fine samples along the polyline, tagged with their hex
     const samples = [];
@@ -3490,7 +3490,7 @@ function deriveAdj() {
         if (u.hexes.includes(b) || v.hexes.includes(a)) continue;   // two banks of one reach
         const key = pairKey(a, b);
         if (set) set.add(key);
-        if (!geomMap.has(key)) {
+        if (geomMap && !geomMap.has(key)) {
           const mu = (u.i0 + u.i1) >> 1, mv = (v.i0 + v.i1) >> 1;
           geomMap.set(key, { a, pts: samples.slice(mu, mv + 1).map(s => [s[0], s[1]]) });
         }
@@ -3560,6 +3560,61 @@ function deriveAdj() {
       }
     }
   };
+  /* Rivers are drawn in editable pieces, and a single reach commonly changes feature at an exactly
+     shared endpoint. `addAdjFromLine` cuts each hex-to-hex geometry at the middle of its two reaches;
+     run separately on those pieces, it therefore drops the tail on both sides of every join. The
+     route then has no choice but to bridge the missing water with a straight chord, visibly cutting
+     bends at Irini and anywhere else a river was split for drawing convenience.
+
+     Join only endpoints with one unambiguous partner. A confluence has several and is deliberately
+     left alone rather than arbitrarily pairing two branches. The movement graph is unchanged; this
+     merely lets the visual geometry for an ordinary continuous reach be sampled in one pass. */
+  const stitchRiverLines = lines => {
+    const JOIN = 1.5; // map units: closes drawing seams, never reaches across a visible gap
+    const ends = [];
+    lines.forEach((pts, fi) => {
+      ends.push({ fi, ei: 0, p: pts[0] }, { fi, ei: 1, p: pts[pts.length - 1] });
+    });
+    const candidates = new Map(ends.map(e => [e.fi + ':' + e.ei, []]));
+    for (let i = 0; i < ends.length; i++) for (let j = i + 1; j < ends.length; j++) {
+      const a = ends[i], b = ends[j];
+      if (a.fi === b.fi || Math.hypot(a.p[0] - b.p[0], a.p[1] - b.p[1]) > JOIN) continue;
+      candidates.get(a.fi + ':' + a.ei).push(b);
+      candidates.get(b.fi + ':' + b.ei).push(a);
+    }
+    const links = new Map();
+    for (const e of ends) {
+      const k = e.fi + ':' + e.ei, cs = candidates.get(k);
+      if (cs.length !== 1) continue;
+      const q = cs[0], qk = q.fi + ':' + q.ei, back = candidates.get(qk);
+      if (back.length === 1 && back[0].fi === e.fi && back[0].ei === e.ei) links.set(k, q);
+    }
+    const used = new Set(), out = [];
+    const walk = (fi, firstEnd) => {
+      let pts = firstEnd ? [...lines[fi]].reverse() : [...lines[fi]];
+      used.add(fi);
+      let tail = fi + ':' + (firstEnd ? 0 : 1);
+      while (links.has(tail)) {
+        const at = links.get(tail);
+        if (used.has(at.fi)) break;
+        const next = at.ei ? [...lines[at.fi]].reverse() : [...lines[at.fi]];
+        const a = pts[pts.length - 1], b = next[0];
+        pts.push(...next.slice(Math.hypot(a[0] - b[0], a[1] - b[1]) < 0.05 ? 1 : 0));
+        used.add(at.fi);
+        tail = at.fi + ':' + (at.ei ? 0 : 1);
+      }
+      out.push(pts);
+    };
+    // Open chains first, from their free end. Anything left is a closed loop.
+    lines.forEach((_, fi) => {
+      if (used.has(fi)) return;
+      const free0 = !links.has(fi + ':0'), free1 = !links.has(fi + ':1');
+      if (free0 || free1) walk(fi, free1 && !free0 ? 1 : 0);
+    });
+    lines.forEach((_, fi) => { if (!used.has(fi)) walk(fi, 0); });
+    return out;
+  };
+  const majorRiverLines = [];
   S.features.features.forEach((f, fi) => {
     if (f.type === 'road') processRoad(f.pts, fi);
     else if (f.type === 'trade') {
@@ -3584,9 +3639,14 @@ function deriveAdj() {
       }
     }
     else if (f.type === 'coast') { if (f.hex != null) coastHexes.add(f.hex); else for (const h of lineChain(f.pts)) coastHexes.add(h); }
-    else if (f.type === 'river_major') { addRiverSegs(f.pts, false); addAdjFromLine(f.pts, majorPairs, riverGeom); }
-    else if (f.type === 'river_minor') { addRiverSegs(f.pts, true); addAdjFromLine(f.pts, null, riverGeom); }
+    else if (f.type === 'river_major') {
+      addRiverSegs(f.pts, false);
+      addAdjFromLine(f.pts, majorPairs, null); // movement stays derived from the authored feature pieces
+      majorRiverLines.push(f.pts);
+    }
+    else if (f.type === 'river_minor') addRiverSegs(f.pts, true);
   });
+  for (const pts of stitchRiverLines(majorRiverLines)) addAdjFromLine(pts, null, riverGeom);
   // Junctions: inside each hex, union roads whose drawn lines touch/cross, then number the
   // resulting connectivity groups 1.. (0 is reserved for "not on a road"). An army may only
   // switch between two roads in a hex if they share a group. Groups are local to each hex.
@@ -5036,6 +5096,10 @@ function throughSharedEdges(pts) {
     const p = pts[i - 1], q = pts[i];
     const a = nearestHex(p[0], p[1]), b = nearestHex(q[0], q[1]);
     if (a && b && a !== b && neighbors(a).includes(b)) {
+      // Points already tracing the river are more authoritative than a centre-to-centre hex tidy-up.
+      // Moving their crossing to a generic shared-edge touchdown knocks the route off the channel and
+      // leaves a tiny out-and-back kink at otherwise exact river-feature joins.
+      if (nearMajorRiver(p, 2) && nearMajorRiver(q, 2)) { out.push(q); continue; }
       const td = sharedEdgeTouchdown(a, b, p, q);
       // Tidying the geometry must never march the column across a major river it never forded.
       const safe = td && !(!segCrossesMajor(p, q) && (segCrossesMajor(p, td) || segCrossesMajor(td, q)));
@@ -5142,7 +5206,11 @@ function routeLeg(rt, o) {
     // Drawing to it first and away again is what put a spike in the line at Kisra.
     const nxt = flat[idx + 1];
     const staysInHex = nxt && nxt.st.h === st.h;
-    const gpts = clipToRegion(stepGeom(st, ph), st.h, st.ri);
+    const rawGeom = stepGeom(st, ph);
+    // `clipToRegion` protects a road from wandering onto the far bank. A sailed river is the boundary
+    // itself, so assigning its sampled points to one bank and trimming the other can erase almost the
+    // entire reach in one direction and replace it with a chord. Keep water geometry whole.
+    const gpts = /sail/.test(st.note || '') ? rawGeom : clipToRegion(rawGeom, st.h, st.ri);
     if (gpts) {
       // A crossing's geometry is the road over the water, then the node it lands on. That last point
       // is only a default — if anything follows, the next step's point should stand instead. Going
@@ -6273,6 +6341,9 @@ function roundBends(pts) {
     const phi = Math.acos(Math.max(-1, Math.min(1, u1[0] * u2[0] + u1[1] * u2[1])));
     // Straight enough not to be a corner, or so nearly doubled back that there is no corner to round.
     if (phi < 0.02 || Math.PI - phi < 0.05) { out.push(V); continue; }
+    // A river's own vertices already describe its bend. A free fillet can only leave the water here;
+    // the round line join supplies the visual softness without inventing a different course.
+    if (nearMajorRiver(A, 2) && nearMajorRiver(V, 2) && nearMajorRiver(B, 2)) { out.push(V); continue; }
     const tn = Math.tan(phi / 2);
     const want = Math.min(BEND_R, BEND_DEV / (1 / Math.cos(phi / 2) - 1));
     const t = Math.min(want * tn, L1 * 0.45, L2 * 0.45), r = t / tn;
