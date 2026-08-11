@@ -6391,19 +6391,33 @@ function fanOutRetraced(pts, R) {
       if (p.i1 + 1 < n && !doubled(p.i1 + 1)) p.s += lean(P[p.i1 + 1], P[p.i1 + 2]);
     }
     ps.sort((a, b) => a.s - b.s || a.i0 - b.i0);
-    ps.forEach((p, k) => {
-      const off = Math.max(-3, Math.min(3, (k - (ps.length - 1) / 2) * 2)) * R;
-      /* The offset is stored against each segment's own left hand, so a pass walking the corridor
-         backwards needs its sign flipped. Carried along the pass rather than compared to the frame
-         segment by segment: a corridor that curves through a right angle would otherwise have a
-         segment whose normal is square to the frame, where the comparison is a coin toss. */
-      let sgn = nrm[p.i0][0] * N0[0] + nrm[p.i0][1] * N0[1] >= 0 ? 1 : -1;
-      d[p.i0] = off * sgn;
-      for (let i = p.i0 + 1; i <= p.i1; i++) {
-        if (nrm[i][0] * nrm[i - 1][0] + nrm[i][1] * nrm[i - 1][1] < 0) sgn = -sgn;
-        d[i] = off * sgn;
-      }
-    });
+
+    /* The order belongs to the whole corridor, but the *width* belongs to the stretch underfoot.
+       A corridor is transitive: pass A can share its west end with B, and B its east end with C,
+       without A ever meeting C. Giving every pass a lane out of `ps.length` made a long, branching
+       route exhaust the three-radius cap even on a stretch walked only twice; distinct passes were
+       then clamped onto the same outer lane and disappeared into one line. Keep the corridor-wide
+       ordering, but rank only the occurrences that actually share each undirected segment. */
+    const order = new Map(ps.map((p, k) => [p, k]));
+    const onEdge = new Map();
+    for (const p of ps) {
+      for (let i = p.i0; i <= p.i1; i++)
+        (onEdge.get(und[i]) || onEdge.set(und[i], []).get(und[i])).push({ p, i });
+    }
+    for (const same of onEdge.values()) {
+      same.sort((a, b) => order.get(a.p) - order.get(b.p) || a.i - b.i);
+      /* The first-ranked pass supplies this stretch's physical frame. That frame must be shared by
+         every occurrence: transporting a sign separately along each pass can arrive at the same
+         stretch with opposite answers after the passes take different bends, putting two different
+         ranks back onto one physical lane. `d` is measured from each walker's own left, hence the
+         sign flip for an occurrence travelling against the frame. */
+      const N = nrm[same[0].i];
+      same.forEach(({ i }, k) => {
+        const off = Math.max(-3, Math.min(3, (k - (same.length - 1) / 2) * 2)) * R;
+        const side = nrm[i][0] * N[0] + nrm[i][1] * N[1] >= 0 ? 1 : -1;
+        d[i] = off * side;
+      });
+    }
   }
 
   /* A lane is a cosmetic displacement and is not allowed to make a claim about the ground. Six units
