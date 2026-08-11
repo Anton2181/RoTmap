@@ -3411,6 +3411,14 @@ function deriveAdj() {
     }
     return chain;
   };
+  /* How much river a hex needs before it counts as having the river in it. A river drawn along the
+     boundary between two hexes belongs to whichever side of it the line happens to fall, and near a
+     corner it can stray across for a few units and back — which used to be enough to make the hex it
+     grazed a river hex, navigable, with a sail link to the hex the river really runs down. Gerénéi
+     picked up four units of somebody else's river that way, and a fleet there could put out onto a
+     channel that runs past the far side of the hex boundary. Four units is a graze; a river through a
+     hex is most of a hex long. */
+  const RIVER_IN_HEX = () => S.G.hex_size * 0.25;
   const coastHexes = new Set();
   const majorPairs = new Set(); // pairKey -> a drawn MAJOR river crosses this edge (river mouths)
   const geom = new Map();      // pairKey -> {a, pts}: drawn road geometry between adjacent hexes
@@ -3426,21 +3434,66 @@ function deriveAdj() {
         samples.push([x, y, nearestHex(x, y)]);
       }
     }
-    // group into runs per hex; each adjacent run pair is a connection with real geometry
-    const runs = [];
+    // group into runs per hex
+    const all = [];
     for (let i = 0; i < samples.length; i++) {
       const h = samples[i][2];
-      if (!runs.length || runs[runs.length - 1].h !== h) runs.push({ h, i0: i, i1: i });
-      else runs[runs.length - 1].i1 = i;
+      if (!all.length || all[all.length - 1].h !== h) all.push({ h, i0: i, i1: i });
+      else all[all.length - 1].i1 = i;
     }
-    for (let j = 0; j + 1 < runs.length; j++) {
-      const u = runs[j], v = runs[j + 1];
-      if (!u.h || !v.h || !neighbors(u.h).includes(v.h)) continue;
-      const key = pairKey(u.h, v.h);
-      if (set) set.add(key);
-      if (!geomMap.has(key)) {
-        const mu = (u.i0 + u.i1) >> 1, mv = (v.i0 + v.i1) >> 1;
-        geomMap.set(key, { a: u.h, pts: samples.slice(mu, mv + 1).map(s => [s[0], s[1]]) });
+    /* A run too short to be the river passing through that hex is a graze at a boundary — the line is
+       drawn along an edge and strays a few units over it near a corner. Dropped, so that the runs
+       either side of it meet instead, which is where the river actually goes. Without this, four
+       units of stray river through Gerénéi put a navigable channel there and a sail link to the hex
+       the river really runs down. See RIVER_IN_HEX, which decides the same question for whether the
+       hex counts as a river hex at all — the two must agree, or a fleet could board where it could
+       not sail, or sail out of a hex it could not be in. */
+    const runLen = r => {
+      let L = 0;
+      for (let k = r.i0; k < r.i1; k++)
+        L += Math.hypot(samples[k + 1][0] - samples[k][0], samples[k + 1][1] - samples[k][1]);
+      return L;
+    };
+    const runs = all.filter(r => runLen(r) >= RIVER_IN_HEX());
+    /* ---------------- a river drawn along a hex boundary ----------------
+       Rivers on this map are very often drawn *on* the edge between two hexes rather than through the
+       middle of one, which is what a river between two counties looks like. Sampled every four units
+       and asked which hex each sample is in, such a river answers A, B, A, B, A, B all the way down,
+       because the drawn line wanders a unit either side of the boundary it is following.
+
+       Read run by run, that came out as a long series of A→B connections — and a connection here
+       means *a fleet can sail from A to B*. So the one thing the river plainly does not offer, a
+       passage from one of its banks to the other, was the only thing it offered; and the thing it
+       obviously does offer, a way downstream, was not there at all. A fleet at Gerénéi could not
+       reach the hex below it without first crossing the channel to the far bank and back.
+
+       So the alternation is read for what it is. Three or more runs flip-flopping between the same
+       two neighbours are one **reach** of river with a hex on either side of it, and reaches are what
+       get joined: every hex bordering one reach to every neighbouring hex bordering the next. Two
+       hexes facing each other across the same reach are not joined at all — there is nowhere to sail
+       to, they are the same water — and crossing between them is a bridge or a ford, which is a
+       different question with its own answer (see riverEdge). A river that genuinely crosses an edge
+       makes a run in each hex and no alternation, so it comes through this exactly as before. */
+    const reaches = [];
+    for (let i = 0; i < runs.length; ) {
+      const a = runs[i].h, b = runs[i + 1]?.h;
+      let j = i;
+      if (a && b && a !== b && neighbors(a).includes(b))
+        while (j + 1 < runs.length && runs[j + 1].h === (runs[j].h === a ? b : a)) j++;
+      if (j >= i + 2) { reaches.push({ hexes: [a, b], i0: runs[i].i0, i1: runs[j].i1 }); i = j + 1; }
+      else { reaches.push({ hexes: [a], i0: runs[i].i0, i1: runs[i].i1 }); i++; }
+    }
+    for (let j = 0; j + 1 < reaches.length; j++) {
+      const u = reaches[j], v = reaches[j + 1];
+      for (const a of u.hexes) for (const b of v.hexes) {
+        if (!a || !b || a === b || !neighbors(a).includes(b)) continue;
+        if (u.hexes.includes(b) || v.hexes.includes(a)) continue;   // two banks of one reach
+        const key = pairKey(a, b);
+        if (set) set.add(key);
+        if (!geomMap.has(key)) {
+          const mu = (u.i0 + u.i1) >> 1, mv = (v.i0 + v.i1) >> 1;
+          geomMap.set(key, { a, pts: samples.slice(mu, mv + 1).map(s => [s[0], s[1]]) });
+        }
       }
     }
   };
@@ -3486,6 +3539,7 @@ function deriveAdj() {
     }
   };
   const majorHexes = new Set(); // hexes a major river actually flows through (not just near)
+  const majorLen = new Map();
   const addRiverSegs = (pts, minor) => {
     for (let i = 0; i + 1 < pts.length; i++) {
       const seg = { x1: pts[i][0], y1: pts[i][1], x2: pts[i + 1][0], y2: pts[i + 1][1], minor };
@@ -3494,7 +3548,11 @@ function deriveAdj() {
       const len = Math.hypot(seg.x2 - seg.x1, seg.y2 - seg.y1), n = Math.max(1, Math.ceil(len / 4));
       for (let k = 0; k <= n; k++) {
         const h = nearestHex(seg.x1 + (seg.x2 - seg.x1) * k / n, seg.y1 + (seg.y2 - seg.y1) * k / n);
-        if (h) { touched.add(h); if (!minor) majorHexes.add(h); for (const nb of neighbors(h)) touched.add(nb); }
+        if (h) {
+          touched.add(h);
+          if (!minor) majorLen.set(h, (majorLen.get(h) || 0) + len / n);
+          for (const nb of neighbors(h)) touched.add(nb);
+        }
       }
       for (const h of touched) {
         if (!riverByHex.has(h)) riverByHex.set(h, []);
@@ -3557,6 +3615,7 @@ function deriveAdj() {
   }
   const ferryAt = new Map(); // pairKey -> {pt, spur}: where this edge is ferried, and the spur to follow
   const meet = new Set();      // "h|n|ri|rj": region rj of n is reachable from region ri of h
+  for (const [h, L] of majorLen) if (L >= RIVER_IN_HEX()) majorHexes.add(h);
   const riverEdge = new Set(); // pairKey: a major river runs along this edge, so it is a bank
   S.adj = { roads, roadPairFi, roadGeomFi, hexRoadGroup, ferry, ferryAt, meet, riverEdge, tradeByHex, riverByHex, geom, riverGeom, coastHexes, majorHexes, majorPairs, sub: new Map() };
   // A ferry is not something you draw — it is simply what a road does where it meets a major river,
@@ -3972,6 +4031,43 @@ function majorCrossPt(a, b) {
 // Does a drawn segment cut a major river? The movement rules ask this of the line between two hex
 // centres; this asks it of a line actually being drawn, which is not the same question and is what
 // keeps the cosmetic shortcuts in routeLeg from putting the column across water it never forded.
+/* Where the water is in a subhex: the point on a drawn major river inside it, nearest that subhex's
+   own centre. A step taken **afloat** with no drawn river to follow — launching from a port into the
+   next hex's channel, which is a move the river-mouth rule does not have to allow — was drawn from
+   one bank's centre to the other's, a line across open country between two places the fleet was never
+   at, plainly nowhere near the river it was supposedly sailing. This is the same idea as anchoring a
+   stop on its stronghold marker: draw to the thing the step is actually about. */
+function riverPointIn(h, ri) {
+  const segs = S.adj.riverByHex.get(h);
+  if (!segs) return null;
+  const c = nodePoint(h, ri);
+  let best = null, bd = Infinity;
+  for (const s of segs) {
+    if (s.minor) continue;
+    const dx = s.x2 - s.x1, dy = s.y2 - s.y1, L2 = dx * dx + dy * dy;
+    const t = L2 ? Math.max(0, Math.min(1, ((c[0] - s.x1) * dx + (c[1] - s.y1) * dy) / L2)) : 0;
+    const p = [s.x1 + dx * t, s.y1 + dy * t];
+    if (nearestHex(p[0], p[1]) !== h) continue;   // the bucket holds the neighbours' water as well
+    const d = (p[0] - c[0]) ** 2 + (p[1] - c[1]) ** 2;
+    if (d < bd) { bd = d; best = p; }
+  }
+  return best;
+}
+/* Is there major water within `r` of this point? `riverByHex` already buckets every segment into its
+   own hex *and* its neighbours, so one lookup covers everything that could be near. */
+function nearMajorRiver(p, r) {
+  const h = nearestHex(p[0], p[1]);
+  if (h == null) return false;
+  const r2 = r * r;
+  for (const s of S.adj.riverByHex.get(h) || []) {
+    if (s.minor) continue;
+    const dx = s.x2 - s.x1, dy = s.y2 - s.y1, L2 = dx * dx + dy * dy;
+    const t = L2 ? Math.max(0, Math.min(1, ((p[0] - s.x1) * dx + (p[1] - s.y1) * dy) / L2)) : 0;
+    const ex = p[0] - s.x1 - dx * t, ey = p[1] - s.y1 - dy * t;
+    if (ex * ex + ey * ey < r2) return true;
+  }
+  return false;
+}
 function segCrossesMajor(p, q) {
   const segs = new Set([...(S.adj.riverByHex.get(nearestHex(p[0], p[1])) || []),
                         ...(S.adj.riverByHex.get(nearestHex(q[0], q[1])) || [])]);
@@ -4455,14 +4551,18 @@ function isPort(h, ri) {
   // major river shares its hex with the sea half and is not thereby a port.
   if (regionAdj(h).some(([a, b]) =>
       (a === (ri | 0) && regSail(region(h, b))) || (b === (ri | 0) && regSail(region(h, a))))) return true;
-  if (regSail(region(h, ri))) return true;           // the subhex is itself navigable — a river bank
-  // Otherwise the shore has to be over an edge this subhex occupies. Asking the whole hex, as this
-  // used to, is what let an inland bank claim a coast on the far side of the water.
-  return neighbors(h).some(n => {
-    const e = sharedEdgePts(h, n);
-    if (!regionOnEdge(h, ri, e)) return false;
-    return regionsOf(n).some((r, rj) => regSail(r) && regionOnEdge(n, rj, e));
-  });
+  return !!regSail(region(h, ri));                   // the subhex is itself navigable — a river bank
+  /* And that is the whole of the inference: the water has to be **in this hex**. It used to reach
+     over an edge as well — any neighbour with navigable water facing the same stretch of boundary
+     made this a port — and the trouble with that is what a boundary is. A river drawn along the edge
+     between two hexes is recorded in whichever of them the line falls in, so the hex on the other
+     side of it borders navigable water without having any, and a stronghold there could secure a
+     fleet and put out onto a channel that runs past the far side of its own boundary. Gerénéi was
+     doing exactly that, seven days of shipwrighting at a keep with no water in its hex at all.
+
+     Thirteen markers stop being ports by this, out of eighty-four. The ones that keep it are the ones
+     with the water in front of them: a coast hex is split into land and sea subhexes, so a shore town
+     has its own harbour by construction, and a river bank is navigable in its own right. */
 }
 // Too small to show in any total (steps are tenths of a day), big enough to settle a tie. Used to
 // make a free move lose to not making it at all, where both reach the same place for the same price.
@@ -4544,8 +4644,17 @@ function expand(h, ri, af, ships, g, o) {
       for (let rj = 0; rj < rs.length; rj++)
         // Merely reaching this edge somewhere is not enough: two bays can touch opposite ends of
         // it with dry ground between them. The regions themselves must face the same stretch.
-        if (regSail(rs[rj]) && regionOnEdge(n, rj, e) && regionsMeet(h, ri, n, rj) &&
-            waterLink(h, ri, n, rj))
+        /* `regionsMeet` is there to stop a column *walking* over water that lies between two hexes'
+           banks. Afloat it asks the wrong question, and where the drawn river runs **along** the
+           shared edge it gives the wrong answer to every pair: all four banks touch that edge, the
+           table rules them all out as separated by the water, and the water is precisely what the
+           fleet is on. A boundary reach then carried nothing, and the Ayauda's own channel could not
+           be sailed from one hex to the next — the search paid a day to go ashore and launch again on
+           the far side instead, which is not a thing anybody does to get down a river they are
+           already on. So on such an edge the meeting test is waived; being navigable, being on the
+           edge, and the river actually running between the two are still all required. */
+        if (regSail(rs[rj]) && regionOnEdge(n, rj, e) && waterLink(h, ri, n, rj) &&
+            (regionsMeet(h, ri, n, rj) || S.adj.riverEdge.has(pairKey(h, n))))
           out.push({ toH: n, toRi: rj, af: 1, ships: 1, g: 0, irl: SHIP_IRL, note: 'sail' });
     }
     // Sail between adjacent navigable regions of the SAME hex (a river mouth, a bay opening into a
@@ -4673,12 +4782,22 @@ function expand(h, ri, af, ships, g, o) {
       if (a === ri && regSail(region(h, b))) out.push({ toH: h, toRi: b, af: 1, ships: 1, g: 0, irl: cost, note: pre });
       if (b === ri && regSail(region(h, a))) out.push({ toH: h, toRi: a, af: 1, ships: 1, g: 0, irl: cost, note: pre });
     }
-    for (const { n, e } of N) { // launching from a port: the ship starts in that water, no mouth needed
+    /* Launching straight into a *neighbouring* hex's water, the ship starting in it rather than
+       having to reach it by a river mouth. This is the one place a fleet may enter water it could not
+       have sailed to, and it is meant: a port is a place where boats are put in, and where the water
+       in front of it belongs is a fact about which hex the drawn river fell in, not about the harbour.
+
+       It was taken out for a day when a keep with **no water in its own hex** was using it to reach
+       across a boundary and put a fleet on the channel beyond — and that turned out to be the wrong
+       place to fix it, since it also cost the Ayauda its way down to the sea. The fix belongs in what
+       counts as a port: a stronghold now needs the water to be in its own hex, so the keep that was
+       reaching across is not a port at all and never gets here. */
+    for (const { n, e } of N) {
       if (!regionOnEdge(h, ri, e)) continue;
       const rs = regionsOf(n);
       for (let rj = 0; rj < rs.length; rj++)
         if (regSail(rs[rj]) && regionOnEdge(n, rj, e) && regionsMeet(h, ri, n, rj))
-        out.push({ toH: n, toRi: rj, af: 1, ships: 1, g: 0, irl: cost + SHIP_IRL, note: pre + ', sail' });
+          out.push({ toH: n, toRi: rj, af: 1, ships: 1, g: 0, irl: cost + SHIP_IRL, note: pre + ', sail' });
     }
   }
   if (o.tradeRoad) for (const link of (S.adj.tradeByHex.get(h) || [])) {
@@ -4959,6 +5078,23 @@ function routeLeg(rt, o) {
     if (!g && note.includes('sail')) g = S.adj.riverGeom.get(key);
     return g ? (g.a === prevH ? g.pts : [...g.pts].reverse()) : null;
   };
+  /* A road does not stop at the hex boundary: it runs on to its own mid-hex point, and on a hex split
+     by a major river that point can be **on the far bank**. Following it there draws the column
+     across the water a step early, and the crossing that comes next then has to bring it back — an
+     out-and-back over the bridge some twenty units long, invisible under a three-unit stroke except
+     that it is long enough to turn an arrowhead round. A march heading north-east showed one head at
+     the bridge pointing south-west.
+
+     So a run's tail is cut back to the region the step it belongs to actually arrives in. Only the
+     tail, and only inside that step's own hex: the head of the run is in the hex it came from and is
+     none of this step's business. On a hex the river has not split there is one region and nothing to
+     cut. */
+  const clipToRegion = (pts, h, ri) => {
+    if (!pts || pts.length < 2 || !isSplit(h)) return pts;
+    let end = pts.length - 1;
+    while (end > 0 && nearestHex(pts[end][0], pts[end][1]) === h && regionAt(h, pts[end]) !== ri) end--;
+    return end === pts.length - 1 ? pts : pts.slice(0, end + 1);
+  };
   // Flatten the legs into one step sequence (dropping the duplicated waypoint between legs).
   const flat = [];
   let prevH = null;
@@ -4981,6 +5117,9 @@ function routeLeg(rt, o) {
     // A waypoint is a place the column actually stops, so the line goes to its stronghold marker if
     // it has one — the same anchoring the route's start and end have always had.
     const anchor = wp ? endPoint(st.h, st.ri) : nodePoint(st.h, st.ri);
+    // Afloat and with no drawn river to trace: aim at the water rather than at the bank's midpoint.
+    // A stop keeps its marker either way — the ring is drawn there and the line must agree with it.
+    const afloatAt = (!wp && /sail/.test(st.note || '') && riverPointIn(st.h, st.ri)) || anchor;
     steps.push(st);
     if (first) { allPts.push(endPoint(st.h, st.ri)); continue; }
     if (st.h !== ph) { // a trade hop covers several hexes at once and knows its own real length
@@ -4994,7 +5133,7 @@ function routeLeg(rt, o) {
     // Drawing to it first and away again is what put a spike in the line at Kisra.
     const nxt = flat[idx + 1];
     const staysInHex = nxt && nxt.st.h === st.h;
-    const gpts = stepGeom(st, ph);
+    const gpts = clipToRegion(stepGeom(st, ph), st.h, st.ri);
     if (gpts) {
       // A crossing's geometry is the road over the water, then the node it lands on. That last point
       // is only a default — if anything follows, the next step's point should stand instead. Going
@@ -5007,7 +5146,37 @@ function routeLeg(rt, o) {
       continue;
     }
     if (wp) { allPts.push(anchor); continue; } // a stop is reached, never cut past or shortcut to
-    if (staysInHex) continue;
+    /* A step that changes only the column's *state* — going ashore, taking ship, spending the month
+       securing one — does not move it an inch, and so has nothing to contribute to the line: it
+       happens where the line already is. Drawing it anyway meant drawing to the subhex's own centre,
+       and on a bank that centre is nowhere near the water. Coming off the sea at Akanin to launch
+       again into the next reach, the line left the river, struck out twenty-two units across dry
+       country to the middle of the bank, and came back. */
+    const prev = flat[idx - 1]?.st;
+    if (prev && st.h === prev.h && (st.ri | 0) === (prev.ri | 0)) continue;
+    /* The shortcut above is a cosmetic liberty — the column *was* at this node, and the only reason
+       to leave it out is that drawing in and out again looks like a spike. It is only a liberty while
+       it stays honest about the water. Cutting the corner off a hex whose two halves are split by a
+       major river draws a straight line from wherever the column came in to wherever it is going
+       next, and where the river bends between those two points that line goes over it and back — so a
+       march that forded once was drawn fording three times, which is a claim about the ground and not
+       a matter of taste. So the corner is only cut when cutting it crosses nothing: otherwise the
+       node the column actually stood on goes back in, and the line goes round the bend the long way,
+       the way the column did. */
+    if (staysInHex) {
+      /* Unless the step that follows is the crossing itself, in which case the line is *supposed* to
+         go over the water and asking whether it does is asking the wrong question. It cost a spike
+         seventeen units long at the bridge in 1694, the line detouring up to the node and back purely
+         to avoid a ford it was in the middle of making. */
+      const crossing = /bridge|ford|ferry|sail/i.test(nxt.st.note || '');
+      const from = allPts[allPts.length - 1];
+      const ng = stepGeom(nxt.st, st.h);
+      const to = ng && ng.length ? ng[0]
+               : (nxt.wp ? endPoint(nxt.st.h, nxt.st.ri) : nodePoint(nxt.st.h, nxt.st.ri));
+      if (crossing || !from || !to || !segCrossesMajor(from, to)) continue;
+      allPts.push(afloatAt);
+      continue;
+    }
     // Off-road / plain march (no feature to trace). If the next step rejoins a drawn feature
     // (a road), aim straight at where we rejoin it — its nearest end in this hex — rather than
     // detouring through the hex centroid, which leaves a jagged corner at the point of diversion.
@@ -5016,7 +5185,7 @@ function routeLeg(rt, o) {
       const ng = stepGeom(nxt.st, st.h);
       if (ng && ng.length) joinPt = ng[0];
     }
-    allPts.push(joinPt || anchor);
+    allPts.push(joinPt || afloatAt);
   }
   // A geometry step (sailing a river, or a road) ends at the feature's mid-hex point, which can
   // stop short of the destination hex's node point (its marker) — e.g. getting off a river into
@@ -6017,21 +6186,82 @@ function lineMeet(p1, p2, p3, p4) {
    the no-crossing condition, and there is exactly one arc that satisfies it. */
 const ARC_STEP = Math.PI / 12;   // how finely an arc is sampled into the polyline: 15° a side
 
+/* Null when the arc that satisfies the tangent condition would have to sweep more than half a circle,
+   which is the one answer that is never the right one. Nothing here ever asks for more than a
+   half-turn: a fillet turns by however much the corner turns, which is less than a straight-about, and
+   a hairpin turns by exactly a straight-about. A sweep of anything more means the two ends handed in
+   are not what they were taken for — the commonest way being that they are *nearly the same point*,
+   where the direction to leave in decides between "no turn at all" and "all the way round", and lands
+   on all the way round. That is what was drawing a pretzel where a route recrossed itself at a bridge:
+   a knot of three-unit steps threw up two joins whose ends stood half a unit apart, and each was
+   answered with a full 360° loop of the lane's own radius. Handing back null lets the caller draw the
+   short honest join instead. */
 function turnArc(P, e, s, u1) {
   const r = Math.hypot(e[0] - P[0], e[1] - P[1]);
   const a0 = Math.atan2(e[1] - P[1], e[0] - P[0]), a1 = Math.atan2(s[1] - P[1], s[0] - P[0]);
   // Which way round: the way that carries on in the direction the line was already going. The cross
   // product of the radius at `e` with that direction is positive exactly when the angle should grow.
   const ccw = (e[0] - P[0]) * u1[1] - (e[1] - P[1]) * u1[0] > 0;
-  let d = a1 - a0;
   const TAU = Math.PI * 2;
+  let d = a1 - a0;
   d = ccw ? ((d % TAU) + TAU) % TAU : -((((-d) % TAU) + TAU) % TAU);
+  if (!(r > 1e-9) || Math.abs(d) > Math.PI + 0.05) return null;
   const steps = Math.max(2, Math.ceil(Math.abs(d) / ARC_STEP));
   const out = [];
   for (let k = 0; k <= steps; k++) {
     const a = a0 + d * k / steps;
     out.push([P[0] + r * Math.cos(a), P[1] + r * Math.sin(a)]);
   }
+  return out;
+}
+
+/* ---------------- rounding the bends ----------------
+   A solved route is a polyline through node points, road ends and edge touch-downs, and a polyline
+   turns corners. On a march that follows a coast or a river through a dozen hexes those corners come
+   thick and fast, and drawn sharp they read as a jagged thing rather than a road — the mitre is
+   geometrically right and the eye reads it as damage. Every bend is therefore given a fillet: a
+   circular arc tangent to both sides, cutting the corner off.
+
+   Two limits, and they matter more than the radius does. A fillet may take **no more than a shade
+   under half of either segment it sits between**, so two fillets on a short segment cannot eat into
+   each other, and a corner between two two-unit hops is left alone rather than rounded into mush. And
+   it may not carry the line **more than a few units off its own corner**, whatever the radius asks
+   for, because that corner is often a touch-down `throughSharedEdges` planted on the edge between two
+   hexes precisely to keep the line inside them — round it too generously and the tidying that put it
+   there is undone. Both clamps work by shortening the tangent and re-deriving the radius from it, so
+   the arc stays tangent whichever of them bites.
+
+   It runs over the *drawn* line rather than the solved one, after the lanes and their tapers, so a
+   route that never doubles back is rounded too, and so are the joins the lanes introduce. The
+   hairpins come through untouched: they are already arcs, and an arc's own sampling turns through
+   fifteen degrees at a time, which is below the angle worth filleting. */
+const BEND_R = 18;     // the radius a corner is rounded to when nothing stops it
+const BEND_DEV = 6;    // ...but never leaving its own corner by more than this, an eighth of a hex
+
+function roundBends(pts) {
+  if (pts.length < 3) return pts;
+  const out = [pts[0]];
+  for (let i = 1; i + 1 < pts.length; i++) {
+    const A = pts[i - 1], V = pts[i], B = pts[i + 1];
+    const L1 = Math.hypot(V[0] - A[0], V[1] - A[1]), L2 = Math.hypot(B[0] - V[0], B[1] - V[1]);
+    if (L1 < 1e-9 || L2 < 1e-9) continue;
+    const u1 = [(V[0] - A[0]) / L1, (V[1] - A[1]) / L1], u2 = [(B[0] - V[0]) / L2, (B[1] - V[1]) / L2];
+    const phi = Math.acos(Math.max(-1, Math.min(1, u1[0] * u2[0] + u1[1] * u2[1])));
+    // Straight enough not to be a corner, or so nearly doubled back that there is no corner to round.
+    if (phi < 0.02 || Math.PI - phi < 0.05) { out.push(V); continue; }
+    const tn = Math.tan(phi / 2);
+    const want = Math.min(BEND_R, BEND_DEV / (1 / Math.cos(phi / 2) - 1));
+    const t = Math.min(want * tn, L1 * 0.45, L2 * 0.45), r = t / tn;
+    if (r < 0.2) { out.push(V); continue; }
+    const p1 = [V[0] - u1[0] * t, V[1] - u1[1] * t], p2 = [V[0] + u2[0] * t, V[1] + u2[1] * t];
+    // Rounding a corner is a liberty with the geometry, and like every other one here it stops at the
+    // water: a corner cut across a bend in a major river would draw a ford the column never made.
+    if (segCrossesMajor(p1, p2) && !segCrossesMajor(p1, V) && !segCrossesMajor(V, p2)) { out.push(V); continue; }
+    const sgn = u1[0] * u2[1] - u1[1] * u2[0] > 0 ? 1 : -1;   // the centre lies to the inside of the turn
+    const fillet = turnArc([p1[0] - u1[1] * r * sgn, p1[1] + u1[0] * r * sgn], p1, p2, u1);
+    if (fillet) out.push(...fillet); else out.push(V);
+  }
+  out.push(pts[pts.length - 1]);
   return out;
 }
 
@@ -6079,64 +6309,111 @@ function fanOutRetraced(pts, R) {
     nrm.push([dy / L, -dx / L]);       // the left hand of whoever is walking this segment
     cum.push(cum[i] + L);
   }
-  /* A lane is a distance **to one side of the direction of travel**, which is the thing that used to
-     be got wrong: it was a signed offset from a canonical ordering of the segment's two endpoints,
-     which is a fact about the hex ids and not about the march. Which side the outward leg took was
-     therefore arbitrary and could differ from one segment to the next, and every time it changed its
-     mind the two tracks crossed. Measured off the walker instead, a stretch keeps one side for its
-     whole length and an out-and-back straddles the road on its own — left of east is north, left of
-     west is south — with no ordering to consult.
+  /* ---------------- which lane each pass runs in ----------------
+     A stretch walked more than once has to spread its passes across it, and there are two questions:
+     how wide, and in what order. The order is the one that used to be got wrong, twice.
 
-     Passes going the *same* way over one stretch cannot share a side, so they stack outward: the
-     first at one marker radius, the second at two. Capped at three — six passes over one stretch is
-     past telling apart anyway, and letting the spread grow would fling the outermost lane most of a
-     hex clear of the road it is meant to be following. */
-  const ring = new Map(), d = new Array(n).fill(0);
-  for (let i = 0; i < n; i++) {
-    if (count.get(und[i]) < 2) continue;
-    const k = ring.get(dir[i]) || 0; ring.set(dir[i], k + 1);
-    d[i] = R * (1 + Math.min(2, k));
-  }
-  /* Left or right is then **one bit for a whole corridor**, and it is voted on rather than fixed.
-     Keeping left everywhere is self-consistent and still wrong half the time: where the two passes
-     part company, the one arriving from the west wants the west side of the corridor, and left may
-     well be east. Get it wrong at both ends of a stretch and the tracks cross, run alongside each
-     other, and cross back, having gained nothing at all by the excursion — and at a hairpin, wrong
-     is the difference between a loop that lies clear of its approach and one that wraps back over it.
+     First it was a canonical ordering of the segment's two endpoints, which is a fact about the hex
+     ids and not about the march, so the outward leg's side was arbitrary and could change from one
+     segment to the next. Then it was **keep left** — measured off the walker, so an out-and-back
+     straddles the road on its own, left of east being north and left of west south. That is right
+     for two passes going opposite ways and wrong for two going the *same* way, which it stacked one
+     outside the other on the same side of the road: two tracks running alongside each other with the
+     road bare beside them, and, where they finally parted, the one heading south obliged to cross the
+     one heading north to get there.
 
-     So each corridor is asked. A corridor is every doubled segment reachable from another either by
-     lying next to it along the march or by being the same ground walked again: consecutive segments
-     must agree or a lane would change sides midway, and two passes over one stretch must disagree or
-     they would be drawn on top of each other. That makes the choice a single bit per corridor, and
-     flipping it moves both tracks together, so neither of those properties can be broken by it.
+     So the passes are **ordered by where they are going**. A pass is a run of doubled segments walked
+     without turning round; every pass over one stretch belongs to a corridor; and each pass leans to
+     one side or the other by the road it came in on and the road it leaves by, measured against the
+     corridor's own frame. Sorted by that lean and laid out in order, the pass that peels off south
+     is on the south side of the stretch before it peels — which is the whole point of separating
+     them, and is also exactly what stops them crossing at the point they part.
 
-     The vote comes from the ends. Wherever a doubled stretch meets an undoubled one, the plain road
-     leans to one side of the corridor or the other, and the cosine of that lean is how strongly it
-     leans; the corridor takes whichever side wins. A corridor with no ends at all — a march that
-     doubles back over the whole of itself — has no opinion to consult and keeps left. */
+     For an out-and-back this reduces to what keep-left already did: the outward and return lean by
+     their approach and their departure, which are at opposite ends of the corridor, and the hairpin
+     at the far end joins the two lanes it finds. Lanes are two marker radii apart, so a pair sits at
+     ±R and the half-turn between them comes out at exactly the marker's radius — see turnArc. The
+     spread is capped at three radii either way; six passes over one stretch is past telling apart,
+     and letting it grow would fling the outermost lane most of a hex clear of the road. */
+  const doubled = i => count.get(und[i]) >= 2;
+  const isRev = j => j > 0 && j < n && u[j - 1][0] * u[j][0] + u[j - 1][1] * u[j][1] < -0.5;
+
+  // Corridors: doubled segments joined by lying next to each other along the march, or by being the
+  // same ground walked again. Consecutive segments must agree on the lane order or a track would
+  // change sides midway; two passes over one stretch must differ or they would be drawn on top of
+  // each other. Both hold if the whole corridor is ordered at once.
   const parent = [...Array(n).keys()];
   const find = x => { while (parent[x] !== x) x = parent[x] = parent[parent[x]]; return x; };
   const join = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent[ra] = rb; };
   const seen = new Map();
   for (let i = 0; i < n; i++) {
-    if (!d[i]) continue;
-    if (i && d[i - 1]) join(i - 1, i);
+    if (!doubled(i)) continue;
+    if (i && doubled(i - 1)) join(i - 1, i);
     const had = seen.get(und[i]);
     if (had === undefined) seen.set(und[i], i); else join(had, i);
   }
-  const vote = new Map();
-  const cast = (i, v) => vote.set(find(i), (vote.get(find(i)) || 0) + v);
-  for (let j = 1; j < n; j++) {
-    if (!d[j - 1] === !d[j]) continue;                                          // both, or neither
-    if (d[j]) cast(j, -(u[j - 1][0] * nrm[j][0] + u[j - 1][1] * nrm[j][1]));    // the road it came in on
-    else cast(j - 1, u[j][0] * nrm[j - 1][0] + u[j][1] * nrm[j - 1][1]);        // the road it leaves by
+  // Passes: maximal runs of consecutive doubled segments in one corridor. Broken at a reversal,
+  // since the two halves of a hairpin are two passes and want opposite lanes, not one lane through.
+  const passes = [];
+  for (let i = 0; i < n; ) {
+    if (!doubled(i)) { i++; continue; }
+    const c = find(i);
+    let j = i;
+    while (j + 1 < n && doubled(j + 1) && find(j + 1) === c && !isRev(j + 1)) j++;
+    passes.push({ c, i0: i, i1: j });
+    i = j + 1;
   }
-  for (let i = 0; i < n; i++) if (d[i] && vote.get(find(i)) < 0) d[i] = -d[i];
+  const byCorridor = new Map();
+  for (const p of passes) (byCorridor.get(p.c) || byCorridor.set(p.c, []).get(p.c)).push(p);
 
-  /* The column turning round, as opposed to merely going round a bend. It is the one join the taper
-     must not touch — in lane terms nothing changes at a reversal, both passes being a lane's width to
-     their own left — and the one join that gets an arc. */
-  const isRev = j => j > 0 && j < n && u[j - 1][0] * u[j][0] + u[j - 1][1] * u[j][1] < -0.5;
+  const d = new Array(n).fill(0);
+  for (const ps of byCorridor.values()) {
+    const N0 = nrm[ps[0].i0];                       // the corridor's frame: its first pass's left hand
+    // How far to the left of that frame the step from `a` to `b` leans.
+    const lean = (a, b) => {
+      const dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy);
+      return L > 1e-9 ? (dx * N0[0] + dy * N0[1]) / L : 0;
+    };
+    for (const p of ps) {
+      p.s = 0;
+      // The road it came in on. Nothing to read where the pass begins the march, or where what comes
+      // before is the other half of a hairpin — that end is the turn, and the turn has no side.
+      if (p.i0 > 0 && !doubled(p.i0 - 1)) p.s += lean(P[p.i0], P[p.i0 - 1]);
+      if (p.i1 + 1 < n && !doubled(p.i1 + 1)) p.s += lean(P[p.i1 + 1], P[p.i1 + 2]);
+    }
+    ps.sort((a, b) => a.s - b.s || a.i0 - b.i0);
+    ps.forEach((p, k) => {
+      const off = Math.max(-3, Math.min(3, (k - (ps.length - 1) / 2) * 2)) * R;
+      /* The offset is stored against each segment's own left hand, so a pass walking the corridor
+         backwards needs its sign flipped. Carried along the pass rather than compared to the frame
+         segment by segment: a corridor that curves through a right angle would otherwise have a
+         segment whose normal is square to the frame, where the comparison is a coin toss. */
+      let sgn = nrm[p.i0][0] * N0[0] + nrm[p.i0][1] * N0[1] >= 0 ? 1 : -1;
+      d[p.i0] = off * sgn;
+      for (let i = p.i0 + 1; i <= p.i1; i++) {
+        if (nrm[i][0] * nrm[i - 1][0] + nrm[i][1] * nrm[i - 1][1] < 0) sgn = -sgn;
+        d[i] = off * sgn;
+      }
+    });
+  }
+
+  /* A lane is a cosmetic displacement and is not allowed to make a claim about the ground. Six units
+     is nothing on a fifty-unit hex until the line is beside a river, and then it is the difference
+     between one bank and the other: an out-and-back that forded twice was **drawn fording four
+     times**, its two tracks stepping over the water and back again purely to get out of each other's
+     way. Nor is it only the lane — the half-turn at a hairpin is a whole lane's radius wide, and a
+     fillet takes its own bite of the corner, so keeping the water clear needs room on both counts.
+
+     So no lane is taken within two lanes' width of major water: the tracks close up as they come to
+     the river, cross it together on the one line the column actually took, and part again on the far
+     side, which the tapers do for free once the offset is zero. It costs nothing where it applies —
+     the stretch that loses its lane is a ford, which is one place on the map that could not be
+     mistaken for anywhere else. `throughSharedEdges` refuses the same liberty for the same reason. */
+  for (let i = 0; i < n; i++) {
+    if (!d[i]) continue;
+    const keep = Math.abs(d[i]) * 3;
+    if (nearMajorRiver(P[i], keep) || nearMajorRiver(P[i + 1], keep)) d[i] = 0;
+  }
 
   /* Where a taper may run to before it meets a reversal, another lane change, or the end of the line:
      easing on through any of those would be easing towards a lane the line never reaches. */
@@ -6145,9 +6422,22 @@ function fanOutRetraced(pts, R) {
       if (isRev(k) || d[k] !== d[k - 1]) return Math.abs(cum[k] - cum[j]);
     return step > 0 ? cum[n] - cum[j] : cum[j];
   };
+  /* One ramp per place the lane actually changes. Turning round is usually not such a place — the
+     offset is measured off the walker, and both passes are the same distance to their own left — so
+     an ordinary hairpin makes no ramp and is left to its arc.
+
+     But it *can* be one, and that is what tied the line in a knot where a route recrossed itself at a
+     bridge. A crossing walked three times has a stretch two lanes out sitting next to one at a single
+     lane and another on the road itself, with the turns between them; the lane changed and the
+     reversal was suppressing the ramp, so the line stepped eighteen units sideways in no distance and
+     then, the two ends of the join now being different distances from the corner, could not be given
+     an arc either. Letting the ramp happen fixes both at once: it eases the change over what room
+     there is, and at the turn itself the two ends meet the eased value from either side — equal
+     distances, opposite sides — so the arc goes back to being drawable, at whatever radius the ease
+     has reached by then. */
   const ramps = [];
   for (let j = 1; j < n; j++) {
-    if (d[j] === d[j - 1] || isRev(j)) continue;
+    if (d[j] === d[j - 1]) continue;
     const s0 = cum[j] - Math.min(TAPER / 2, room(j, -1)), s1 = cum[j] + Math.min(TAPER / 2, room(j, 1));
     if (s1 - s0 > 1e-6) ramps.push({ s0, s1, from: d[j - 1], to: d[j] });
   }
@@ -6189,7 +6479,12 @@ function fanOutRetraced(pts, R) {
        marker's radius the loop and the ring come out as the same circle. This used to fire wherever
        the two ends merely happened to be equidistant, which on a bend they always are: the result was
        a little hoop sprouting at any corner two tracks passed each other on, reading as a waypoint
-       that was not there. Turning round is the thing being drawn, so turning round is the test.
+       that was not there. Turning round is the thing being drawn, so turning round is the test — and
+       the two ends have to stand on genuinely *opposite* sides of the corner for there to be a
+       half-turn between them at all. Where a route recrosses itself at a bridge, three-unit steps and
+       two corridors that voted differently can leave those ends half a unit apart on the same side,
+       and the arc that answers that is a full circle: a pretzel where a join was wanted. Both the
+       opposite-sides test here and turnArc's own refusal to sweep past a half-circle rule it out.
 
        **A miter**, for a lane going round an ordinary bend: the two offset lines still cross, and
        meeting them there keeps the corner a corner rather than opening a notch a lane wide. Held to
@@ -6200,11 +6495,11 @@ function fanOutRetraced(pts, R) {
        distance because there was none to be had. */
     const V = P[i], e = out[out.length - 1], a = run[0];
     if (Math.hypot(e[0] - a[0], e[1] - a[1]) < 0.02) { out.push(...run.slice(1)); continue; }
-    const re = Math.hypot(e[0] - V[0], e[1] - V[1]), ra = Math.hypot(a[0] - V[0], a[1] - V[1]);
-    if (isRev(i) && re > 0.01 && Math.abs(re - ra) < 0.05) {
-      out.push(...turnArc(V, e, a, u[i - 1]).slice(1, -1), ...run);
-      continue;
-    }
+    const ev = [e[0] - V[0], e[1] - V[1]], av = [a[0] - V[0], a[1] - V[1]];
+    const re = Math.hypot(ev[0], ev[1]), ra = Math.hypot(av[0], av[1]);
+    const arc = isRev(i) && re > 0.01 && Math.abs(re - ra) < 0.05 && ev[0] * av[0] + ev[1] * av[1] < 0
+      ? turnArc(V, e, a, u[i - 1]) : null;
+    if (arc) { out.push(...arc.slice(1, -1), ...run); continue; }
     const m = out.length > 1 && run.length > 1 ? lineMeet(out[out.length - 2], e, a, run[1]) : null;
     if (m && Math.hypot(m[0] - V[0], m[1] - V[1]) < R * 2) { out[out.length - 1] = m; out.push(...run.slice(1)); }
     else out.push(...run);
@@ -6217,26 +6512,41 @@ function fanOutRetraced(pts, R) {
    two into a trade hop spanning six hexes. The first lands half a gap in, so a march too short to
    hold a full interval still gets one arrow rather than none.
 
+   Which way a head points is taken from the **chord across its own length** — where the line is
+   `span/2` back and `span/2` on — and not from the one facet of the polyline it happens to be
+   standing on. That facet can be two units long where the drawn geometry is fine, and it can point
+   backwards: a bridge is traced through points a few units apart and the solved line takes a step or
+   two the wrong way among them, invisible under a stroke three units wide and round-jointed, but
+   enough to flip a seventeen-unit arrowhead end for end. A march heading north-east showed one head
+   at the bridge pointing south-west. Reading the chord asks the question at the scale the answer is
+   drawn at, which is the scale it was always meant to be asked at — it also lines the heads up along
+   a curve rather than along whichever facet they landed on.
+
    `avoid` is the waypoint markers. An arrowhead landing on a stop fills in its hollow ring and turns
    a stop into a blob, so anything within `clear` of one is dropped — the ring is the more important
    mark, and the arrow either side of it says the same thing about direction. */
-function arrowsAlong(pts, gap, avoid, clear) {
+function arrowsAlong(pts, gap, span, avoid, clear) {
+  const cum = [0];
+  for (let i = 0; i + 1 < pts.length; i++)
+    cum.push(cum[i] + Math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]));
+  const total = cum[cum.length - 1];
+  if (!(total > 0)) return [];
+  // Where the line is, `s` units along it.
+  const at = s => {
+    s = Math.max(0, Math.min(total, s));
+    let lo = 0, hi = cum.length - 2;
+    while (lo < hi) { const m = (lo + hi + 1) >> 1; if (cum[m] <= s) lo = m; else hi = m - 1; }
+    const L = cum[lo + 1] - cum[lo], t = L > 0 ? (s - cum[lo]) / L : 0;
+    return [pts[lo][0] + (pts[lo + 1][0] - pts[lo][0]) * t, pts[lo][1] + (pts[lo + 1][1] - pts[lo][1]) * t];
+  };
   const out = [];
-  let total = 0;
-  for (let i = 0; i + 1 < pts.length; i++) total += Math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]);
   // Half a gap in, or the middle of the line when the whole of it is shorter than a gap.
-  let carry = Math.min(gap, total) * 0.5;
-  for (let i = 0; i + 1 < pts.length; i++) {
-    const [ax, ay] = pts[i], [bx, by] = pts[i + 1];
-    const L = Math.hypot(bx - ax, by - ay);
-    if (L < 1e-6) continue;
-    const ux = (bx - ax) / L, uy = (by - ay) / L;
-    let s = carry;
-    for (; s < L; s += gap) {
-      const x = ax + ux * s, y = ay + uy * s;
-      if (!avoid.some(p => Math.hypot(p[0] - x, p[1] - y) < clear)) out.push([x, y, ux, uy]);
-    }
-    carry = s - L;   // what is left of the interval, carried into the next segment
+  for (let s = Math.min(gap, total) * 0.5; s < total; s += gap) {
+    const p = at(s);
+    if (avoid.some(q => Math.hypot(q[0] - p[0], q[1] - p[1]) < clear)) continue;
+    const a = at(s - span / 2), b = at(s + span / 2);
+    const dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy);
+    if (L > 1e-6) out.push([p[0], p[1], dx / L, dy / L]);
   }
   return out;
 }
@@ -6247,8 +6557,9 @@ function arrowsAlong(pts, gap, avoid, clear) {
    be answerable at a glance and at a zoom where the line itself is a thread. It is wider than the
    lane spacing, so on a doubled stretch the two directions' heads reach across each other's tracks;
    that is why they are spaced as far apart as they are, below. */
+const arrowLen = sw => sw * 6;   // also the span the head's direction is read over — see arrowsAlong
 function arrowPathD([x, y, ux, uy], sw) {
-  const l = sw * 6, w = sw * 2.4, nx = -uy, ny = ux;
+  const l = arrowLen(sw), w = sw * 2.4, nx = -uy, ny = ux;
   const tx = x + ux * l * 0.5, ty = y + uy * l * 0.5;
   const bx = x - ux * l * 0.5, by = y - uy * l * 0.5;
   return `M${(bx + nx * w).toFixed(1)} ${(by + ny * w).toFixed(1)}` +
@@ -6262,6 +6573,20 @@ function arrowPathD([x, y, ux, uy], sw) {
    apart that every head has clear line either side of it, and the doubled stretch reads as what it is:
    two lines running together, each saying which way it goes. */
 const ARROW_GAP = 62;
+
+/* Is anything on screen singling one route out? Two things can be, and either will do: the **Routes
+   panel**, which names the active route in its heading, its settings and its list, and the **readout
+   card** on the map, which is that route's answer. With both away nothing is claiming a subject, and
+   the map should simply show every march it has.
+
+   Asked as a question rather than kept as a flag because it is a question about two other pieces of
+   state, and a flag would be a third thing to remember to update. */
+const routeIsSubject = () => (UI.pane === 'route' && !UI.shut) || !routeCard.hidden;
+/* Repainting after that answer changes. It re-solves, which sounds heavy for a change of opacity —
+   but it is the same work a dragged waypoint does on every frame, and `preview` keeps it from
+   touching storage or recomputing the isochrones, which have no opinion about any of this. Guarded
+   because the panel is placed once during script evaluation, before there is a map to draw on. */
+const relightRoutes = () => { if (S.G && groups.route) computeRoute({ preview: true }); };
 
 function computeRoute({ preview = false, previewIso = false } = {}) {
   const out = document.getElementById('routeOut');
@@ -6308,8 +6633,15 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
     renderIso();
   }
   const results = [];
+  const singled = routeIsSubject();
   S.routes.forEach((rt, i) => {
-    const act = i === S.activeRoute;
+    /* Faint means "not the one being talked about", and that only means anything while something on
+       screen is doing the talking. With the Routes panel away and the readout card dismissed, the
+       active route is a fact about the state and about nothing the reader can see — so dimming the
+       rest is dimming them in favour of a distinction nobody is being shown, and what is left is a
+       map with one march legible and the others half there for no stated reason. When nothing is
+       singling one out, they are all drawn as the one. */
+    const act = !singled || i === S.activeRoute;
     /* The marched line first, the stop markers over it. It was the other way round, which looked much
        the same — the dashes crossing a hollow ring rather than stopping at it — and made the markers
        **ungrabbable**: the line is drawn through every waypoint it passes, so at exactly the point you
@@ -6321,11 +6653,11 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
       const sw = act ? 2.8 : 2, op = act ? 0.95 : 0.55;
       // The stops, wanted before the line is drawn so the arrowheads can be kept off them.
       const stops = rt.wps.map(w => endPoint(w.h, w.ri | 0));
-      const pts = fanOutRetraced(r.pts, wpR(act));
+      const pts = roundBends(fanOutRetraced(r.pts, wpR(act)));
       el('path', { d: featPathD(pts), fill: 'none', stroke: rt.color, 'stroke-width': sw,
                    'stroke-linecap': 'round', 'stroke-linejoin': 'round', opacity: op,
                    'data-rt': i, 'pointer-events': 'none' }, groups.route);
-      for (const a of arrowsAlong(pts, ARROW_GAP, stops, wpR(act) + 4))
+      for (const a of arrowsAlong(pts, ARROW_GAP, arrowLen(sw), stops, wpR(act) + 4))
         el('path', { d: arrowPathD(a, sw), fill: rt.color, stroke: 'none', opacity: op,
                      'data-rt': i, 'pointer-events': 'none' }, groups.route);
     }
@@ -8941,6 +9273,14 @@ function hexMenu(h, pt, wp) {
       rt.wps.push({ h, ri: pt ? regionAt(h, pt) : 0 });
       computeRoute();
     });
+    /* Emptying *this* march, beside emptying them all. The two are not the same question and the
+       second is much the bigger one: a board with four routes on it and one of them wrong wants the
+       one wrong one gone, and clearing the lot was the only thing the map offered. It names the route
+       it will empty rather than saying "the active one", because which route is active is a fact
+       about a panel that may well be shut, and this menu is on the map. */
+    if (S.mode === 'route' && act?.wps.length)
+      ctxItem(box, `Clear <b>${escHtml(act.name)}</b><span class="arw">${act.wps.length} wp</span>`,
+              () => { closeCtx(); clearRouteWaypoints(S.activeRoute); }, 'danger');
     if (S.mode === 'route' && S.routes.length)
       ctxItem(box, `Clear all routes<span class="arw">${S.routes.length}</span>`,
               () => { closeCtx(); clearAllRoutes(); }, 'danger');
@@ -9828,6 +10168,7 @@ function showPane(name, opts) {
   }
   if (!opts?.keepShut) openPanel();
   saveUI();
+  relightRoutes();   // leaving Routes for another panel stops singling one march out
 }
 function openPanel() {
   UI.shut = false;
@@ -9835,6 +10176,7 @@ function openPanel() {
   panelEl.classList.add('open');
   document.body.classList.add('sheet-open');
   saveUI();
+  relightRoutes();
 }
 // On a wide screen this takes the panel out of the layout and gives the width to the map; on a
 // narrow one it slides the sheet back down. Same call either way.
@@ -9846,6 +10188,7 @@ function closePanel() {
   document.body.classList.remove('sheet-open');
   for (const b of railEl.querySelectorAll('.railbtn[data-pane]')) b.classList.remove('on');
   saveUI();
+  relightRoutes();
 }
 const closeSheet = () => { if (narrow()) closePanel(); };
 
@@ -10136,6 +10479,7 @@ function showCard() {
   placeCard();
   saveUI();
   renderRouteButtons(lastResults);
+  relightRoutes();
 }
 function hideCard() {
   UI.cardOff = true;
@@ -10143,6 +10487,7 @@ function hideCard() {
   dockRemove(routeCard);
   saveUI();
   renderRouteButtons(lastResults);
+  relightRoutes();
 }
 document.getElementById('routeCardClose').onclick = hideCard;
 
