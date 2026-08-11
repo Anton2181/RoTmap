@@ -3684,6 +3684,12 @@ function deriveAdj() {
       if (wet >= RE_MIN) riverEdge.add(pairKey(h, n));
     }
   }
+  /* And a river drawn along a hex's boundary is that hex's river too. Both sides of such a reach are
+     banks: a town on either can put boats in, and a fleet on the water is between them. Only the
+     hexes the drawn line physically fell inside counted before, which is a fact about which side of
+     the boundary the hand that drew it happened to wander — so Gerénôi, standing on the west bank of
+     the reach that runs down its own eastern edge, was not on a river at all. */
+  for (const k of riverEdge) for (const h of k.split('|')) if (S.hexes[+h]) majorHexes.add(+h);
   // Subhex geometry: flood-filled sea/land regions per coast-crossed hex (barriers = coast lines).
   S.adj.sub = coastSubcells();
   // A drawn major river through a coast hex makes that hex's land regions navigable too
@@ -3822,6 +3828,9 @@ function waterLink(h, ri, n, rj) {
   if (!A || !B) return false;
   if (A.sea && B.sea) return true;                        // open water to open water
   if (h === n) return riverInRegion(h, ri) && riverInRegion(h, rj); // the mouth: river reaches both
+  // Two hexes with the river running *along* the edge they share are the two banks of one reach —
+  // the same water, whichever side of the line the drawing put it on.
+  if (S.adj.riverEdge.has(pairKey(h, n))) return true;
   return S.adj.majorPairs.has(pairKey(h, n));             // the river itself crosses this edge
 }
 function hasSea(h) { return S.hexes[h].t !== 'N/A' && regionsOf(h).some(regSail); }
@@ -6602,7 +6611,13 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
   for (const rt of S.routes) rt.wps = rt.wps.map(w => {
     if (typeof w === 'number') return { h: w, ri: 0 };
     if (w.ri === undefined) { const ri = regionsOf(w.h).findIndex(r => !!r.sea === !!w.sea); return { h: w.h, ri: ri < 0 ? 0 : ri }; }
-    return w;
+    /* A region index is not safe to keep: the split is rebuilt from the drawn lines every time they
+       change, and a hex that had two banks yesterday can have one today — redraw a coastline, or take
+       a river out of a hex, and a stored index points past the end. Everything downstream then reads
+       a region that is not there and falls over. Clamped rather than dropped: the waypoint is still a
+       place the column was told to go, and the nearest thing to what it meant is the hex it named. */
+    const rs = regionsOf(w.h);
+    return (w.ri | 0) < rs.length ? w : { ...w, ri: Math.max(0, rs.length - 1) };
   });
   migrateIso();
   // The active *route's* army, named explicitly rather than taken from armyOpts()'s ambient answer:

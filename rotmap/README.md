@@ -384,6 +384,8 @@ So a boundary reach carried nothing. The Ayauda's own channel could not be saile
 
 This had been true since long before any of the work above; checking the same route against every commit back a week gives the same wrong answer.
 
+And a river drawn along a boundary is **both** hexes' river. Only the hexes the drawn line physically fell inside counted as being on it, which is a fact about which side of the boundary the hand that drew it wandered to — so Gerénôi, standing on the west bank of the reach that runs down its own eastern edge, was not on a river at all: no bank, no harbour, nowhere to put a boat. Every hex sharing an edge the river runs along is now on that river, either bank can embark, and the two are the same water. Fifteen hexes gained a river they were always beside, and three strongholds a harbour.
+
 ### A step that does not move the column
 
 Going ashore, taking ship, spending the month securing one: these change the column's *state* and move it not an inch, so they have nothing to contribute to the drawn line — they happen where the line already is. Drawing them anyway meant drawing to the subhex's own centre, and on a river bank that centre is nowhere near the water. Coming off the sea at Akanin to launch again into the next reach, the line left the river, struck out twenty-two units across dry country to the middle of the bank, and came back.
