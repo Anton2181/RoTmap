@@ -5484,6 +5484,52 @@ function routeDaysTitle(rt, r) {
     `, ${o.waste.toFixed(1)} wasted at ${o.halts} halt${o.halts === 1 ? '' : 's'}` : '';
 }
 
+/* Put every movement step onto the same wall clock the route's ordered-day total uses. Marching
+   advances continuously; the unused fraction of a halted order and explicit waypoint waits advance
+   the clock without advancing the line. This lets several routes share one campaign-day scrubber
+   without pretending that a faster column has covered the same fraction as a slower one. */
+function routeTimelineSchedule(rt, r) {
+  const billed = orderedOf(rt, r);
+  if (!billed) return { total: 0, distance: 0, steps: [], arrivals: [] };
+  let clock = wpWait(rt, 0), pending = 0;
+  let distance = 0;
+  const steps = [], arrivals = [0];
+  for (let si = 0; si < r.steps.length; si++) {
+    const st = r.steps[si];
+    const start = clock + pending;
+    pending += st.irl;
+    const end = clock + pending;
+    // Geometry is approximately proportional to ground covered, not to travel cost: one slow
+    // mountain hex takes more clock time but no more line than one fast road hex. Weight the revealed
+    // prefix by miles/hexes and use time only to decide how far through the current step it has got.
+    const moved = si > 0 && st.h !== r.steps[si - 1].h;
+    const hexes = moved ? (st.hexes ?? (st.chain ? st.chain.length - 1 : 1)) : 0;
+    const weight = moved ? (st.miles ?? hexes * RULES.HEX_MILES) : 0;
+    distance += weight;
+    steps.push({ start, end, cost: st.irl, weight });
+    if (st.wp) {
+      const wi = (st.leg | 0) + 1;
+      arrivals[wi] = end;
+      if (wi === rt.wps.length - 1 || wpHalt(rt, wi)) {
+        clock += optDays(pending);
+        pending = 0;
+        clock += wpWait(rt, wi);
+      }
+    }
+  }
+  return { total: billed.days, distance, steps, arrivals };
+}
+function routeTimelineProgress(schedule, day) {
+  if (!(schedule.distance > 0)) return day >= schedule.total ? 1 : 0;
+  let covered = 0;
+  for (const st of schedule.steps) {
+    if (day >= st.end) covered += st.weight;
+    else if (day > st.start && st.cost > 0)
+      covered += st.weight * Math.min(1, (day - st.start) / st.cost);
+  }
+  return Math.max(0, Math.min(1, covered / schedule.distance));
+}
+
 /* ---------------- the best order to visit them in ----------------
    Given a set of places a column has to reach, the order it reaches them in is a decision worth as
    much as the roads it takes: on ground this size the difference between a sensible-looking order and
@@ -7117,19 +7163,56 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
     const r = rt.wps.length > 1 ? routeLeg(rt, armyOpts(rt.set)) : null;
     if (r && r.pts.length > 1) {
       const sw = act ? 2.8 : 2, op = act ? 0.95 : 0.55;
+      const schedule = routeTimelineSchedule(rt, r);
       // The stops, wanted before the line is drawn so the arrowheads can be kept off them.
       const stops = rt.wps.map(w => endPoint(w.h, w.ri | 0));
       const fanned = fanOutRetraced(r.pts, wpR(act), stops);
       const pts = roundBends(fanned);
-      el('path', { d: routePathD(pts), fill: 'none', stroke: rt.color, 'stroke-width': sw,
+      const d = routePathD(pts);
+      el('path', { d, fill: 'none', stroke: rt.color, 'stroke-width': sw,
                    'stroke-linecap': 'round', 'stroke-linejoin': 'round', opacity: op,
-                   'data-rt': i, 'pointer-events': 'none' }, groups.route);
+                   'data-rt': i, 'data-route-base': 1, 'data-full-opacity': op,
+                   'pointer-events': 'none' }, groups.route);
+      // Bright copies are revealed from the beginning by the campaign clock. Keep one per SVG
+      // subpath: dash patterns restart at M, so applying one dash to a compound route would reveal the
+      // same fraction of every later leg at once instead of advancing chronologically through them.
+      const routeParts = [[]];
+      for (const p of pts) {
+        if (p[4] && routeParts.at(-1).length) routeParts.push([]);
+        routeParts.at(-1).push(p);
+      }
+      const partLengths = routeParts.map(part => part.slice(1).reduce((sum, p, pi) =>
+        sum + Math.hypot(p[0] - part[pi][0], p[1] - part[pi][1]), 0));
+      const routeLength = partLengths.reduce((a, b) => a + b, 0) || 1;
+      let partStart = 0;
+      routeParts.forEach((part, pi) => {
+        const partEnd = partStart + partLengths[pi] / routeLength;
+        if (part.length > 1 && partLengths[pi] > 0)
+          el('path', { d: routePathD(part), fill: 'none', stroke: rt.color, 'stroke-width': sw,
+                       'stroke-linecap': 'round', 'stroke-linejoin': 'round', opacity: 0,
+                       pathLength: 1, 'stroke-dasharray': '0 1',
+                       'data-rt': i, 'data-route-progress': 1,
+                       'data-progress-start': partStart, 'data-progress-end': partEnd,
+                       'data-full-opacity': op, 'pointer-events': 'none' }, groups.route);
+        partStart = partEnd;
+      });
+      const ringTime = (cx, cy) => {
+        let t = Infinity;
+        stops.forEach((p, wi) => {
+          if (Math.hypot(p[0] - cx, p[1] - cy) < 1)
+            t = Math.min(t, schedule.arrivals[wi] ?? schedule.total);
+        });
+        return Number.isFinite(t) ? t : schedule.total;
+      };
       for (const [cx, cy, radius] of fanned.rings || [])
         el('circle', { cx, cy, r: radius, fill: 'none', stroke: rt.color, 'stroke-width': sw,
-                       opacity: op, 'data-rt': i, 'pointer-events': 'none' }, groups.route);
-      for (const a of arrowsAlong(pts, ARROW_GAP, arrowLen(sw), stops, wpR(act) + 4))
+                       opacity: op, 'data-rt': i, 'data-route-time': ringTime(cx, cy),
+                       'data-full-opacity': op, 'pointer-events': 'none' }, groups.route);
+      const arrows = arrowsAlong(pts, ARROW_GAP, arrowLen(sw), stops, wpR(act) + 4);
+      arrows.forEach((a, ai) =>
         el('path', { d: arrowPathD(a, sw), fill: rt.color, stroke: 'none', opacity: op,
-                     'data-rt': i, 'pointer-events': 'none' }, groups.route);
+                     'data-rt': i, 'data-route-arrow': (ai + 0.5) / arrows.length,
+                     'data-full-opacity': op, 'pointer-events': 'none' }, groups.route));
     }
     rt.wps.forEach((w, wi) => {
       const [cx, cy] = endPoint(w.h, w.ri | 0); // every waypoint is a stop, and stops sit at the marker
@@ -7148,7 +7231,10 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
          learnt. The hit area stays the size a finger needs either way. */
       const thru = !wpHalt(rt, wi) && wi !== rt.wps.length - 1;   // arriving is a halt whatever the boxes say
       const rad = wpR(act) * (thru ? 0.62 : 1);
-      const g = el('g', { 'data-wp': i + ':' + wi, style: 'cursor:grab' }, groups.route);
+      const arrival = r && !r.fail ? routeTimelineSchedule(rt, r).arrivals[wi] : 0;
+      const g = el('g', { 'data-wp': i + ':' + wi, 'data-timeline-rt': i,
+                          'data-route-time': arrival ?? 0,
+                          'data-full-opacity': 1, style: 'cursor:grab' }, groups.route);
       el('circle', { cx, cy, r: wpR(act) + 4, fill: 'transparent', stroke: 'none' }, g);
       el('circle', { cx, cy, r: rad, fill: sea ? rt.color : 'none', stroke: rt.color,
                      'stroke-width': wpSW(act) * (thru ? 0.75 : 1),
@@ -11030,7 +11116,95 @@ document.addEventListener('pointerdown', e => {
    put away when the map matters more than the numbers. */
 const routeCard = document.getElementById('routeCard');
 const routeBtns = document.getElementById('routeBtns');
+const routeTimeline = document.getElementById('routeTimeline');
+const routeTimePlay = document.getElementById('routeTimePlay');
+const routeTimeRange = document.getElementById('routeTimeRange');
+const routeTimeOut = document.getElementById('routeTimeOut');
+let routeTimeDay = null, routeTimeMax = 0, routeTimePlaying = false;
+let routeTimeFrame = 0, routeTimeStamp = 0, routeTimeCarry = 0;
 const CARD_MIN_W = 260, CARD_MIN_H = 150;
+const routeTimeLabel = n => String(Math.round(n));
+function applyRouteTimeline(results = lastResults) {
+  S.routes.forEach((rt, i) => {
+    const r = results?.[i];
+    if (!r || r.fail) return;
+    const schedule = routeTimelineSchedule(rt, r);
+    const day = Math.max(0, Math.min(routeTimeDay ?? schedule.total, routeTimeMax));
+    const progress = routeTimelineProgress(schedule, day);
+    const complete = day >= schedule.total - 0.001;
+    const base = groups.route.querySelector(`[data-rt="${i}"][data-route-base]`);
+    if (base) {
+      const full = +(base.dataset.fullOpacity || 1);
+      base.setAttribute('opacity', complete ? full : full * 0.22);
+    }
+    for (const bright of groups.route.querySelectorAll(`[data-rt="${i}"][data-route-progress]`)) {
+      const full = +(bright.dataset.fullOpacity || 1);
+      const start = +(bright.dataset.progressStart || 0), end = +(bright.dataset.progressEnd || 1);
+      const local = Math.max(0, Math.min(1, (progress - start) / Math.max(1e-9, end - start)));
+      bright.setAttribute('stroke-dasharray', `${local} 1`);
+      bright.setAttribute('opacity', complete || local <= 0 ? 0 : full);
+    }
+    for (const e of groups.route.querySelectorAll(`[data-rt="${i}"][data-route-arrow]`)) {
+      const full = +(e.dataset.fullOpacity || 1);
+      e.setAttribute('opacity', complete || +e.dataset.routeArrow <= progress ? full : full * 0.18);
+    }
+    for (const e of groups.route.querySelectorAll(
+      `[data-route-time][data-rt="${i}"], [data-route-time][data-timeline-rt="${i}"]`)) {
+      const full = +(e.dataset.fullOpacity || 1);
+      e.setAttribute('opacity', complete || +(e.dataset.routeTime || 0) <= day ? full : full * 0.18);
+    }
+  });
+}
+function setRouteTimeDay(day) {
+  routeTimeDay = Math.max(0, Math.min(routeTimeMax, Math.round(+day || 0)));
+  routeTimeRange.value = routeTimeDay;
+  routeTimeOut.textContent = `Day ${routeTimeLabel(routeTimeDay)} / ${routeTimeLabel(routeTimeMax)}`;
+  applyRouteTimeline();
+}
+function stopRouteTime() {
+  routeTimePlaying = false;
+  routeTimeStamp = 0;
+  routeTimeCarry = 0;
+  if (routeTimeFrame) cancelAnimationFrame(routeTimeFrame);
+  routeTimeFrame = 0;
+  routeTimePlay.textContent = '\u25b6';
+  routeTimePlay.setAttribute('aria-label', 'Play route timeline');
+  routeTimePlay.title = 'Play route timeline';
+}
+function tickRouteTime(ts) {
+  if (!routeTimePlaying) return;
+  if (!routeTimeStamp) routeTimeStamp = ts;
+  const elapsed = Math.min(0.1, (ts - routeTimeStamp) / 1000);
+  routeTimeStamp = ts;
+  routeTimeCarry += elapsed * 2;                    // two campaign days per real second
+  if (routeTimeCarry >= 1) {
+    const days = Math.floor(routeTimeCarry);
+    routeTimeCarry -= days;
+    setRouteTimeDay(routeTimeDay + days);
+  }
+  if (routeTimeDay >= routeTimeMax - 0.001) stopRouteTime();
+  else routeTimeFrame = requestAnimationFrame(tickRouteTime);
+}
+function renderRouteTimeline(results) {
+  const totals = S.routes.map((rt, i) => routeTimelineSchedule(rt, results?.[i]).total).filter(Boolean);
+  const max = totals.length ? Math.max(...totals) : 0;
+  if (!max) { routeTimeline.hidden = true; stopRouteTime(); return; }
+  const followedEnd = routeTimeDay === null || Math.abs(routeTimeDay - routeTimeMax) < 0.04;
+  routeTimeMax = max;
+  routeTimeline.hidden = false;
+  routeTimeRange.max = max;
+  setRouteTimeDay(followedEnd ? max : Math.min(routeTimeDay, max));
+}
+routeTimeRange.addEventListener('input', () => { stopRouteTime(); setRouteTimeDay(routeTimeRange.value); });
+routeTimePlay.addEventListener('click', () => {
+  if (routeTimePlaying) { stopRouteTime(); return; }
+  if (routeTimeDay >= routeTimeMax - 0.001) setRouteTimeDay(0);
+  routeTimePlaying = true;
+  routeTimePlay.textContent = '\u275a\u275a';
+  routeTimePlay.setAttribute('aria-label', 'Pause route timeline');
+  routeTimePlay.title = 'Pause route timeline';
+  routeTimeFrame = requestAnimationFrame(tickRouteTime);
+});
 /* The card's *size* is still remembered — the step table is the one thing in this app that genuinely wants
    room, and how much room is a real preference. Its position is not: the dock decides that. */
 function placeCard() {
@@ -11103,6 +11277,7 @@ function renderRouteButtons(results) {
     b.oncontextmenu = e => { e.preventDefault(); e.stopPropagation(); openRouteMenu(i, e.clientX, e.clientY); };
     routeBtns.appendChild(b);
   });
+  renderRouteTimeline(results);
 }
 
 const routeCardHead = document.getElementById('routeCardHead');

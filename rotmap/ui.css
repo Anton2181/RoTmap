@@ -370,7 +370,7 @@ body.panel-shut #panel { display: none; }
    the swatch comes first and the time is pushed to the far edge where a column of them lines up. */
 #routeBtns { display: flex; flex-direction: column; align-items: flex-end; gap: var(--s2); max-height: 46vh; overflow-y: auto; }
 #routeBtns:empty { display: none; }
-.rtbtn { min-width: 148px; }
+.rtbtn { width: 148px; min-width: 148px; }
 /* A control inside a control: the button shows the route, the swatch recolours it. At 11px it needs
    to say so on approach, so it lifts a ring on hover — the button around it is already a pointer,
    and without that nothing would distinguish the one part of it that does something else. */
@@ -382,6 +382,28 @@ body.panel-shut #panel { display: none; }
 .rtbtn .nm { flex: 1; text-align: left; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .rtbtn .tm { color: var(--ink-3); font-variant-numeric: tabular-nums; }
 .rtbtn.on .tm { color: var(--ink-2); }
+
+/* A shared campaign clock for every visible route. It belongs to the route legend rather than to one
+   route card: one day must mean the same moment for every column being compared on the map. */
+#routeTimeline {
+  box-sizing: border-box; width: 148px; padding: 7px 9px 8px;
+  background: #1a1f27e6; color: var(--ink);
+  border: 1px solid var(--line-2); border-radius: var(--r2);
+  box-shadow: var(--shadow-1); backdrop-filter: blur(6px);
+}
+#routeTimeline[hidden] { display: none; }
+.rttime-head { display: flex; align-items: center; gap: var(--s2); margin-bottom: 5px; }
+#routeTimePlay {
+  flex: 0 0 22px; width: 22px; height: 20px; padding: 0;
+  border: 0; border-radius: 4px; background: var(--bg-hover); color: var(--ink-2);
+  font-size: 10px; line-height: 20px; cursor: pointer;
+}
+#routeTimePlay:hover { color: var(--ink); background: var(--line-2); }
+#routeTimeOut {
+  flex: 1; text-align: right; color: var(--ink-2); font-size: var(--f2);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+#routeTimeRange { display: block; width: 100%; height: 14px; margin: 0; accent-color: var(--accent); cursor: pointer; }
 
 /* Both floating surfaces take a corner drag. The browser draws the handle itself; the wedge below
    is only there to say where it is, because on a dark panel the native one is invisible. */

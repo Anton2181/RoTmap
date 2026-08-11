@@ -379,6 +379,14 @@
     <!-- One button per route, built in script: the map's own route switcher, and the way a
          dismissed readout is called back. -->
     <div id="routeBtns"></div>
+    <div id="routeTimeline" hidden>
+      <div class="rttime-head">
+        <button type="button" id="routeTimePlay" aria-label="Play route timeline" title="Play route timeline">&#9654;</button>
+        <output id="routeTimeOut" for="routeTimeRange">Day 0</output>
+      </div>
+      <input type="range" id="routeTimeRange" min="0" max="1" step="1" value="1"
+             aria-label="Campaign day">
+    </div>
   </div>
 
   <!-- Undoing a mis-tapped waypoint is the one thing you need without opening the sheet, and on a
