@@ -23,9 +23,9 @@ const TERRAIN_COLORS = {
   Flatlands: '#7fae5a', Hills: '#ac9159', Mountains: '#8d8177',
   Ocean: '#5d8fc4', Sea: '#74a5d4', Lake: '#7fb7de', 'N/A': '#181d24',
 };
-// The one palette everything on the map that needs telling apart is drawn from — tokens, routes,
-// isochrone origins. It is built out of the Warlords legend, so it is declared beside it: see PALETTE,
-// below WARLORD_NAMES.
+// The palette the things that stand on the ground are drawn from — counters and isochrone origins.
+// It is built out of the Warlords legend, so it is declared beside it: see PALETTE, below
+// WARLORD_NAMES. Routes have their own, for reasons given at ROUTE_COLORS.
 /* The stronghold marker, in the two sizes it comes in — written as the ratio they are meant to read
    as, 9 to 13, rather than as two numbers that happen to sit near it. That is what the eye does with
    them: a marker is large *compared with* the ones beside it. Stating the relation instead of the
@@ -580,27 +580,30 @@ const LEGION_UNHELD = { IV: '#0f8f8a', VIII: '#7b4fd0', X: '#7d8c1f', XI: '#6e7b
    legend rather than copied out of it, so the two cannot drift: change a colour in WARLORD_NAMES and the
    counters follow. */
 const LEGION_COLORS = ROMAN.map(n => WARLORD_HEX['Legion ' + n] || LEGION_UNHELD[n]);
-/* Five more, for everything that is not a legion: a scratch route, an isochrone origin, a counter for
-   somebody's baggage train. Kept clear of all fifteen warlord colours *and* of the terrain beneath them —
+/* Five more, for everything that is not a legion: an isochrone origin, a counter for somebody's
+   baggage train. Kept clear of all fifteen warlord colours *and* of the terrain beneath them —
    no mid-green (Flatlands), no tan (Hills), no grey-brown (Mountains), no soft mid-blue (Sea and Lake) —
    so nothing here can be mistaken for a legion or lost against the ground. The charcoal is dark on
    purpose and takes white ink, which inkOn() works out rather than being told. */
 const PALETTE_SPARE = ['#eceff3', '#2b3440', '#00c8d4', '#ffd93d', '#ff5e9c'];
-/* One palette, used by everything on the map that needs telling apart — the fourteen legions, their
-   detachments, the routes and the isochrone origins. Two palettes meant a route and a token could be
-   "the same colour" without matching, and meant learning the swatch grid twice.
+/* One palette for everything that *stands on* the map and needs telling apart — the fourteen legions,
+   their detachments, the isochrone origins. One list rather than two, because two meant a counter and
+   an origin could be "the same colour" without matching, and meant learning the swatch grid twice.
 
    Twenty: the five spares first, then the fourteen legions in numeral order, then the Blue Scarves —
    who are on both realm maps in their own right and so have a colour of their own to match. Twenty
    rather than fifteen because fourteen legions took all but one of the old fifteen and left nothing
-   to draw a route with, and because twenty is four even rows of five in the swatch grid where fifteen
-   was three.
+   for anything that is not a legion, and because twenty is four even rows of five in the swatch grid
+   where fifteen was three.
 
-   The spares lead for two reasons, and one order is the point of both. Handing out: the first colour
-   offered to a thing that is not a legion should not be a legion's — a route in Legion V's red is a
-   claim about whose march it is. Reading: the grid is the same grid wherever it opens, so the swatch
-   in the top-left corner is the same colour in the token menu as in the route menu, and the shape of
-   it is learnt once. It was learnt twice, the routes having quietly reordered it for themselves. */
+   The spares lead. The first colour offered to a thing that is not a legion should not be a legion's:
+   these fifteen mean something on this map, and a baggage train wearing Legion VII's green is a
+   counter that reads as Legion VII's.
+
+   Routes were once handed out of this list too, and are not any more — a *line* has the opposite
+   requirement to a counter. A counter matching the ground it stands on is the whole point of aligning
+   the board with the scan; a route matching the ground it crosses is a route you cannot see. See
+   ROUTE_COLORS. */
 const PALETTE = [...PALETTE_SPARE, ...LEGION_COLORS, WARLORD_HEX['Blue Scarves']];
 /* Detachments are named off the parent: the 5th's first is V'a, the next V'b. So a token's "base" is
    whatever stands before the apostrophe, and every token sharing a base belongs to one command — which is
@@ -4783,36 +4786,88 @@ function startState(h, ri, o) {
   return [af, (af || o.fleet) ? 1 : 0];
 }
 
-// Routes start with the neutral colours. Legion colours remain available later in the picker, and a
-// route that starts under a token still adopts that token's colour below.
-const ROUTE_COLORS = PALETTE;   // the one palette, in the one order — see PALETTE
+/* ---------------- a route's colour is its own ----------------
+   Routes used to draw from the one shared palette, which is the Warlords legend behind five spares —
+   and the trouble with that is what the legend *is*. Those colours are the colours the map paints
+   the ground in. Switch the Warlords or Borders layer on and a route in one of them is a line laid
+   over an acre of itself: Legion VII's green route across Legion VII's green province is not a route
+   you can follow, and the five spares ran out after five. Worse, a route that set out from a hex a
+   counter was standing on **took that counter's colour automatically**, which was a nice idea — the
+   V's road drawn in V's colour without anyone choosing it — and was the single most reliable way to
+   get a march that vanished the moment the layer it matched came on.
+
+   So routes have a palette of their own, ten colours chosen for one job: being a line, over this
+   map, that nothing else on it is. Each is kept clear of the terrain beneath (mid-green Flatlands,
+   tan Hills, grey-brown Mountains, the three blues of Ocean, Sea and Lake), of the drawn features it
+   will be running along (orange roads, blue rivers), and of all seventeen realm washes — no pair
+   within about ten of any of them by ΔE2000, and none within fourteen of each other. They are
+   brighter and more saturated than any of that: the map's own colours are washes and fills, meant to
+   be looked past, and a route is a line drawn on top and meant to be looked at.
+
+   Orange leads because that is what a march is: it is the warmest, most forward colour on the wheel
+   that this map does not already use for a *fill*, and the first route anyone draws should be the
+   one that shouts. It is a hotter orange than the roads' burnt one, which is the one real
+   compromise here — the two are within about eleven — and it is bearable because they are told apart
+   by weight and shape rather than by hue: a road is a thin quiet line, a route is thicker, solid,
+   and carries arrowheads. The order after it deliberately does not walk the rainbow. Consecutive
+   routes want to be as unlike each other as possible, since routes one and two are the two on screen
+   together, so the list jumps across the wheel each time — orange, ice, pink, green, violet — and
+   only settles down once there are more marches than anyone reads at once. Paper and charcoal come
+   last: they are the two answers to ground too dark or too pale for a hue, and want choosing rather
+   than handing out. */
+const ROUTE_COLORS = [
+  '#ff9500',  // tangerine — the default march
+  '#35e0ff',  // ice
+  '#ff4d8d',  // hot pink
+  '#5ef08a',  // spring green
+  '#8f7dff',  // violet
+  '#ffe14d',  // butter
+  '#00d6b0',  // mint
+  '#ff5c46',  // vermilion
+  '#eceff3',  // paper — for a march through the mountains
+  '#2b3440',  // charcoal — for one over snow or open water
+];
+/* Two routes in the same colour would defeat the point, so a new one takes the first colour nobody
+   is using and only starts repeating once all ten are out. */
+function freeRouteColor(used = new Set(S.routes.map(r => r.color))) {
+  return ROUTE_COLORS.find(c => !used.has(c)) || ROUTE_COLORS[S.routes.length % ROUTE_COLORS.length];
+}
+/* Routes already in a browser when the palette changed are still wearing whatever the old one handed
+   them, and for most of them that is a legion's colour — which is the fault, sitting on screen, that
+   changing the palette was meant to fix. So they are moved across at the next load.
+
+   Only the **legion and Blue Scarves** colours are touched. Those fifteen are what the realm layers
+   paint the ground in and are the whole of the problem; the old five spares were chosen to stay clear
+   of the map in the first place, two of them survive into the new list unchanged, and a route in one
+   of them is a route that reads perfectly well — moving it would be changing a colour that was right
+   for no reason but tidiness. Anything mixed by hand in the custom picker is likewise left alone: it
+   was chosen, and a choice outranks a default.
+
+   Quiet, and not an undo step. It runs before the map is on screen, against a state nobody has seen
+   yet, so there is no "before" for a Ctrl+Z to go back to — and one that put a march back into Legion
+   VII's green would be undoing the fix rather than an edit. */
+function retireLegionRouteColors() {
+  const retire = new Set([...LEGION_COLORS, WARLORD_HEX['Blue Scarves']].map(c => c.toLowerCase()));
+  const used = new Set(S.routes.map(r => r.color).filter(c => !retire.has(String(c).toLowerCase())));
+  for (const rt of S.routes) {
+    if (!retire.has(String(rt.color).toLowerCase())) continue;
+    rt.color = freeRouteColor(used);
+    used.add(rt.color);
+  }
+}
 
 // The quiet form is for callers that have already taken their own undo snapshot and mean the new
 // route to be part of that same step — clicking bare map places a waypoint *and* the route to hold
 // it, and one Ctrl+Z should take back both.
 function newRouteQuiet() {
   S.routes.push({ name: 'Route ' + (S.routes.length + 1),
-                  color: ROUTE_COLORS[S.routes.length % ROUTE_COLORS.length], wps: [],
+                  color: freeRouteColor(), wps: [],
                   // Copied, not shared: a second route for the same army starts already described,
                   // and then goes its own way the moment you change a box.
                   set: { ...activeSettings() } });
   S.activeRoute = S.routes.length - 1;
 }
 function newRoute() { pushUndoRoutes(); newRouteQuiet(); computeRoute(); }
-
-/* A route that sets out from a hex a counter is standing on is that counter's march, so it wears
-   its colour — legion V's road is V's colour on the map without anyone choosing it. Only the first
-   waypoint counts: it is where the army starts, and later waypoints are merely places it passes.
-
-   Where a legion and one of its detachments share a hex the legion wins, since a route drawn from
-   a stack is much likelier to be the main body's. */
-function adoptTokenColor(rt) {
-  const w = rt?.wps?.[0];
-  if (!w) return;
-  const here = S.tokens.filter(t => t.h === w.h);
-  if (!here.length) return;
-  rt.color = (here.find(t => !String(t.label).includes("'")) || here[0]).color;
-}
 
 // A drawn route joins points that can sit well off-centre in their hexes: a stronghold marker up
 // against the rim of one, the end of a road inside the next. Straight between two such points the
@@ -5902,6 +5957,210 @@ function renderIso() {
   }
 }
 
+/* ---------------- drawing a march so it can be read ----------------
+   A long route was the hardest thing on this map to look at, for two reasons that have nothing to do
+   with the solving and everything to do with the drawing.
+
+   The first is that a column that comes back the way it went lays the return leg **exactly** on top
+   of the outward one. Both passes trace the same road geometry, so the second is drawn over the
+   first pixel for pixel and simply vanishes: a route out to Kisra and home again looked like a route
+   to Kisra, and the twelve days it billed for looked like six days' worth of line. The fix is to give
+   each pass over the same stretch a lane of its own — one stop-marker's radius to one side — so a
+   doubled road reads as two lines running together, which is what it is, and the turn at the end of
+   it comes out as a circle of exactly that marker's radius about exactly its centre. Only stretches
+   that are actually doubled move; a route that never crosses its own path is drawn exactly where it
+   always was, still sitting on the road it follows.
+
+   The second is that a line has no direction. Which end a march starts from was readable only by
+   finding the waypoint list and counting, and on a route that loops it was not readable at all. So
+   the line is now **solid** and carries arrowheads along it at a fixed spacing. The dashes were
+   doing a job — they said "this is a plan, not a drawn feature" — but the colour already says that
+   (roads are orange, a route wears its own swatch), and a dashed line broken again by arrows is two
+   kinds of interruption arguing with each other. Solid, with arrows, says both things at once: one
+   continuous march, going that way. */
+
+/* The stop marker, in the two sizes it comes in: the ring's radius and the weight of its outline.
+   Named rather than written where they are drawn because the lane spacing is derived from them, and
+   a lane gap that quietly stopped matching the marker would be the one thing worse than no lanes. */
+const wpR = act => act ? 6 : 5;
+const wpSW = act => act ? 2.4 : 1.8;
+/* Where two lines meet, each given as two points on it. Null when they run parallel and never do. */
+function lineMeet(p1, p2, p3, p4) {
+  const d1 = [p2[0] - p1[0], p2[1] - p1[1]], d2 = [p4[0] - p3[0], p4[1] - p3[1]];
+  const den = d1[0] * d2[1] - d1[1] * d2[0];
+  if (Math.abs(den) < 1e-9) return null;
+  const r = [p3[0] - p1[0], p3[1] - p1[1]];
+  const t = (r[0] * d2[1] - r[1] * d2[0]) / den;
+  return [p1[0] + d1[0] * t, p1[1] + d1[1] * t];
+}
+
+/* ---------------- the turn at the end of an out-and-back ----------------
+   Where the column turns round, the two lanes have to be joined, and joining them with a straight run
+   across gives a square fold a couple of units wide — a notch, and a notch is not what a road doing a
+   hairpin looks like. It is drawn as an **arc about the vertex the line turned at** instead.
+
+   That arc is tangent to both lanes for free, and the reason is worth stating because it is what the
+   whole scheme rests on: a lane's offset is *perpendicular to its direction of travel*, so the radius
+   from the vertex out to where a lane passes meets that lane at a right angle. Any circle centred on
+   the vertex therefore leaves and rejoins the lanes running exactly the way they were already going.
+   Nothing has to be fitted, and the turn's radius is simply how far out the lane is.
+
+   Which is why the lanes are placed **at the marker's own radius**: the turn at a stop is then a
+   circle of exactly the ring's radius, centred on exactly the ring's centre, so the loop and the ring
+   are the same circle. The hairpin does not sit near the marker or inside it — it *is* the marker,
+   traced by the line that made it. */
+const ARC_STEP = Math.PI / 12;   // how finely an arc is sampled into the polyline: 15° a side
+
+function turnArc(P, e, s, u1) {
+  const r = Math.hypot(e[0] - P[0], e[1] - P[1]);
+  const a0 = Math.atan2(e[1] - P[1], e[0] - P[0]), a1 = Math.atan2(s[1] - P[1], s[0] - P[0]);
+  // Which way round: the way that carries on in the direction the line was already going. The cross
+  // product of the radius at `e` with that direction is positive exactly when the angle should grow.
+  const ccw = (e[0] - P[0]) * u1[1] - (e[1] - P[1]) * u1[0] > 0;
+  let d = a1 - a0;
+  const TAU = Math.PI * 2;
+  d = ccw ? ((d % TAU) + TAU) % TAU : -((((-d) % TAU) + TAU) % TAU);
+  const steps = Math.max(2, Math.ceil(Math.abs(d) / ARC_STEP));
+  const out = [];
+  for (let k = 0; k <= steps; k++) {
+    const a = a0 + d * k / steps;
+    out.push([P[0] + r * Math.cos(a), P[1] + r * Math.sin(a)]);
+  }
+  return out;
+}
+
+function fanOutRetraced(pts, R) {
+  if (pts.length < 3) return pts;
+  /* Two passes over one stretch are not bit-identical: a road's geometry arrives reversed on the way
+     back, and the touch-downs `throughSharedEdges` plants are recomputed from the segment the other
+     way round. So segments are matched on a quarter-unit grid — far below anything that could be two
+     different places on a map whose hexes are fifty units across, and comfortably above the last few
+     bits of a float. */
+  const key = p => Math.round(p[0] * 4) + ',' + Math.round(p[1] * 4);
+  const n = pts.length - 1, seg = [], count = new Map();
+  for (let i = 0; i < n; i++) {
+    const ka = key(pts[i]), kb = key(pts[i + 1]);
+    if (ka === kb) { seg.push(null); continue; }   // a zero-length hop has no side to be pushed to
+    const flip = ka > kb, k = flip ? kb + '|' + ka : ka + '|' + kb;
+    seg.push({ k, flip });
+    count.set(k, (count.get(k) || 0) + 1);
+  }
+  // The overwhelmingly common case, and the one where any nudge at all would be a lie about where the
+  // column walked. Hand the line straight back rather than rebuild it identically.
+  if (![...count.values()].some(c => c > 1)) return pts;
+
+  const used = new Map(), off = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const s = seg[i], c = s ? count.get(s.k) : 1;
+    if (!s || c < 2) { off[i] = [0, 0]; continue; }
+    const j = used.get(s.k) || 0; used.set(s.k, j + 1);
+    /* Lanes are laid in **pairs, built up outward**: the first two passes straddle the road at ±R,
+       the next two outside them at ±2R, and so on. Two things fall out of that. The pair is
+       symmetrical, so a road walked twice is straddled rather than kept by the outward pass and
+       conceded by the return. And a pass, once placed, *stays* — a third and fourth crossing wrap
+       around the outside instead of shuffling everything inward to make room, so the line the first
+       two passes drew does not move when a later one appears.
+
+       Which lane a pass gets is the order it walks the stretch in, not its direction of travel, so on
+       an out-and-back the outward leg keeps one side of the road for its whole length and the return
+       keeps the other rather than the two swapping at every bend. That only holds if both passes
+       measure from the same side of the same edge, hence the normal is taken from the segment's
+       *canonical* direction — the one the key was built in.
+
+       Capped at three rings out. Six passes over one stretch is already past telling apart, and
+       letting the spread keep growing would fling the outermost lane most of a hex clear of the road
+       it is meant to be following; the outer lanes double up instead, which is no loss, because by
+       then the line is not what anyone would be counting passes from. */
+    const d = (j % 2 ? 1 : -1) * (1 + Math.min(2, j >> 1)) * R;
+    let dx = pts[i + 1][0] - pts[i][0], dy = pts[i + 1][1] - pts[i][1];
+    if (s.flip) { dx = -dx; dy = -dy; }
+    const L = Math.hypot(dx, dy) || 1;
+    off[i] = [-dy / L * d, dx / L * d];
+  }
+
+  const A = i => [pts[i][0] + off[i][0], pts[i][1] + off[i][1]];
+  const B = i => [pts[i + 1][0] + off[i][0], pts[i + 1][1] + off[i][1]];
+  const out = [A(0)];
+  for (let i = 1; i < n; i++) {
+    const P = pts[i], e = B(i - 1), s = A(i);
+    if (Math.hypot(e[0] - s[0], e[1] - s[1]) < 0.02) { out.push(e); continue; }
+    /* Three ways two offset segments can meet, tried in order of how much they leave alone.
+
+       **A miter**, for a lane going round a gentle corner: the two offset lines still cross, and
+       meeting them there keeps the corner a corner instead of opening a notch the width of the lane.
+       Only while the crossing stays near the corner it belongs to — on a tight bend the offset lines
+       cross a long way out, and an honest miter there would fling a spike most of a hex off the road.
+
+       **An arc about the corner**, when both ends stand the same distance from it. That covers the
+       turn at the end of an out-and-back, where the two lanes are equal and opposite and the arc is
+       the semicircle joining them; it also covers a bend too tight to miter, where it rounds the
+       corner rather than notching it. Tangent to both by construction — see turnArc.
+
+       **A straight jog**, for everything left: the point where the line joins or leaves a doubled
+       stretch, where the two ends are at different distances and no circle about the corner passes
+       through both. That is the honest picture anyway — the line is stepping across to its track. */
+    const m = lineMeet(A(i - 1), e, s, B(i));
+    if (m && Math.hypot(m[0] - P[0], m[1] - P[1]) < R * 2) { out.push(m); continue; }
+    const re = Math.hypot(e[0] - P[0], e[1] - P[1]), rs = Math.hypot(s[0] - P[0], s[1] - P[1]);
+    const u = [(e[0] - A(i - 1)[0]), (e[1] - A(i - 1)[1])];
+    if (re > 0.01 && Math.abs(re - rs) < 0.01 && Math.hypot(u[0], u[1]) > 1e-9) out.push(...turnArc(P, e, s, u));
+    else out.push(e, s);
+  }
+  out.push(B(n - 1));
+  return out;
+}
+
+/* Arrowheads every `gap` units of *path*, not of ground: what makes a route unreadable is its drawn
+   length, and a hex-based spacing would have put an arrow into every step of a mountain crawl and
+   two into a trade hop spanning six hexes. The first lands half a gap in, so a march too short to
+   hold a full interval still gets one arrow rather than none.
+
+   `avoid` is the waypoint markers. An arrowhead landing on a stop fills in its hollow ring and turns
+   a stop into a blob, so anything within `clear` of one is dropped — the ring is the more important
+   mark, and the arrow either side of it says the same thing about direction. */
+function arrowsAlong(pts, gap, avoid, clear) {
+  const out = [];
+  let total = 0;
+  for (let i = 0; i + 1 < pts.length; i++) total += Math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]);
+  // Half a gap in, or the middle of the line when the whole of it is shorter than a gap.
+  let carry = Math.min(gap, total) * 0.5;
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const [ax, ay] = pts[i], [bx, by] = pts[i + 1];
+    const L = Math.hypot(bx - ax, by - ay);
+    if (L < 1e-6) continue;
+    const ux = (bx - ax) / L, uy = (by - ay) / L;
+    let s = carry;
+    for (; s < L; s += gap) {
+      const x = ax + ux * s, y = ay + uy * s;
+      if (!avoid.some(p => Math.hypot(p[0] - x, p[1] - y) < clear)) out.push([x, y, ux, uy]);
+    }
+    carry = s - L;   // what is left of the interval, carried into the next segment
+  }
+  return out;
+}
+/* A filled head rather than an open chevron: an outlined one drawn in the line's own colour on top of
+   the line is just a thicker bit of line. Sized off the stroke so it stays in proportion when the
+   active route thickens, and drawn big — six strokes long and nearly five wide. A head sized to sit
+   politely on the line is a head you have to go looking for, and the whole reason it is there is to
+   be answerable at a glance and at a zoom where the line itself is a thread. It is wider than the
+   lane spacing, so on a doubled stretch the two directions' heads reach across each other's tracks;
+   that is why they are spaced as far apart as they are, below. */
+function arrowPathD([x, y, ux, uy], sw) {
+  const l = sw * 6, w = sw * 2.4, nx = -uy, ny = ux;
+  const tx = x + ux * l * 0.5, ty = y + uy * l * 0.5;
+  const bx = x - ux * l * 0.5, by = y - uy * l * 0.5;
+  return `M${(bx + nx * w).toFixed(1)} ${(by + ny * w).toFixed(1)}` +
+         `L${tx.toFixed(1)} ${ty.toFixed(1)}` +
+         `L${(bx - nx * w).toFixed(1)} ${(by - ny * w).toFixed(1)}Z`;
+}
+/* World units of path between one arrowhead and the next — about a hex and a quarter. Set against the
+   size of the head rather than picked for density on its own: at the spacing that suited a small head,
+   a big one turns the line into an unbroken chain of chevrons, and on a stretch walked twice the two
+   lanes' heads interlock into a braid with no plain line left anywhere to tell them apart. Far enough
+   apart that every head has clear line either side of it, and the doubled stretch reads as what it is:
+   two lines running together, each saying which way it goes. */
+const ARROW_GAP = 62;
+
 function computeRoute({ preview = false, previewIso = false } = {}) {
   const out = document.getElementById('routeOut');
   groups.route.innerHTML = '';
@@ -5956,10 +6215,18 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
        `pointer-events: none`, since it is a drawn answer rather than a control and has no business
        intercepting anything. */
     const r = rt.wps.length > 1 ? routeLeg(rt, armyOpts(rt.set)) : null;
-    if (r && r.pts.length > 1)
-      el('path', { d: featPathD(r.pts), fill: 'none', stroke: rt.color, 'stroke-width': act ? 2.8 : 2,
-                   'stroke-dasharray': '7,5', 'stroke-linecap': 'round', opacity: act ? 0.95 : 0.55,
+    if (r && r.pts.length > 1) {
+      const sw = act ? 2.8 : 2, op = act ? 0.95 : 0.55;
+      // The stops, wanted before the line is drawn so the arrowheads can be kept off them.
+      const stops = rt.wps.map(w => endPoint(w.h, w.ri | 0));
+      const pts = fanOutRetraced(r.pts, wpR(act));
+      el('path', { d: featPathD(pts), fill: 'none', stroke: rt.color, 'stroke-width': sw,
+                   'stroke-linecap': 'round', 'stroke-linejoin': 'round', opacity: op,
                    'data-rt': i, 'pointer-events': 'none' }, groups.route);
+      for (const a of arrowsAlong(pts, ARROW_GAP, stops, wpR(act) + 4))
+        el('path', { d: arrowPathD(a, sw), fill: rt.color, stroke: 'none', opacity: op,
+                     'data-rt': i, 'pointer-events': 'none' }, groups.route);
+    }
     rt.wps.forEach((w, wi) => {
       const [cx, cy] = endPoint(w.h, w.ri | 0); // every waypoint is a stop, and stops sit at the marker
       const sea = !!(region(w.h, w.ri | 0)?.sea && !region(w.h, w.ri | 0)?.river);
@@ -5976,11 +6243,11 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
          being less of a marker, rather than by taking a symbol of its own that would have to be
          learnt. The hit area stays the size a finger needs either way. */
       const thru = !wpHalt(rt, wi) && wi !== rt.wps.length - 1;   // arriving is a halt whatever the boxes say
-      const rad = (act ? 6 : 5) * (thru ? 0.62 : 1);
+      const rad = wpR(act) * (thru ? 0.62 : 1);
       const g = el('g', { 'data-wp': i + ':' + wi, style: 'cursor:grab' }, groups.route);
-      el('circle', { cx, cy, r: (act ? 6 : 5) + 4, fill: 'transparent', stroke: 'none' }, g);
+      el('circle', { cx, cy, r: wpR(act) + 4, fill: 'transparent', stroke: 'none' }, g);
       el('circle', { cx, cy, r: rad, fill: sea ? rt.color : 'none', stroke: rt.color,
-                     'stroke-width': (act ? 2.4 : 1.8) * (thru ? 0.75 : 1),
+                     'stroke-width': wpSW(act) * (thru ? 0.75 : 1),
                      opacity: (act ? 1 : 0.7) * (thru ? 0.8 : 1), 'data-rt': i,
                      'pointer-events': 'none' }, g);
     });
@@ -6161,13 +6428,11 @@ function splitRouteAt(ri, j) {
   if (wi <= 0 || wi >= rt.wps.length - 1) return;   // nothing on one side of the cut
   const tail = rt.wps.slice(wi).map(w => ({ ...w }));
   rt.wps = rt.wps.slice(0, wi + 1);
-  const used = new Set(S.routes.map(r => r.color));
   const half = {
     name: 'Route ' + (S.routes.length + 1),
-    color: ROUTE_COLORS.find(c => !used.has(c)) || ROUTE_COLORS[S.routes.length % ROUTE_COLORS.length],
+    color: freeRouteColor(),
     wps: tail, set: { ...(rt.set || SETTINGS) },
   };
-  adoptTokenColor(half);      // a counter waiting at the cut names the second half too
   S.routes.splice(ri + 1, 0, half);
   S.activeRoute = ri + 1;
   computeRoute();
@@ -6478,8 +6743,11 @@ function recolorRoute(i) {
   const rt = S.routes[i];
   if (!rt) return;
   for (const e of groups.route.querySelectorAll(`[data-rt="${i}"]`)) {
-    e.setAttribute('stroke', rt.color);
-    if (e.getAttribute('fill') !== 'none') e.setAttribute('fill', rt.color);  // sea waypoints are filled
+    // Each half only where it was already painted. An arrowhead is fill-only, and handing it a stroke
+    // would fatten it by a unit for the length of the drag; a land waypoint is a hollow ring, and
+    // handing it a fill would plug it. Sea waypoints are filled, and the arrowheads carry no stroke.
+    if (e.getAttribute('stroke') !== 'none') e.setAttribute('stroke', rt.color);
+    if (e.getAttribute('fill') !== 'none') e.setAttribute('fill', rt.color);
   }
   // Both swatches: the sidebar row and the map button. Either can be the one on screen — the panel
   // is often shut while the buttons never are — and a live picker that repainted only one of them
@@ -6931,7 +7199,6 @@ svg.addEventListener('pointerup', e => {
     if (S.activeRoute < 0) newRouteQuiet();
     const rt = S.routes[S.activeRoute];
     rt.wps.push({ h, ri });
-    if (rt.wps.length === 1) adoptTokenColor(rt);
     computeRoute();
   }
 });
@@ -8556,9 +8823,6 @@ function hexMenu(h, pt, wp) {
         if (!S.adj) deriveAdj();
         pushUndoRoutes();
         act.wps.push({ h, ri: pt ? regionAt(h, pt) : 0 });
-        // A route that begins on a hex a token stands on takes that token's colour, exactly as one
-        // begun by clicking the map does — this can be the first waypoint as well.
-        if (act.wps.length === 1) adoptTokenColor(act);
         computeRoute();
       });
     }
@@ -8573,7 +8837,6 @@ function hexMenu(h, pt, wp) {
       newRouteQuiet();
       const rt = S.routes[S.activeRoute];
       rt.wps.push({ h, ri: pt ? regionAt(h, pt) : 0 });
-      adoptTokenColor(rt);
       computeRoute();
     });
     if (S.mode === 'route' && S.routes.length)
@@ -8973,6 +9236,7 @@ async function boot() {
     if (rr && Array.isArray(rr.routes)) {
       S.routes = rr.routes;
       S.activeRoute = Math.min(rr.active ?? S.routes.length - 1, S.routes.length - 1);
+      retireLegionRouteColors();
     }
     if (rr && rr.iso && Array.isArray(rr.iso.origins)) {
       S.iso.origins = rr.iso.origins;
