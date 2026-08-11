@@ -3152,6 +3152,12 @@ function tracePolys(mask, R, x0, y0, cell) {
 function featPathD(pts) {
   return pts.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join('');
 }
+// A waypoint outline supplies the circular part of a string-tight join. Route points marked with a
+// drawing break therefore begin a new SVG subpath rather than drawing a chord or a second arc across
+// the marker which is rendered over them immediately afterwards.
+function routePathD(pts) {
+  return pts.map((p, i) => (i && !p[4] ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join('');
+}
 function renderFeatures() {
   for (const id of ['roads', 'trade', 'coastLines', 'riverMajor', 'riverMinor']) groups[id].innerHTML = '';
   // Both read the same split of the map, and working it out is a flood fill per cut hex — so it is
@@ -5252,6 +5258,53 @@ function routeLeg(rt, o) {
     }
   });
   let totHex = 0, totMiles = 0; const steps = [], allPts = [];
+  // The fourth coordinate is drawing-only provenance. A waypoint is a hard geometric boundary:
+  // later lane spreading may meet its ring, but no cosmetic bend rounding may move it. Keep that
+  // information on the point itself, since matching by position would also catch a route which only
+  // happened to cross some other waypoint's marker.
+  const waypointPoint = p => {
+    const q = [...p];
+    q[3] = 2;
+    return q;
+  };
+  /* A solved feature edge is allowed to run to its road/river node, but a waypoint beside that
+     feature is reached where the feature comes closest to the marker. Keeping the rest of the edge
+     makes the drawn march pass the marker, carry on to the node, and double back — exactly the
+     forty-unit hook that appeared above Iwakhas. Cut at the closest point on the polyline (not merely
+     its closest stored sample), then connect that point to the marker. If the feature itself reaches
+     the marker to drawing precision, use the marker as the cut point so no tiny, unstable final
+     segment can choose the tangent's direction. */
+  const featureToWaypoint = (pts, anchor) => {
+    if (!pts?.length) return [anchor];
+    let best = { i: 0, t: 0, q: pts[0], d2: Infinity };
+    for (let i = 0; i + 1 < pts.length; i++) {
+      const a = pts[i], b = pts[i + 1], dx = b[0] - a[0], dy = b[1] - a[1];
+      const L2 = dx * dx + dy * dy;
+      const t = L2 > 1e-12 ? Math.max(0, Math.min(1,
+        ((anchor[0] - a[0]) * dx + (anchor[1] - a[1]) * dy) / L2)) : 0;
+      const q = [a[0] + dx * t, a[1] + dy * t];
+      if (a[2] && b[2]) q[2] = 1;
+      const ex = q[0] - anchor[0], ey = q[1] - anchor[1], d2 = ex * ex + ey * ey;
+      if (d2 < best.d2 - 1e-9) best = { i, t, q, d2 };
+    }
+    const out = pts.slice(0, best.i + 1);
+    if (best.t > 1e-6) out.push(best.t > 1 - 1e-6 ? pts[best.i + 1] : best.q);
+    const last = out[out.length - 1];
+    if (best.d2 < 1 && last) out[out.length - 1] = anchor;
+    else if (!last || Math.hypot(last[0] - anchor[0], last[1] - anchor[1]) >= 0.01) out.push(anchor);
+    else last[3] = 2;
+    return out;
+  };
+  // A leg can contain several solved steps, and the feature which overshoots its destination may
+  // belong to the step *before* the final state change. Finish against the whole accumulated leg,
+  // not only against whatever geometry the last step happened to carry.
+  let legPointStart = 0;
+  const finishWaypoint = anchor => {
+    const prefix = allPts.slice(0, legPointStart);
+    const finished = featureToWaypoint(allPts.slice(legPointStart), anchor);
+    allPts.splice(0, allPts.length, ...prefix, ...finished);
+    legPointStart = allPts.length - 1;
+  };
   for (let idx = 0; idx < flat.length; idx++) {
     const { st, prevH: ph, first, wp, leg } = flat[idx];
     // Which leg this step belongs to, and whether it *is* a waypoint. The readout needs both to
@@ -5259,12 +5312,16 @@ function routeLeg(rt, o) {
     st.leg = leg ?? 0; st.wp = !!wp;
     // A waypoint is a place the column actually stops, so the line goes to its stronghold marker if
     // it has one — the same anchoring the route's start and end have always had.
-    const anchor = wp ? endPoint(st.h, st.ri) : nodePoint(st.h, st.ri);
+    const anchor = wp ? waypointPoint(endPoint(st.h, st.ri)) : nodePoint(st.h, st.ri);
     // Afloat and with no drawn river to trace: aim at the water rather than at the bank's midpoint.
     // A stop keeps its marker either way — the ring is drawn there and the line must agree with it.
     const afloatAt = (!wp && /sail/.test(st.note || '') && riverPointIn(st.h, st.ri)) || anchor;
     steps.push(st);
-    if (first) { allPts.push(endPoint(st.h, st.ri)); continue; }
+    if (first) {
+      allPts.push(waypointPoint(endPoint(st.h, st.ri)));
+      legPointStart = allPts.length - 1;
+      continue;
+    }
     if (st.h !== ph) { // a trade hop covers several hexes at once and knows its own real length
       const nh = st.hexes ?? (st.chain ? st.chain.length - 1 : 1);
       totHex += nh;
@@ -5288,11 +5345,19 @@ function routeLeg(rt, o) {
       // it does coming off a bridge. A road's geometry ends on the road itself, so it is left alone.
       const np = nodePoint(st.h, st.ri), last = gpts[gpts.length - 1];
       const landsOnNode = gpts.length > 1 && Math.hypot(last[0] - np[0], last[1] - np[1]) < 0.01;
-      if (landsOnNode && wp) { allPts.push(...gpts.slice(0, -1), anchor); continue; } // stop at the marker
+      // Feature geometry ends wherever the surveyed road or river sample ends, which need not be the
+      // stronghold marker. A waypoint is nevertheless a place the route actually visits. Omitting
+      // this last connection made a river-following route visibly sail past its stop; at an
+      // intermediate waypoint the following leg then started from the wrong point too.
+      if (wp) {
+        allPts.push(...(landsOnNode ? gpts.slice(0, -1) : gpts));
+        finishWaypoint(anchor);
+        continue;
+      }
       allPts.push(...(nxt && landsOnNode ? gpts.slice(0, -1) : gpts));
       continue;
     }
-    if (wp) { allPts.push(anchor); continue; } // a stop is reached, never cut past or shortcut to
+    if (wp) { finishWaypoint(anchor); continue; } // a stop is reached, never cut past or shortcut to
     /* A step that changes only the column's *state* — going ashore, taking ship, spending the month
        securing one — does not move it an inch, and so has nothing to contribute to the line: it
        happens where the line already is. Drawing it anyway meant drawing to the subhex's own centre,
@@ -5338,8 +5403,10 @@ function routeLeg(rt, o) {
   // stop short of the destination hex's node point (its marker) — e.g. getting off a river into
   // the hex left the final leg undrawn. Connect the line to the last waypoint's marker.
   if (flat.length) {
-    const last = flat[flat.length - 1].st, np = endPoint(last.h, last.ri), lp = allPts[allPts.length - 1];
+    const last = flat[flat.length - 1].st, np = waypointPoint(endPoint(last.h, last.ri));
+    const lp = allPts[allPts.length - 1];
     if (!lp || Math.hypot(lp[0] - np[0], lp[1] - np[1]) > 0.5) allPts.push(np);
+    else lp[3] = 2;
   }
   return { irl: best.cost, hexes: totHex, miles: totMiles, steps, pts: throughSharedEdges(allPts),
            ends, fail: null };
@@ -6348,16 +6415,10 @@ function lineMeet(p1, p2, p3, p4) {
    the no-crossing condition, and there is exactly one arc that satisfies it. */
 const ARC_STEP = Math.PI / 12;   // how finely an arc is sampled into the polyline: 15° a side
 
-/* Null when the arc that satisfies the tangent condition would have to sweep more than half a circle,
-   which is the one answer that is never the right one. Nothing here ever asks for more than a
-   half-turn: a fillet turns by however much the corner turns, which is less than a straight-about, and
-   a hairpin turns by exactly a straight-about. A sweep of anything more means the two ends handed in
-   are not what they were taken for — the commonest way being that they are *nearly the same point*,
-   where the direction to leave in decides between "no turn at all" and "all the way round", and lands
-   on all the way round. That is what was drawing a pretzel where a route recrossed itself at a bridge:
-   a knot of three-unit steps threw up two joins whose ends stood half a unit apart, and each was
-   answered with a full 360° loop of the lane's own radius. Handing back null lets the caller draw the
-   short honest join instead. */
+/* Null when the arc that satisfies the tangent condition would have to sweep more than half a circle.
+   More than that at an ordinary geometry join is the tell-tale near-360° pretzel produced by two
+   almost coincident ends. Waypoint circles are not drawn here at all: their separately rendered
+   outline supplies the wrap between two tangent route subpaths. */
 function turnArc(P, e, s, u1) {
   const r = Math.hypot(e[0] - P[0], e[1] - P[1]);
   const a0 = Math.atan2(e[1] - P[1], e[0] - P[0]), a1 = Math.atan2(s[1] - P[1], s[0] - P[0]);
@@ -6394,9 +6455,9 @@ function turnArc(P, e, s, u1) {
    the arc stays tangent whichever of them bites.
 
    It runs over the *drawn* line rather than the solved one, after the lanes and their tapers, so a
-   route that never doubles back is rounded too, and so are the joins the lanes introduce. The
-   hairpins come through untouched: they are already arcs, and an arc's own sampling turns through
-   fifteen degrees at a time, which is below the angle worth filleting. */
+   route that never doubles back is rounded too, and so are the joins the lanes introduce. Waypoint
+   centres and the sampled points of their ring arcs carry drawing provenance and come through
+   untouched: they are boundary conditions, not another set of bends to smooth. */
 const BEND_R = 18;     // the radius a corner is rounded to when nothing stops it
 const BEND_DEV = 6;    // ...but never leaving its own corner by more than this, an eighth of a hex
 
@@ -6405,6 +6466,10 @@ function roundBends(pts) {
   const out = [pts[0]];
   for (let i = 1; i + 1 < pts.length; i++) {
     const A = pts[i - 1], V = pts[i], B = pts[i + 1];
+    // Marker centres and the sampled arcs which coincide with marker rings are boundary conditions,
+    // not ordinary corners. Filleting the 15-degree facets of a waypoint arc was subtly changing its
+    // radius at every sample; filleting a centre could cut the waypoint out of the route altogether.
+    if (V[3] || V[4] || B[4]) { out.push(V); continue; }
     const L1 = Math.hypot(V[0] - A[0], V[1] - A[1]), L2 = Math.hypot(B[0] - V[0], B[1] - V[1]);
     if (L1 < 1e-9 || L2 < 1e-9) continue;
     const u1 = [(V[0] - A[0]) / L1, (V[1] - A[1]) / L1], u2 = [(B[0] - V[0]) / L2, (B[1] - V[1]) / L2];
@@ -6442,7 +6507,7 @@ const TAPER = 30;
 const TAPER_N = 8;                        // samples across one ease; enough that the curve reads as one
 const smoothstep = t => t * t * (3 - 2 * t);
 
-function fanOutRetraced(pts, R) {
+function fanOutRetraced(pts, R, stops = []) {
   if (pts.length < 3) return pts;
   /* Two passes over one stretch are not bit-identical: a road's geometry arrives reversed on the way
      back, and the touch-downs `throughSharedEdges` plants are recomputed from the segment the other
@@ -6454,7 +6519,35 @@ function fanOutRetraced(pts, R) {
   for (const p of pts) {
     if (P.length && key(p) === key(P[P.length - 1])) {
       if (p[2]) P[P.length - 1][2] = 1;              // merge provenance at a coincident feature join
+      if (p[3]) P[P.length - 1][3] = Math.max(P[P.length - 1][3] || 0, p[3]);
     } else P.push([...p]);
+  }
+  // A marker is a circular obstacle for every pass of this route, not only for the occurrence which
+  // created it. Otherwise a later waypoint can wrap correctly while an earlier pass through the
+  // same coordinate carries straight on beside or through the ring.
+  for (const p of P)
+    if (stops.some(q => Math.hypot(p[0] - q[0], p[1] - q[1]) < 1)) p[3] = 2;
+  /* Feature joins occasionally contain a short fold: A→V walks a few units backwards, then V→B
+     retraces exactly past A and continues. It adds no travelled ground to the drawing, but rounding
+     the near-180° join turns it into a conspicuous hook. Remove only the geometrically strict case
+     where A lies on the following segment, and never remove an actual waypoint reversal. Iterate
+     because deleting one fold can expose the same redundant construction immediately beside it. */
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (let i = 1; i + 1 < P.length; i++) {
+      if (P[i][3] === 2) continue;
+      const A = P[i - 1], V = P[i], B = P[i + 1];
+      const ax = A[0] - V[0], ay = A[1] - V[1], bx = B[0] - V[0], by = B[1] - V[1];
+      const La = Math.hypot(ax, ay), Lb = Math.hypot(bx, by);
+      if (La < 1e-6 || Lb < 1e-6 || La >= Lb) continue;
+      const along = (ax * bx + ay * by) / Lb;
+      const off = Math.abs(ax * by - ay * bx) / Lb;
+      if (along > 0 && along < Lb && off < 1) {
+        P.splice(i, 1);
+        changed = true;
+        break;
+      }
+    }
   }
   const n = P.length - 1;
   if (n < 2) return pts;
@@ -6593,10 +6686,125 @@ function fanOutRetraced(pts, R) {
      side, which the tapers do for free once the offset is zero. It costs nothing where it applies —
      the stretch that loses its lane is a ford, which is one place on the map that could not be
      mistaken for anywhere else. `throughSharedEdges` refuses the same liberty for the same reason. */
+  // Preserve which side each pass intended to occupy. Water safety may close the lanes over the
+  // broader crossing, but the short marker-bound tangent still needs that side in order to meet the
+  // ring instead of collapsing through its centre.
+  const wantedD = [...d];
   for (let i = 0; i < n; i++) {
     if (!d[i]) continue;
     const keep = Math.abs(d[i]) * 3;
     if (nearMajorRiver(P[i], keep) || nearMajorRiver(P[i + 1], keep)) d[i] = 0;
+  }
+
+  // A short marker connector often is not itself shared and therefore has no lane rank. Its side is
+  // nevertheless determined by the established strand feeding it. Look through only the local
+  // approach, stopping at another waypoint or a reversal, so an unranked connector inherits that
+  // strand instead of defaulting across the centreline and crossing its neighbour.
+  const nearbyLaneSign = (j, step) => {
+    for (let k = step < 0 ? j - 1 : j; k >= 0 && k < n; k += step) {
+      const away = step < 0 ? cum[j] - cum[k + 1] : cum[k] - cum[j];
+      if (away > TAPER * 2) break;
+      const sign = Math.sign(d[k] || wantedD[k]);
+      if (sign) return sign;
+      const boundary = step < 0 ? k : k + 1;
+      if (boundary !== j && (P[boundary][3] === 2 || isRev(boundary))) break;
+    }
+    return 0;
+  };
+
+  /* Waypoint rings are hard boundaries for the displaced lanes. An outer lane in a busy corridor
+     can otherwise finish two or three radii from the marker; when a shared stretch ends just before
+     the stop, its taper can also arrive at an arbitrary radius and leave the familiar little wobble.
+
+     Clamp every non-central approach to the ring radius. At a reversal both adjacent offsets must
+     be the same signed distance in their respective walking frames: their normals point opposite
+     ways, so that places the two lanes on opposite sides of the ring and makes the joining half-turn
+     exactly the marker. This is deliberately done after the river safety pass. The circumference of
+     the marker is already occupied visual space; collapsing its last tangent merely because the
+     marker happens to stand by water is what made river waypoints fail to join at all. */
+  for (let j = 0; j <= n; j++) {
+    if (P[j][3] !== 2) continue;
+    // Corridor bookkeeping uses a broad >120° reversal threshold so noisy feature joins still split
+    // passes. A waypoint only forces equal-sided hairpin tangents when it is genuinely close to a
+    // half-turn; applying the broad threshold here made Asull's ordinary 123° corner cross itself.
+    const waypointHairpin = j > 0 && j < n
+      && u[j - 1][0] * u[j][0] + u[j - 1][1] * u[j][1] < -0.9;
+    if (waypointHairpin) {
+      const sign = Math.sign(d[j - 1] || d[j] || wantedD[j - 1] || wantedD[j])
+        || nearbyLaneSign(j, -1) || nearbyLaneSign(j, 1) || 1;
+      d[j - 1] = d[j] = sign * R;
+    }
+    else {
+      const before = j > 0 ? d[j - 1] || wantedD[j - 1] : 0;
+      const after = j < n ? d[j] || wantedD[j] : 0;
+      // A unique tail inside an otherwise retraced route has no lane rank of its own, but it still
+      // meets the same waypoint ring. Borrow the occupied side from the other half of the join, or
+      // keep left when both are unique. (A wholly non-retraced route returned above and never moves.)
+      const beforeKnown = Math.sign(before) || (j > 0 ? nearbyLaneSign(j, -1) : 0);
+      const afterKnown = Math.sign(after) || (j < n ? nearbyLaneSign(j, 1) : 0);
+      const commonSign = beforeKnown || afterKnown || 1;
+      let beforeSign = beforeKnown || commonSign, afterSign = afterKnown || commonSign;
+      if (j > 0 && j < n) {
+        // The marker can connect either tangent pair without drawing a route segment of its own.
+        // Choose that pair as a planar junction: an incoming and outgoing tangent must not intersect
+        // outside the ring, and an already occupied physical lane is expensive to move onto. This is
+        // the local lane permutation a taut string makes around a peg.
+        const crossesOutside = (sb, sa) => {
+          const A = [P[j - 1][0] + nrm[j - 1][0] * sb * R,
+                     P[j - 1][1] + nrm[j - 1][1] * sb * R];
+          const E = [P[j][0] + nrm[j - 1][0] * sb * R,
+                     P[j][1] + nrm[j - 1][1] * sb * R];
+          const S = [P[j][0] + nrm[j][0] * sa * R,
+                     P[j][1] + nrm[j][1] * sa * R];
+          const B = [P[j + 1][0] + nrm[j][0] * sa * R,
+                     P[j + 1][1] + nrm[j][1] * sa * R];
+          const x = lineMeet(A, E, S, B);
+          if (!x) return false;
+          const on = (p, a, b) => p[0] >= Math.min(a[0], b[0]) - 1e-6
+            && p[0] <= Math.max(a[0], b[0]) + 1e-6
+            && p[1] >= Math.min(a[1], b[1]) - 1e-6
+            && p[1] <= Math.max(a[1], b[1]) + 1e-6;
+          return on(x, A, E) && on(x, S, B)
+            && Math.hypot(x[0] - P[j][0], x[1] - P[j][1]) > R + 0.1;
+        };
+        const occupied = (i, sign) => {
+          const D = sign * R;
+          for (let k = 0; k < n; k++) {
+            if (k === i || und[k] !== und[i] || !d[k]) continue;
+            const inThisFrame = d[k] * (nrm[k][0] * nrm[i][0] + nrm[k][1] * nrm[i][1]);
+            if (Math.abs(inThisFrame - D) < R * 0.5) return true;
+          }
+          return false;
+        };
+        const candidates = [[beforeSign, afterSign], [beforeSign, -afterSign],
+                            [-beforeSign, afterSign], [-beforeSign, -afterSign]];
+        let best = null;
+        for (const [sb, sa] of candidates) {
+          const score = (crossesOutside(sb, sa) ? 10000 : 0)
+            + (occupied(j - 1, sb) ? 1000 : 0) + (occupied(j, sa) ? 1000 : 0)
+            + (sb !== beforeSign ? 10 : 0) + (sa !== afterSign ? 10 : 0);
+          if (!best || score < best.score) best = { sb, sa, score };
+        }
+        beforeSign = best.sb; afterSign = best.sa;
+      }
+      if (j > 0) d[j - 1] = beforeSign * R;
+      if (j < n) d[j] = afterSign * R;
+    }
+
+    // Hold that radius for the approach/departure rather than starting a lane change on the final
+    // tiny feature sample beside the marker. The taper then finishes outside the ring's visual
+    // neighbourhood and the last stretch reads as a tangent, not an S-bend. A lane suppressed for
+    // water safety stays suppressed; only an existing displaced lane is brought onto the ring.
+    const backSign = j > 0 ? Math.sign(d[j - 1]) : 0;
+    if (backSign) for (let k = j - 1; k >= 0 && cum[j] - cum[k + 1] < TAPER; k--) {
+      if (!d[k] || Math.sign(d[k]) !== backSign || (k + 1 < j && isRev(k + 1))) break;
+      d[k] = backSign * R;
+    }
+    const aheadSign = j < n ? Math.sign(d[j]) : 0;
+    if (aheadSign) for (let k = j; k < n && cum[k] - cum[j] < TAPER; k++) {
+      if (!d[k] || Math.sign(d[k]) !== aheadSign || (k > j && isRev(k))) break;
+      d[k] = aheadSign * R;
+    }
   }
 
   /* Where a taper may run to before it meets a reversal, another lane change, or the end of the line:
@@ -6622,6 +6830,10 @@ function fanOutRetraced(pts, R) {
   const ramps = [];
   for (let j = 1; j < n; j++) {
     if (d[j] === d[j - 1]) continue;
+    // A waypoint is already a deliberate break between two tangent subpaths. Its outline performs
+    // any lane permutation; easing between the two offsets as though the line were continuous sends
+    // the outgoing strand back through the circle and crosses the incoming one outside it.
+    if (P[j][3] === 2) continue;
     const s0 = cum[j] - Math.min(TAPER / 2, room(j, -1)), s1 = cum[j] + Math.min(TAPER / 2, room(j, 1));
     if (s1 - s0 > 1e-6) ramps.push({ s0, s1, from: d[j - 1], to: d[j] });
   }
@@ -6680,13 +6892,39 @@ function fanOutRetraced(pts, R) {
 
        **Both ends kept**, for anything left — a taper with no room to run, which steps across in no
        distance because there was none to be had. */
-    const V = P[i], e = out[out.length - 1], a = run[0];
+    const V = P[i];
+    // A waypoint is a hard circular boundary. Do not ask a preceding taper or miter whether its last
+    // sample happened to land closely enough: replace both ends with the exact tangent points implied
+    // by their final lane offsets, then let the marker outline connect the two SVG subpaths.
+    if (V[3] === 2 && Math.abs(Math.abs(d[i - 1]) - R) < 0.05 && Math.abs(Math.abs(d[i]) - R) < 0.05) {
+      const e = [V[0] + nrm[i - 1][0] * d[i - 1], V[1] + nrm[i - 1][1] * d[i - 1]];
+      const a = [V[0] + nrm[i][0] * d[i], V[1] + nrm[i][1] * d[i]];
+      if (P[i - 1][2] && P[i][2]) e[2] = 1;
+      if (P[i][2] && P[i + 1][2]) a[2] = 1;
+      e[3] = 1; a[3] = 1; a[4] = 1;
+      out[out.length - 1] = e;
+      run[0] = a;
+      out.push(...run);
+      continue;
+    }
+    const e = out[out.length - 1], a = run[0];
     if (Math.hypot(e[0] - a[0], e[1] - a[1]) < 0.02) { out.push(...run.slice(1)); continue; }
     const ev = [e[0] - V[0], e[1] - V[1]], av = [a[0] - V[0], a[1] - V[1]];
     const re = Math.hypot(ev[0], ev[1]), ra = Math.hypot(av[0], av[1]);
-    const arc = isRev(i) && re > 0.01 && Math.abs(re - ra) < 0.05 && ev[0] * av[0] + ev[1] * av[1] < 0
-      ? turnArc(V, e, a, u[i - 1]) : null;
-    if (arc) { out.push(...arc.slice(1, -1), ...run); continue; }
+    const hairpin = isRev(i) && re > 0.01 && Math.abs(re - ra) < 0.05
+      && ev[0] * av[0] + ev[1] * av[1] < 0;
+    const arc = hairpin ? turnArc(V, e, a, u[i - 1]) : null;
+    if (arc) {
+      // Protect the exact circular join from the generic bend fillet which runs after lane spreading.
+      e[3] = 1; a[3] = 1;
+      for (const p of arc) p[3] = 1;
+      out.push(...arc.slice(1, -1), ...run);
+      continue;
+    }
+    // If incompatible lane directions make a tangent arc impossible, the route must still visit the
+    // waypoint. Going through its protected centre is the honest fallback; an ordinary miter can cut
+    // the corner outside the ring and was the source of the apparent miss.
+    if (V[3] === 2) { out.push(V, ...run); continue; }
     const m = out.length > 1 && run.length > 1 ? lineMeet(out[out.length - 2], e, a, run[1]) : null;
     if (m && Math.hypot(m[0] - V[0], m[1] - V[1]) < R * 2) {
       if (e[2] && a[2]) m[2] = 1;
@@ -6716,6 +6954,18 @@ function fanOutRetraced(pts, R) {
    a stop into a blob, so anything within `clear` of one is dropped — the ring is the more important
    mark, and the arrow either side of it says the same thing about direction. */
 function arrowsAlong(pts, gap, span, avoid, clear) {
+  // Waypoint wraps are deliberate gaps in the route path; the marker outline connects them visually.
+  // Measure and place arrows on each real subpath so the invisible chord across a marker contributes
+  // neither length nor a misleading arrow direction.
+  if (pts.slice(1).some(p => p[4])) {
+    const parts = [[]];
+    for (const p of pts) {
+      if (p[4] && parts.at(-1).length) parts.push([]);
+      const q = [...p]; q[4] = 0;
+      parts.at(-1).push(q);
+    }
+    return parts.flatMap(part => arrowsAlong(part, gap, span, avoid, clear));
+  }
   const cum = [0];
   for (let i = 0; i + 1 < pts.length; i++)
     cum.push(cum[i] + Math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]));
@@ -6849,8 +7099,8 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
       const sw = act ? 2.8 : 2, op = act ? 0.95 : 0.55;
       // The stops, wanted before the line is drawn so the arrowheads can be kept off them.
       const stops = rt.wps.map(w => endPoint(w.h, w.ri | 0));
-      const pts = roundBends(fanOutRetraced(r.pts, wpR(act)));
-      el('path', { d: featPathD(pts), fill: 'none', stroke: rt.color, 'stroke-width': sw,
+      const pts = roundBends(fanOutRetraced(r.pts, wpR(act), stops));
+      el('path', { d: routePathD(pts), fill: 'none', stroke: rt.color, 'stroke-width': sw,
                    'stroke-linecap': 'round', 'stroke-linejoin': 'round', opacity: op,
                    'data-rt': i, 'pointer-events': 'none' }, groups.route);
       for (const a of arrowsAlong(pts, ARROW_GAP, arrowLen(sw), stops, wpR(act) + 4))
