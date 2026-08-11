@@ -3262,6 +3262,22 @@ function migrateFeatures(f) {
   f.version = 2;
   return f;
 }
+/* Migration supplies missing containers; validation decides whether the contents are safe to hand to
+   renderFeatures and deriveAdj. Checking only that `features` was an array accepted `{features:[{}]}`,
+   assigned it to the live map, and then failed while rendering — after the good map had already gone. */
+function validFeatureFile(f) {
+  if (!f || typeof f !== 'object' || !Array.isArray(f.features)) return false;
+  if (!f.features.every(x => x && FSTYLE[x.type] && Array.isArray(x.pts) && x.pts.length >= 2 &&
+      x.pts.every(p => Array.isArray(p) && p.length >= 2 && Number.isFinite(p[0]) && Number.isFinite(p[1])))) return false;
+  if (!f.labels || typeof f.labels !== 'object' || Array.isArray(f.labels)) return false;
+  if (!f.strongholds || typeof f.strongholds !== 'object' || Array.isArray(f.strongholds)) return false;
+  for (const v of Object.values(f.strongholds)) {
+    const list = Array.isArray(v) ? v : [v];
+    if (!list.every(m => m && typeof m === 'object' && !Array.isArray(m) &&
+        (m.x === undefined || Number.isFinite(m.x)) && (m.y === undefined || Number.isFinite(m.y)))) return false;
+  }
+  return true;
+}
 /* ---------------- whether any of this outlives the tab ----------------
    Everything drawn, moved or planned is written to this browser as it happens, which is right for a map
    you are building over months and wrong for an afternoon of "what if he marched here instead". The
@@ -3273,11 +3289,14 @@ function migrateFeatures(f) {
    back on and reloading brings it back. The switch itself is a preference about this browser rather
    than a change to the map, so it is kept whatever the switch says; it is the only thing that is. */
 const saveOn = () => UI.save !== false;
+const safeLocalGet = key => { try { return localStorage.getItem(key); } catch { return null; } };
 function saveLocal() {
   const n = S.features.features.length;
-  if (saveOn()) localStorage.setItem(LS_KEY, JSON.stringify(S.features));
-  document.getElementById('saveInfo').textContent = saveOn()
-    ? `Autosaved locally — ${n} features.`
+  const saving = saveOn(); let saved = saving;
+  if (saving) try { localStorage.setItem(LS_KEY, JSON.stringify(S.features)); }
+  catch { saved = false; toast('Map changed, but this browser could not save the drawing', true); }
+  document.getElementById('saveInfo').textContent = saving
+    ? saved ? `Autosaved locally — ${n} features.` : `Not saved — ${n} features remain in this tab.`
     : `Not saving — ${n} features, and a reload clears these edits.`;
   markDrift();
 }
@@ -3422,7 +3441,12 @@ function deriveAdj() {
   const coastHexes = new Set();
   const majorPairs = new Set(); // pairKey -> a drawn MAJOR river crosses this edge (river mouths)
   const geom = new Map();      // pairKey -> {a, pts}: drawn road geometry between adjacent hexes
-  const riverGeom = new Map(); // same, for drawn major rivers (so sailing follows the river visually)
+  /* A hex pair can carry more than one drawn channel. Roads keep their feature identity all the way
+     through the search; rivers do not, because branches may meet and become one navigable network.
+     Keep every visual candidate here and choose between them from the actual source/destination
+     regions when a sailing edge is made. A first-wins Map silently sent later channels down whichever
+     river happened to have been drawn first. */
+  const riverGeom = new Map(); // pairKey -> [{a, pts}...], drawn major-river candidates
   const addAdjFromLine = (pts, set, geomMap = geom) => {
     // fine samples along the polyline, tagged with their hex
     const samples = [];
@@ -3490,9 +3514,13 @@ function deriveAdj() {
         if (u.hexes.includes(b) || v.hexes.includes(a)) continue;   // two banks of one reach
         const key = pairKey(a, b);
         if (set) set.add(key);
-        if (geomMap && !geomMap.has(key)) {
+        if (geomMap && (geomMap === riverGeom || !geomMap.has(key))) {
           const mu = (u.i0 + u.i1) >> 1, mv = (v.i0 + v.i1) >> 1;
-          geomMap.set(key, { a, pts: samples.slice(mu, mv + 1).map(s => [s[0], s[1]]) });
+          const candidate = { a, pts: samples.slice(mu, mv + 1).map(s => [s[0], s[1]]) };
+          if (geomMap === riverGeom) {
+            const list = geomMap.get(key) || [];
+            list.push(candidate); geomMap.set(key, list);
+          } else geomMap.set(key, candidate);
         }
       }
     }
@@ -4122,13 +4150,49 @@ function riverPointIn(h, ri) {
   }
   return best;
 }
-/* Is there major water within `r` of this point? `riverByHex` already buckets every segment into its
-   own hex *and* its neighbours, so one lookup covers everything that could be near. */
+/* The drawn channel for one solved sailing edge. This is decided while the edge still knows both of
+   its regions, not later from the word "sail" in a display note. Open sea remains open sea even where
+   a river mouth happens to share the same hex pair. If several channels use the pair, prefer the one
+   whose two ends are nearest the water in the actual source and destination regions. The third point
+   coordinate is provenance consumed only by the route renderer; SVG and all geometry use x/y. */
+function riverStepGeometry(h, ri, n, rj) {
+  if (h === n) return null;
+  const A = region(h, ri), B = region(n, rj);
+  if (!A || !B || (A.sea && B.sea)) return null;
+  if (!riverInRegion(h, ri) && !riverInRegion(n, rj)) return null;
+  const candidates = S.adj.riverGeom.get(pairKey(h, n)) || [];
+  if (!candidates.length) return null;
+  const from = riverPointIn(h, ri) || nodePoint(h, ri);
+  const to = riverPointIn(n, rj) || nodePoint(n, rj);
+  let best = null, bd = Infinity;
+  for (const g of candidates) {
+    const pts = g.a === h ? g.pts : [...g.pts].reverse();
+    if (!pts.length) continue;
+    const a = pts[0], b = pts[pts.length - 1];
+    const d = (a[0] - from[0]) ** 2 + (a[1] - from[1]) ** 2 +
+              (b[0] - to[0]) ** 2 + (b[1] - to[1]) ** 2;
+    if (d < bd) { bd = d; best = pts; }
+  }
+  return best ? { geom: best.map(p => [p[0], p[1], 1]), geomKind: 'river' } : null;
+}
+/* Is there major water within `r` of this point? River segments are bucketed into their own hex and
+   its neighbours. That makes one lookup enough for the small two-unit tests, but lane separation can
+   ask about more than a whole hex. Search as many surrounding rings as that radius can reach. */
 function nearMajorRiver(p, r) {
   const h = nearestHex(p[0], p[1]);
   if (h == null) return false;
   const r2 = r * r;
-  for (const s of S.adj.riverByHex.get(h) || []) {
+  const hs = new Set([h]);
+  let edge = [h];
+  const rings = Math.max(0, Math.ceil(r / S.G.hex_width));
+  for (let k = 0; k < rings; k++) {
+    const next = [];
+    for (const q of edge) for (const n of neighbors(q)) if (!hs.has(n)) { hs.add(n); next.push(n); }
+    edge = next;
+  }
+  const segs = new Set();
+  for (const q of hs) for (const s of S.adj.riverByHex.get(q) || []) segs.add(s);
+  for (const s of segs) {
     if (s.minor) continue;
     const dx = s.x2 - s.x1, dy = s.y2 - s.y1, L2 = dx * dx + dy * dy;
     const t = L2 ? Math.max(0, Math.min(1, ((p[0] - s.x1) * dx + (p[1] - s.y1) * dy) / L2)) : 0;
@@ -4723,8 +4787,11 @@ function expand(h, ri, af, ships, g, o) {
            already on. So on such an edge the meeting test is waived; being navigable, being on the
            edge, and the river actually running between the two are still all required. */
         if (regSail(rs[rj]) && regionOnEdge(n, rj, e) && waterLink(h, ri, n, rj) &&
-            (regionsMeet(h, ri, n, rj) || S.adj.riverEdge.has(pairKey(h, n))))
-          out.push({ toH: n, toRi: rj, af: 1, ships: 1, g: 0, irl: SHIP_IRL, note: 'sail' });
+            (regionsMeet(h, ri, n, rj) || S.adj.riverEdge.has(pairKey(h, n)))) {
+          const drawn = riverStepGeometry(h, ri, n, rj);
+          out.push({ toH: n, toRi: rj, af: 1, ships: 1, g: 0, irl: SHIP_IRL,
+                     note: 'sail', ...(drawn || {}) });
+        }
     }
     // Sail between adjacent navigable regions of the SAME hex (a river mouth, a bay opening into a
     // channel). This is free: one hex is one hex. The cost of a hex is paid by the step that
@@ -4865,8 +4932,11 @@ function expand(h, ri, af, ships, g, o) {
       if (!regionOnEdge(h, ri, e)) continue;
       const rs = regionsOf(n);
       for (let rj = 0; rj < rs.length; rj++)
-        if (regSail(rs[rj]) && regionOnEdge(n, rj, e) && regionsMeet(h, ri, n, rj))
-          out.push({ toH: n, toRi: rj, af: 1, ships: 1, g: 0, irl: cost + SHIP_IRL, note: pre + ', sail' });
+        if (regSail(rs[rj]) && regionOnEdge(n, rj, e) && regionsMeet(h, ri, n, rj)) {
+          const drawn = riverStepGeometry(h, ri, n, rj);
+          out.push({ toH: n, toRi: rj, af: 1, ships: 1, g: 0, irl: cost + SHIP_IRL,
+                     note: pre + ', sail', ...(drawn || {}) });
+        }
     }
   }
   if (o.tradeRoad) for (const link of (S.adj.tradeByHex.get(h) || [])) {
@@ -4920,6 +4990,7 @@ function dijkstraField(fromH, fromRi, af0, sh0, o) {
       if (nd < (dist.get(k2) ?? Infinity)) {
         dist.set(k2, nd);
         prev.set(k2, { k: k1, note: mv.note, irl: mv.irl, chain: mv.chain, geom: mv.geom,
+                       geomKind: mv.geomKind,
                        hexes: mv.hexes, miles: mv.miles });
         pq.push([nd, mv.toH, mv.toRi, mv.af, mv.ships, mv.g]);
       }
@@ -4933,7 +5004,8 @@ function dijkstraField(fromH, fromRi, af0, sh0, o) {
     while (cur !== undefined) { path.push(cur); cur = prev.get(cur)?.k; }
     path.reverse();
     return path.map(k => { const d = dec(k); return { h: d.h, ri: d.ri, sea: !!d.af,
-      note: prev.get(k)?.note, irl: prev.get(k)?.irl || 0, chain: prev.get(k)?.chain, geom: prev.get(k)?.geom,
+      note: prev.get(k)?.note, irl: prev.get(k)?.irl || 0, chain: prev.get(k)?.chain,
+      geom: prev.get(k)?.geom, geomKind: prev.get(k)?.geomKind,
       hexes: prev.get(k)?.hexes, miles: prev.get(k)?.miles }; });
   };
   return { dist, sk, reconstruct };
@@ -5096,10 +5168,9 @@ function throughSharedEdges(pts) {
     const p = pts[i - 1], q = pts[i];
     const a = nearestHex(p[0], p[1]), b = nearestHex(q[0], q[1]);
     if (a && b && a !== b && neighbors(a).includes(b)) {
-      // Points already tracing the river are more authoritative than a centre-to-centre hex tidy-up.
-      // Moving their crossing to a generic shared-edge touchdown knocks the route off the channel and
-      // leaves a tiny out-and-back kink at otherwise exact river-feature joins.
-      if (nearMajorRiver(p, 2) && nearMajorRiver(q, 2)) { out.push(q); continue; }
+      // Points explicitly supplied by a solved river edge are more authoritative than a generic
+      // centre-to-centre tidy-up. Proximity is not provenance: a road may run along a bank too.
+      if (p[2] && q[2]) { out.push(q); continue; }
       const td = sharedEdgeTouchdown(a, b, p, q);
       // Tidying the geometry must never march the column across a major river it never forded.
       const safe = td && !(!segCrossesMajor(p, q) && (segCrossesMajor(p, td) || segCrossesMajor(td, q)));
@@ -5142,13 +5213,12 @@ function routeLeg(rt, o) {
      the next destination is known. The hover preview below is the one thing that asks. */
   const ends = new Map([...dp].map(([k, v]) => [k, v.cost]));
 
-  // The ordered drawn geometry a step traces from prevH into st.h (road or trade line, or a drawn
-  // river for a sailing step). null when the step has no feature to follow (plain off-road).
+  // The ordered drawn geometry a step traces from prevH into st.h. River geometry is attached to the
+  // solved edge in expand(); it is never guessed here from an undirected pair and a display note.
   const stepGeom = (st, prevH) => {
     if (st.geom) return st.geom;            // road step / trade route (already oriented prevH→st.h)
     const key = pairKey(prevH, st.h), note = st.note || '';
-    let g = note.startsWith('road') ? S.adj.geom.get(key) : null;
-    if (!g && note.includes('sail')) g = S.adj.riverGeom.get(key);
+    const g = note.startsWith('road') ? S.adj.geom.get(key) : null;
     return g ? (g.a === prevH ? g.pts : [...g.pts].reverse()) : null;
   };
   /* A road does not stop at the hex boundary: it runs on to its own mid-hex point, and on a hex split
@@ -5210,7 +5280,7 @@ function routeLeg(rt, o) {
     // `clipToRegion` protects a road from wandering onto the far bank. A sailed river is the boundary
     // itself, so assigning its sampled points to one bank and trimming the other can erase almost the
     // entire reach in one direction and replace it with a chord. Keep water geometry whole.
-    const gpts = /sail/.test(st.note || '') ? rawGeom : clipToRegion(rawGeom, st.h, st.ri);
+    const gpts = st.geomKind === 'river' ? rawGeom : clipToRegion(rawGeom, st.h, st.ri);
     if (gpts) {
       // A crossing's geometry is the road over the water, then the node it lands on. That last point
       // is only a default — if anything follows, the next step's point should stand instead. Going
@@ -6341,9 +6411,9 @@ function roundBends(pts) {
     const phi = Math.acos(Math.max(-1, Math.min(1, u1[0] * u2[0] + u1[1] * u2[1])));
     // Straight enough not to be a corner, or so nearly doubled back that there is no corner to round.
     if (phi < 0.02 || Math.PI - phi < 0.05) { out.push(V); continue; }
-    // A river's own vertices already describe its bend. A free fillet can only leave the water here;
-    // the round line join supplies the visual softness without inventing a different course.
-    if (nearMajorRiver(A, 2) && nearMajorRiver(V, 2) && nearMajorRiver(B, 2)) { out.push(V); continue; }
+    // A river's own vertices already describe its bend. Only explicit solved-edge provenance earns
+    // this exception; a road merely running near the bank still wants ordinary rounding.
+    if (A[2] && V[2] && B[2]) { out.push(V); continue; }
     const tn = Math.tan(phi / 2);
     const want = Math.min(BEND_R, BEND_DEV / (1 / Math.cos(phi / 2) - 1));
     const t = Math.min(want * tn, L1 * 0.45, L2 * 0.45), r = t / tn;
@@ -6380,7 +6450,12 @@ function fanOutRetraced(pts, R) {
      different places on a map whose hexes are fifty units across, and comfortably above the last few
      bits of a float. */
   const key = p => Math.round(p[0] * 4) + ',' + Math.round(p[1] * 4);
-  const P = pts.filter((p, i) => !i || key(p) !== key(pts[i - 1]));   // a zero-length hop has no side
+  const P = [];
+  for (const p of pts) {
+    if (P.length && key(p) === key(P[P.length - 1])) {
+      if (p[2]) P[P.length - 1][2] = 1;              // merge provenance at a coincident feature join
+    } else P.push([...p]);
+  }
   const n = P.length - 1;
   if (n < 2) return pts;
   /* Passes are counted two ways. **Undirected** says whether a stretch is doubled at all, since a
@@ -6559,7 +6634,10 @@ function fanOutRetraced(pts, R) {
   };
   const at = (i, s) => {
     const t = s - cum[i], D = offsetAt(s, i);
-    return [P[i][0] + u[i][0] * t + nrm[i][0] * D, P[i][1] + u[i][1] * t + nrm[i][1] * D];
+    const p = [P[i][0] + u[i][0] * t + nrm[i][0] * D,
+               P[i][1] + u[i][1] * t + nrm[i][1] * D];
+    if (P[i][2] && P[i + 1][2]) p[2] = 1;
+    return p;
   };
 
   const out = [];
@@ -6610,7 +6688,10 @@ function fanOutRetraced(pts, R) {
       ? turnArc(V, e, a, u[i - 1]) : null;
     if (arc) { out.push(...arc.slice(1, -1), ...run); continue; }
     const m = out.length > 1 && run.length > 1 ? lineMeet(out[out.length - 2], e, a, run[1]) : null;
-    if (m && Math.hypot(m[0] - V[0], m[1] - V[1]) < R * 2) { out[out.length - 1] = m; out.push(...run.slice(1)); }
+    if (m && Math.hypot(m[0] - V[0], m[1] - V[1]) < R * 2) {
+      if (e[2] && a[2]) m[2] = 1;
+      out[out.length - 1] = m; out.push(...run.slice(1));
+    }
     else out.push(...run);
   }
   return out;
@@ -6716,8 +6797,8 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
        a river out of a hex, and a stored index points past the end. Everything downstream then reads
        a region that is not there and falls over. Clamped rather than dropped: the waypoint is still a
        place the column was told to go, and the nearest thing to what it meant is the hex it named. */
-    const rs = regionsOf(w.h);
-    return (w.ri | 0) < rs.length ? w : { ...w, ri: Math.max(0, rs.length - 1) };
+    const rs = regionsOf(w.h), ri = w.ri | 0;
+    return { ...w, ri: Math.max(0, Math.min(ri, rs.length - 1)) };
   });
   migrateIso();
   // The active *route's* army, named explicitly rather than taken from armyOpts()'s ambient answer:
@@ -7034,6 +7115,12 @@ function setWaypointAction(ri, wi, action, wait = 0) {
    Taking ship is a week standing still and getting off again is a day, and a list of hexes that passes
    over them in silence reads as a much shorter journey than it is — so those keep their place, named
    and costed, while everything about the ground underfoot is dropped. */
+function waypointClipboardTag(rt, wi) {
+  const w = rt.wps[wi], action = waypointAction(rt, w);
+  const words = [action === 'wait' ? `wait ${wpWaitAt(rt, w)}d` : action];
+  if (w?.f) words.push('forced');
+  return ` [${words.join(', ')}]`;
+}
 function stepsToText(ri, simple) {
   const rt = S.routes[ri], r = lastResults[ri];
   if (!rt || !r || r.fail || !r.steps?.length) return null;
@@ -7044,11 +7131,21 @@ function stepsToText(ri, simple) {
     const wait = j === 0 ? wpWait(rt, 0) : st.wp ? wpWait(rt, st.leg + 1) : 0;
     const addWait = () => { if (wait) parts.push(`Wait (${wait} day${wait === 1 ? '' : 's'})`); };
     if (simple) {
-      if (!sameHex) { parts.push(String(st.h)); addWait(); return; }
+      const tagLastHex = wi => {
+        for (let k = parts.length - 1; k >= 0; k--) if (/^\d+\b/.test(parts[k])) {
+          parts[k] += waypointClipboardTag(rt, wi); return;
+        }
+      };
+      if (!sameHex) {
+        parts.push(String(st.h));
+        if (j === 0) tagLastHex(0);
+        if (st.wp) tagLastHex(st.leg + 1);
+        return;
+      }
       // A stage inside a hex is not another place to march to, so it only earns a place by costing
       // something — which is exactly what distinguishes embarking from shuffling over a bridge.
       if (j > 0 && st.irl >= 0.005) parts.push(stageLabel(st));
-      addWait();
+      if (st.wp) tagLastHex(st.leg + 1);
       return;
     }
     if (j > 0 && sameHex && st.irl < 0.005) { addWait(); return; }
@@ -7107,7 +7204,25 @@ function copySteps(ri, simple) {
 function hexListFromText(txt) {
   const lines = String(txt || '').split(/\r?\n/);
   const chain = lines.filter(l => /->|→|—>/.test(l));
-  const src = (chain.length ? chain : lines.filter(l => !/IRL day/i.test(l))).join(' ')
+  const raw = (chain.length ? chain : lines.filter(l => !/IRL day/i.test(l))).join(' ');
+  /* Copy hexes marks only the route's real waypoints. The unmarked numbers between them are the solved
+     path and are useful to a reader, but turning every one into a Visit on paste changes the orders.
+     When at least two marked waypoints are present, reconstruct those and carry their actions. Plain
+     handwritten lists contain no markers and continue through the old permissive parser below. */
+  const waypoints = [], taggedSkipped = [];
+  for (const m of raw.matchAll(/(\d+)\s*\[([^\]]+)\]/g)) {
+    const h = +m[1], spec = m[2].toLowerCase();
+    if (!S.hexes[h] || S.hexes[h].t === 'N/A') { taggedSkipped.push(h); continue; }
+    const wait = spec.match(/\bwait\s+(\d+)\s*d?\b/);
+    const action = wait ? 'wait' : /\bpass\b/.test(spec) ? 'pass' : /\bvisit\b/.test(spec) ? 'visit' : null;
+    if (!action) continue;
+    const w = { h, action };
+    if (wait && +wait[1] > 0) w.wait = +wait[1];
+    if (/\bforced\b/.test(spec)) w.f = true;
+    if (waypoints[waypoints.length - 1]?.h !== h) waypoints.push(w);
+  }
+  if (waypoints.length >= 2) return { hexes: waypoints.map(w => w.h), waypoints, skipped: taggedSkipped };
+  const src = raw
     .replace(/\([^)]*\)/g, ' ').replace(/\[[^\]]*\]/g, ' ')
     .replace(/[+-]\s*\d+(?:\.\d+)?\s*d\b/gi, ' ')                    // "+7d", "+0.5d" — a cost
     .replace(/\d+(?:\.\d+)?\s*(?:mi|miles|hexes?|days?)\b/gi, ' ')   // "240 mi", "12 hexes"
@@ -7118,7 +7233,7 @@ function hexListFromText(txt) {
     if (!S.hexes[h] || S.hexes[h].t === 'N/A') { skipped.push(h); continue; }
     if (out[out.length - 1] !== h) out.push(h);  // a repeat is the same hex twice, not a second stop
   }
-  return { hexes: out, skipped };
+  return { hexes: out, waypoints: null, skipped };
 }
 // A pasted list names hexes, not subhexes: which bank of a split hex the column is on is not in the
 // text. Land is the safe reading — the solver finds its own way across a bridge or aboard a ship — so
@@ -7131,12 +7246,14 @@ function landRi(h) {
 // route in mind, but a route's own menu does, and pasting into the wrong route because it happened to
 // be selected is not a mistake worth leaving available.
 function applyHexList(txt, ri = S.activeRoute) {
-  const { hexes, skipped } = hexListFromText(txt);
+  const { hexes, waypoints, skipped } = hexListFromText(txt);
   const rt = S.routes[ri];
   if (!rt) { toast('No route to paste into — make one first', true); return; }
   if (hexes.length < 2) { toast('Need at least two hex numbers; found ' + hexes.length, true); return; }
   pushUndoRoutes();
-  rt.wps = hexes.map(h => ({ h, ri: landRi(h) }));
+  rt.wps = waypoints
+    ? waypoints.map(w => ({ ...w, ri: landRi(w.h) }))
+    : hexes.map(h => ({ h, ri: landRi(h) }));
   computeRoute();
   toast(`${hexes.length} waypoints into ${rt.name}` +
         (skipped.length ? ` · ignored ${skipped.length} number${skipped.length > 1 ? 's' : ''} that name no hex` : ''));
@@ -8466,12 +8583,20 @@ document.getElementById('exportBtn').onclick = () => {
 };
 document.getElementById('importInput').onchange = async e => {
   const f = e.target.files[0]; if (!f) return;
+  let previous = null;
   try {
     const j = JSON.parse(await f.text());
-    if (!Array.isArray(j.features)) throw 0;
     // An exported file may predate the per-subhex shape, so an import goes through the migration too.
-    pushUndo(); S.features = migrateFeatures({ version: 2, labels: {}, strongholds: {}, ...j }); commitFeatures();
-  } catch { alert('Not a valid features.json'); }
+    const next = migrateFeatures({ version: 2, labels: {}, strongholds: {}, ...j });
+    if (!validFeatureFile(next)) throw 0;
+    previous = S.features;
+    pushUndo(); S.features = next; commitFeatures();
+  } catch {
+    // Rendering and derivation are deliberately inside the transaction too. Schema validation should
+    // catch bad input first, but an unexpected failure still restores both memory and local storage.
+    if (previous) { S.features = previous; try { commitFeatures(); } catch {} }
+    alert('Not a valid features.json');
+  }
   e.target.value = '';
 };
 /* ---------------- how far this browser has drifted from the shipped map ----------------
@@ -9656,8 +9781,9 @@ async function fetchFeaturesFile() {
     if (!r.ok) return null;
     const txt = await r.text();
     const j = JSON.parse(txt);
-    if (!Array.isArray(j.features)) return null;
-    return { obj: { version: 2, labels: {}, strongholds: {}, ...j }, stamp: quickHash(txt) };
+    const obj = migrateFeatures({ version: 2, labels: {}, strongholds: {}, ...j });
+    if (!validFeatureFile(obj)) return null;
+    return { obj, stamp: quickHash(txt) };
   } catch { return null; }
 }
 // Enough of a fingerprint to tell one publication of a file from the next. Not a checksum for anything
@@ -9742,13 +9868,23 @@ function mergeFeatureFiles(base, mine, theirs) {
 
 function chooseFeatures(ls, file, baseTxt) {
   featureMerge = null;
-  const parsed = (() => { try { return ls ? JSON.parse(ls) : null; } catch { return null; } })();
+  const parsed = (() => {
+    try {
+      const p = ls ? migrateFeatures(JSON.parse(ls)) : null;
+      return validFeatureFile(p) ? p : null;
+    } catch { return null; }
+  })();
   if (!file) return parsed;                       // nothing shipped: the local copy is all there is
   if (!parsed) return file.obj;
-  const seen = localStorage.getItem(FEAT_SRC_LS);
+  const seen = safeLocalGet(FEAT_SRC_LS);
   if (seen === file.stamp) return parsed;         // the copy was made against this same file
   // A new file, and the parent of the local copy is on hand: merge rather than choose.
-  const base = (() => { try { return baseTxt ? migrateFeatures(JSON.parse(baseTxt)) : null; } catch { return null; } })();
+  const base = (() => {
+    try {
+      const b = baseTxt ? migrateFeatures(JSON.parse(baseTxt)) : null;
+      return validFeatureFile(b) ? b : null;
+    } catch { return null; }
+  })();
   if (base) {
     const r = mergeFeatureFiles(base, migrateFeatures(parsed), migrateFeatures(JSON.parse(JSON.stringify(file.obj))));
     featureMerge = r.tally;
@@ -9796,8 +9932,8 @@ async function boot() {
   }
   // With saving off the browser's copy is passed over rather than deleted: this session starts from
   // the shipped map, and whatever was stored is still there for a session that wants it.
-  const chosen = chooseFeatures(saveOn() ? localStorage.getItem(LS_KEY) : null, ff,
-                                saveOn() ? localStorage.getItem(FEAT_BASE_LS) : null);
+  const chosen = chooseFeatures(saveOn() ? safeLocalGet(LS_KEY) : null, ff,
+                                saveOn() ? safeLocalGet(FEAT_BASE_LS) : null);
   // A copy from storage is already this browser's own; the shipped object is not, and is re-parsed.
   if (chosen) S.features = chosen === ff?.obj ? JSON.parse(canon.featText) : chosen;
   /* Recorded after the choice, so from here on a local edit counts as made against *this* file — and
@@ -9819,7 +9955,7 @@ async function boot() {
      tooltip. */
   canon.tokens = await fetchStartingTokens() || [];
   canon.tokSig = stableJson(canon.tokens);
-  const tls = saveOn() ? localStorage.getItem(TOK_LS) : null;
+  const tls = saveOn() ? safeLocalGet(TOK_LS) : null;
   if (tls) {
     try { S.tokens = normalizeTokens(JSON.parse(tls).tokens) || []; } catch {}
     // The board as loaded is what the first Ctrl+Z should restore to, so record it as the snapshot
@@ -9835,7 +9971,7 @@ async function boot() {
     if (startingTokensStamp && saveOn()) try { localStorage.setItem(TOK_SRC_LS, startingTokensStamp); } catch {}
   }
   try {
-    const rr = JSON.parse(saveOn() ? localStorage.getItem('rotmap_routes_v1') : null);
+    const rr = JSON.parse(saveOn() ? safeLocalGet('rotmap_routes_v1') : null);
     if (rr && Array.isArray(rr.routes)) {
       S.routes = rr.routes;
       S.activeRoute = Math.min(rr.active ?? S.routes.length - 1, S.routes.length - 1);
