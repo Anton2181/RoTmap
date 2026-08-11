@@ -452,7 +452,7 @@
       <div class="group" id="marchGroup">
         <h2>March</h2>
         <div class="stoprow">
-          <label class="chk" title="The column halts at every waypoint, so each leg is ordered in whole days and the rest of the arrival day is spent. Right-click a single waypoint to make just that one a pass-through."><input type="checkbox" id="stops" checked> Stop at waypoints</label>
+          <label class="chk" title="The column visits every unmarked waypoint by default. Right-click one to pass, visit, or wait there for a chosen number of days."><input type="checkbox" id="stops" checked> Stop at waypoints</label>
           <button class="btn" type="button" id="optRoute"
                   title="Reorder this route's waypoints for the fewest whole days of orders.">Optimise order</button>
         </div>
@@ -461,11 +461,11 @@
           A route is billed in <b>whole days of orders</b>: the column halts at each waypoint, and the
           rest of the day it arrives in is spent. The card shows the ordered total, with the exact
           distance marched beside it and the wasted fraction under it.
-          <p>Clear <b>Stop at waypoints</b> and the column halts nowhere on the way — the whole march is
-          one order and only the arrival is rounded. To make a single waypoint a pass-through, right-click
-          it and choose <b>Pass through</b>: the column still goes there, it just does not break the
-          march, so that leg runs on into the next and the rounding waits for the next halt. Waypoints
-          the column does not stop at are drawn smaller. Arriving is always a halt.</p>
+          <p>Clear <b>Stop at waypoints</b> and unmarked waypoints become pass-throughs — the whole march
+          is one order and only the arrival is rounded. Right-click a waypoint to choose <b>Pass</b>,
+          <b>Visit</b>, or <b>Wait</b> for a chosen number of whole IRL days. An explicit Visit or Wait
+          overrides the route-wide default; waypoints the column passes are drawn smaller. Arriving is
+          always a halt.</p>
           <p><b>Optimise order</b> reorders the waypoints for the fewest ordered days and asks which ends
           to hold: keep the start, or keep both ends. The search is exact up to 15 waypoints.
           <b>Ctrl+Z</b> puts the old order back.</p>

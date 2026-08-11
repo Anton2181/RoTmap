@@ -787,6 +787,13 @@ body.colsizing { cursor: col-resize; user-select: none; }
   width: 30px; height: 20px; margin-left: auto; padding: 0;
   background: none; border: 1px solid var(--line-2); border-radius: 4px; cursor: pointer;
 }
+.ctxit .ctxnum {
+  width: 54px; margin-left: auto; padding: 3px 5px;
+  background: var(--bg-input); color: var(--ink); border: 1px solid var(--line-2); border-radius: var(--r1);
+  font: inherit; text-align: right;
+}
+.ctxit .ctxnum:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+.ctxit .ctxnum + .arw { margin-left: 0; padding-left: 0; }
 .ctxsep { height: 1px; margin: var(--s1) 2px; background: var(--line); }
 
 /* Fourteen numerals read best as a block you can aim at, five to a row. A numeral already in play
