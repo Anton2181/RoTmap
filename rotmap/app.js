@@ -5965,9 +5965,9 @@ function renderIso() {
    of the outward one. Both passes trace the same road geometry, so the second is drawn over the
    first pixel for pixel and simply vanishes: a route out to Kisra and home again looked like a route
    to Kisra, and the twelve days it billed for looked like six days' worth of line. The fix is to give
-   each pass over the same stretch a lane of its own — one stop-marker's radius to one side — so a
-   doubled road reads as two lines running together, which is what it is, and the turn at the end of
-   it comes out as a circle of exactly that marker's radius about exactly its centre. Only stretches
+   each pass over the same stretch a lane of its own — one stop-marker's radius to the walker's left —
+   so a doubled road reads as two lines running together, which is what it is, and the turn at the end
+   of it comes out as a circle of exactly that marker's radius about exactly its centre. Only stretches
    that are actually doubled move; a route that never crosses its own path is drawn exactly where it
    always was, still sitting on the road it follows.
 
@@ -5996,8 +5996,8 @@ function lineMeet(p1, p2, p3, p4) {
 
 /* ---------------- the turn at the end of an out-and-back ----------------
    Where the column turns round, the two lanes have to be joined, and joining them with a straight run
-   across gives a square fold a couple of units wide — a notch, and a notch is not what a road doing a
-   hairpin looks like. It is drawn as an **arc about the vertex the line turned at** instead.
+   across gives a square fold a lane wide — a notch, and a notch is not what a road doing a hairpin
+   looks like. It is drawn as an **arc about the vertex the line turned at** instead.
 
    That arc is tangent to both lanes for free, and the reason is worth stating because it is what the
    whole scheme rests on: a lane's offset is *perpendicular to its direction of travel*, so the radius
@@ -6008,7 +6008,13 @@ function lineMeet(p1, p2, p3, p4) {
    Which is why the lanes are placed **at the marker's own radius**: the turn at a stop is then a
    circle of exactly the ring's radius, centred on exactly the ring's centre, so the loop and the ring
    are the same circle. The hairpin does not sit near the marker or inside it — it *is* the marker,
-   traced by the line that made it. */
+   traced by the line that made it.
+
+   Which way round it goes is not chosen, and must not be. The lanes keep *left of travel*, so the
+   only sweep that leaves and rejoins them running the right way is the one that carries on past the
+   turn before coming back — a sweep the other way would cut across the approach and cross the very
+   lines it is joining. Continuing the incoming direction is therefore both the tangent condition and
+   the no-crossing condition, and there is exactly one arc that satisfies it. */
 const ARC_STEP = Math.PI / 12;   // how finely an arc is sampled into the polyline: 15° a side
 
 function turnArc(P, e, s, u1) {
@@ -6029,6 +6035,18 @@ function turnArc(P, e, s, u1) {
   return out;
 }
 
+/* How far the line takes to ease from one lane into the next, in world units — about half a hex. A
+   lane change used to happen at a point: the offset was a per-segment constant, so where the count of
+   passes changed the line stepped sideways in no distance at all and left a hard zigzag exactly where
+   two tracks were meant to be separating. Worse, at a shallow crossing the step went the *wrong* way
+   for the eye — it brought the two tracks together for the length of the step before they parted. The
+   offset is now a function of distance along the line rather than of which segment you are on, and it
+   eases across on a smoothstep centred on the vertex, so the tracks drift apart the way two roads
+   diverging actually look. */
+const TAPER = 30;
+const TAPER_N = 8;                        // samples across one ease; enough that the curve reads as one
+const smoothstep = t => t * t * (3 - 2 * t);
+
 function fanOutRetraced(pts, R) {
   if (pts.length < 3) return pts;
   /* Two passes over one stretch are not bit-identical: a road's geometry arrives reversed on the way
@@ -6037,76 +6055,160 @@ function fanOutRetraced(pts, R) {
      different places on a map whose hexes are fifty units across, and comfortably above the last few
      bits of a float. */
   const key = p => Math.round(p[0] * 4) + ',' + Math.round(p[1] * 4);
-  const n = pts.length - 1, seg = [], count = new Map();
+  const P = pts.filter((p, i) => !i || key(p) !== key(pts[i - 1]));   // a zero-length hop has no side
+  const n = P.length - 1;
+  if (n < 2) return pts;
+  /* Passes are counted two ways. **Undirected** says whether a stretch is doubled at all, since a
+     stretch walked once wants leaving exactly where it is. **Directed** says how many passes are
+     going the same way along it, which is what decides how far out a pass sits. */
+  const und = [], dir = [], count = new Map();
   for (let i = 0; i < n; i++) {
-    const ka = key(pts[i]), kb = key(pts[i + 1]);
-    if (ka === kb) { seg.push(null); continue; }   // a zero-length hop has no side to be pushed to
-    const flip = ka > kb, k = flip ? kb + '|' + ka : ka + '|' + kb;
-    seg.push({ k, flip });
-    count.set(k, (count.get(k) || 0) + 1);
+    const ka = key(P[i]), kb = key(P[i + 1]);
+    und.push(ka < kb ? ka + '|' + kb : kb + '|' + ka);
+    dir.push(ka + '>' + kb);
+    count.set(und[i], (count.get(und[i]) || 0) + 1);
   }
   // The overwhelmingly common case, and the one where any nudge at all would be a lie about where the
   // column walked. Hand the line straight back rather than rebuild it identically.
   if (![...count.values()].some(c => c > 1)) return pts;
 
-  const used = new Map(), off = new Array(n);
+  const u = [], nrm = [], cum = [0];
   for (let i = 0; i < n; i++) {
-    const s = seg[i], c = s ? count.get(s.k) : 1;
-    if (!s || c < 2) { off[i] = [0, 0]; continue; }
-    const j = used.get(s.k) || 0; used.set(s.k, j + 1);
-    /* Lanes are laid in **pairs, built up outward**: the first two passes straddle the road at ±R,
-       the next two outside them at ±2R, and so on. Two things fall out of that. The pair is
-       symmetrical, so a road walked twice is straddled rather than kept by the outward pass and
-       conceded by the return. And a pass, once placed, *stays* — a third and fourth crossing wrap
-       around the outside instead of shuffling everything inward to make room, so the line the first
-       two passes drew does not move when a later one appears.
-
-       Which lane a pass gets is the order it walks the stretch in, not its direction of travel, so on
-       an out-and-back the outward leg keeps one side of the road for its whole length and the return
-       keeps the other rather than the two swapping at every bend. That only holds if both passes
-       measure from the same side of the same edge, hence the normal is taken from the segment's
-       *canonical* direction — the one the key was built in.
-
-       Capped at three rings out. Six passes over one stretch is already past telling apart, and
-       letting the spread keep growing would fling the outermost lane most of a hex clear of the road
-       it is meant to be following; the outer lanes double up instead, which is no loss, because by
-       then the line is not what anyone would be counting passes from. */
-    const d = (j % 2 ? 1 : -1) * (1 + Math.min(2, j >> 1)) * R;
-    let dx = pts[i + 1][0] - pts[i][0], dy = pts[i + 1][1] - pts[i][1];
-    if (s.flip) { dx = -dx; dy = -dy; }
-    const L = Math.hypot(dx, dy) || 1;
-    off[i] = [-dy / L * d, dx / L * d];
+    const dx = P[i + 1][0] - P[i][0], dy = P[i + 1][1] - P[i][1], L = Math.hypot(dx, dy);
+    u.push([dx / L, dy / L]);
+    nrm.push([dy / L, -dx / L]);       // the left hand of whoever is walking this segment
+    cum.push(cum[i] + L);
   }
+  /* A lane is a distance **to one side of the direction of travel**, which is the thing that used to
+     be got wrong: it was a signed offset from a canonical ordering of the segment's two endpoints,
+     which is a fact about the hex ids and not about the march. Which side the outward leg took was
+     therefore arbitrary and could differ from one segment to the next, and every time it changed its
+     mind the two tracks crossed. Measured off the walker instead, a stretch keeps one side for its
+     whole length and an out-and-back straddles the road on its own — left of east is north, left of
+     west is south — with no ordering to consult.
 
-  const A = i => [pts[i][0] + off[i][0], pts[i][1] + off[i][1]];
-  const B = i => [pts[i + 1][0] + off[i][0], pts[i + 1][1] + off[i][1]];
-  const out = [A(0)];
-  for (let i = 1; i < n; i++) {
-    const P = pts[i], e = B(i - 1), s = A(i);
-    if (Math.hypot(e[0] - s[0], e[1] - s[1]) < 0.02) { out.push(e); continue; }
-    /* Three ways two offset segments can meet, tried in order of how much they leave alone.
-
-       **A miter**, for a lane going round a gentle corner: the two offset lines still cross, and
-       meeting them there keeps the corner a corner instead of opening a notch the width of the lane.
-       Only while the crossing stays near the corner it belongs to — on a tight bend the offset lines
-       cross a long way out, and an honest miter there would fling a spike most of a hex off the road.
-
-       **An arc about the corner**, when both ends stand the same distance from it. That covers the
-       turn at the end of an out-and-back, where the two lanes are equal and opposite and the arc is
-       the semicircle joining them; it also covers a bend too tight to miter, where it rounds the
-       corner rather than notching it. Tangent to both by construction — see turnArc.
-
-       **A straight jog**, for everything left: the point where the line joins or leaves a doubled
-       stretch, where the two ends are at different distances and no circle about the corner passes
-       through both. That is the honest picture anyway — the line is stepping across to its track. */
-    const m = lineMeet(A(i - 1), e, s, B(i));
-    if (m && Math.hypot(m[0] - P[0], m[1] - P[1]) < R * 2) { out.push(m); continue; }
-    const re = Math.hypot(e[0] - P[0], e[1] - P[1]), rs = Math.hypot(s[0] - P[0], s[1] - P[1]);
-    const u = [(e[0] - A(i - 1)[0]), (e[1] - A(i - 1)[1])];
-    if (re > 0.01 && Math.abs(re - rs) < 0.01 && Math.hypot(u[0], u[1]) > 1e-9) out.push(...turnArc(P, e, s, u));
-    else out.push(e, s);
+     Passes going the *same* way over one stretch cannot share a side, so they stack outward: the
+     first at one marker radius, the second at two. Capped at three — six passes over one stretch is
+     past telling apart anyway, and letting the spread grow would fling the outermost lane most of a
+     hex clear of the road it is meant to be following. */
+  const ring = new Map(), d = new Array(n).fill(0);
+  for (let i = 0; i < n; i++) {
+    if (count.get(und[i]) < 2) continue;
+    const k = ring.get(dir[i]) || 0; ring.set(dir[i], k + 1);
+    d[i] = R * (1 + Math.min(2, k));
   }
-  out.push(B(n - 1));
+  /* Left or right is then **one bit for a whole corridor**, and it is voted on rather than fixed.
+     Keeping left everywhere is self-consistent and still wrong half the time: where the two passes
+     part company, the one arriving from the west wants the west side of the corridor, and left may
+     well be east. Get it wrong at both ends of a stretch and the tracks cross, run alongside each
+     other, and cross back, having gained nothing at all by the excursion — and at a hairpin, wrong
+     is the difference between a loop that lies clear of its approach and one that wraps back over it.
+
+     So each corridor is asked. A corridor is every doubled segment reachable from another either by
+     lying next to it along the march or by being the same ground walked again: consecutive segments
+     must agree or a lane would change sides midway, and two passes over one stretch must disagree or
+     they would be drawn on top of each other. That makes the choice a single bit per corridor, and
+     flipping it moves both tracks together, so neither of those properties can be broken by it.
+
+     The vote comes from the ends. Wherever a doubled stretch meets an undoubled one, the plain road
+     leans to one side of the corridor or the other, and the cosine of that lean is how strongly it
+     leans; the corridor takes whichever side wins. A corridor with no ends at all — a march that
+     doubles back over the whole of itself — has no opinion to consult and keeps left. */
+  const parent = [...Array(n).keys()];
+  const find = x => { while (parent[x] !== x) x = parent[x] = parent[parent[x]]; return x; };
+  const join = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent[ra] = rb; };
+  const seen = new Map();
+  for (let i = 0; i < n; i++) {
+    if (!d[i]) continue;
+    if (i && d[i - 1]) join(i - 1, i);
+    const had = seen.get(und[i]);
+    if (had === undefined) seen.set(und[i], i); else join(had, i);
+  }
+  const vote = new Map();
+  const cast = (i, v) => vote.set(find(i), (vote.get(find(i)) || 0) + v);
+  for (let j = 1; j < n; j++) {
+    if (!d[j - 1] === !d[j]) continue;                                          // both, or neither
+    if (d[j]) cast(j, -(u[j - 1][0] * nrm[j][0] + u[j - 1][1] * nrm[j][1]));    // the road it came in on
+    else cast(j - 1, u[j][0] * nrm[j - 1][0] + u[j][1] * nrm[j - 1][1]);        // the road it leaves by
+  }
+  for (let i = 0; i < n; i++) if (d[i] && vote.get(find(i)) < 0) d[i] = -d[i];
+
+  /* The column turning round, as opposed to merely going round a bend. It is the one join the taper
+     must not touch — in lane terms nothing changes at a reversal, both passes being a lane's width to
+     their own left — and the one join that gets an arc. */
+  const isRev = j => j > 0 && j < n && u[j - 1][0] * u[j][0] + u[j - 1][1] * u[j][1] < -0.5;
+
+  /* Where a taper may run to before it meets a reversal, another lane change, or the end of the line:
+     easing on through any of those would be easing towards a lane the line never reaches. */
+  const room = (j, step) => {
+    for (let k = j + step; k > 0 && k < n; k += step)
+      if (isRev(k) || d[k] !== d[k - 1]) return Math.abs(cum[k] - cum[j]);
+    return step > 0 ? cum[n] - cum[j] : cum[j];
+  };
+  const ramps = [];
+  for (let j = 1; j < n; j++) {
+    if (d[j] === d[j - 1] || isRev(j)) continue;
+    const s0 = cum[j] - Math.min(TAPER / 2, room(j, -1)), s1 = cum[j] + Math.min(TAPER / 2, room(j, 1));
+    if (s1 - s0 > 1e-6) ramps.push({ s0, s1, from: d[j - 1], to: d[j] });
+  }
+  // How far out the line is at distance `s` along it. Inside a taper that is the eased value; anywhere
+  // else it is simply the lane the segment under `s` belongs to.
+  const offsetAt = (s, i) => {
+    for (const r of ramps)
+      if (s > r.s0 && s < r.s1) return r.from + (r.to - r.from) * smoothstep((s - r.s0) / (r.s1 - r.s0));
+    return d[i];
+  };
+  const at = (i, s) => {
+    const t = s - cum[i], D = offsetAt(s, i);
+    return [P[i][0] + u[i][0] * t + nrm[i][0] * D, P[i][1] + u[i][1] * t + nrm[i][1] * D];
+  };
+
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    // The segment's own points: its two ends, plus enough samples to draw whatever part of a taper
+    // falls inside it.
+    const ss = [cum[i], cum[i + 1]];
+    for (const r of ramps) {
+      const a = Math.max(r.s0, cum[i]), b = Math.min(r.s1, cum[i + 1]);
+      for (let k = 0; b > a && k <= TAPER_N; k++) {
+        const s = a + (b - a) * k / TAPER_N;
+        if (s > cum[i] + 1e-9 && s < cum[i + 1] - 1e-9) ss.push(s);
+      }
+    }
+    ss.sort((x, y) => x - y);
+    const run = ss.map(s => at(i, s));
+    if (!i) { out.push(...run); continue; }
+
+    /* Joining this segment's run to the last one's. Three ways, tried in order of how much they leave
+       alone.
+
+       **An arc about the corner**, and only where the column actually turns round. Both ends stand a
+       lane's width from the corner, so a circle centred there passes through both and — the offset
+       being perpendicular to travel — meets each of them at a right angle, which is to say tangent.
+       The turn's radius is therefore just how far out the lane is, and with the lanes at the stop
+       marker's radius the loop and the ring come out as the same circle. This used to fire wherever
+       the two ends merely happened to be equidistant, which on a bend they always are: the result was
+       a little hoop sprouting at any corner two tracks passed each other on, reading as a waypoint
+       that was not there. Turning round is the thing being drawn, so turning round is the test.
+
+       **A miter**, for a lane going round an ordinary bend: the two offset lines still cross, and
+       meeting them there keeps the corner a corner rather than opening a notch a lane wide. Held to
+       within twice the lane width of the corner, since the crossing runs away to nothing as a bend
+       tightens, and a spike most of a hex off the road is worse than a slightly cut corner.
+
+       **Both ends kept**, for anything left — a taper with no room to run, which steps across in no
+       distance because there was none to be had. */
+    const V = P[i], e = out[out.length - 1], a = run[0];
+    if (Math.hypot(e[0] - a[0], e[1] - a[1]) < 0.02) { out.push(...run.slice(1)); continue; }
+    const re = Math.hypot(e[0] - V[0], e[1] - V[1]), ra = Math.hypot(a[0] - V[0], a[1] - V[1]);
+    if (isRev(i) && re > 0.01 && Math.abs(re - ra) < 0.05) {
+      out.push(...turnArc(V, e, a, u[i - 1]).slice(1, -1), ...run);
+      continue;
+    }
+    const m = out.length > 1 && run.length > 1 ? lineMeet(out[out.length - 2], e, a, run[1]) : null;
+    if (m && Math.hypot(m[0] - V[0], m[1] - V[1]) < R * 2) { out[out.length - 1] = m; out.push(...run.slice(1)); }
+    else out.push(...run);
+  }
   return out;
 }
 
