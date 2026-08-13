@@ -4091,6 +4091,78 @@ function regionsMeet(h, ri, n, rj) {
   if (!S.adj.sub.has(h) && !S.adj.sub.has(n)) return true;
   return S.adj.meet.has(h + '|' + n + '|' + ri + '|' + rj);
 }
+
+/* A solved land edge says which two pieces of dry ground meet, but a straight line between their
+   centroids need not stay on that ground. The common counterexample is a lake bending through two
+   hexes: the same land region wraps around its shore, so it is rightly connected, while the chord
+   between two perfectly valid land nodes goes straight over the water.
+
+   Find the shortest visible polyline inside one region. Its outline vertices are the only places a
+   shortest path through a polygon can turn. Boundary points count as usable: walking along a shore is
+   exactly the detour wanted here, and the small distance allowance also absorbs the sub-pixel mismatch
+   between the flood-filled outline and the authored coast line. */
+function pathInRegion(h, ri, from, to) {
+  const r = region(h, ri);
+  if (!r || r.whole || !r.poly) return [from, to];
+  const loops = [r.poly, ...(r.extra || [])].filter(p => p && p.length >= 3);
+  const onBoundary = p => loops.some(poly => poly.some((a, i) => {
+    const b = poly[(i + 1) % poly.length];
+    return distToSeg(p[0], p[1], a[0], a[1], b[0], b[1]) <= 0.45;
+  }));
+  // Region paths are painted even-odd, so extra loops may be holes rather than extra solid pieces.
+  const inside = p => loops.reduce((yes, poly) => yes !== pointInPoly(p, poly), false) || onBoundary(p);
+  const visible = (a, b) => {
+    const L = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    const steps = Math.max(2, Math.ceil(L / 0.7));
+    for (let k = 1; k < steps; k++)
+      if (!inside([a[0] + (b[0] - a[0]) * k / steps, a[1] + (b[1] - a[1]) * k / steps])) return false;
+    return true;
+  };
+  if (visible(from, to)) return [from, to];
+
+  const pts = [from, to, ...loops.flat()], N = pts.length;
+  const dist = new Float64Array(N).fill(Infinity), prev = new Int32Array(N).fill(-1);
+  const done = new Uint8Array(N); dist[0] = 0;
+  for (let pass = 0; pass < N; pass++) {
+    let u = -1;
+    for (let i = 0; i < N; i++) if (!done[i] && (u < 0 || dist[i] < dist[u])) u = i;
+    if (u < 0 || !Number.isFinite(dist[u]) || u === 1) break;
+    done[u] = 1;
+    for (let v = 0; v < N; v++) {
+      if (v === u || done[v] || !visible(pts[u], pts[v])) continue;
+      const nd = dist[u] + Math.hypot(pts[v][0] - pts[u][0], pts[v][1] - pts[u][1]);
+      if (nd < dist[v]) { dist[v] = nd; prev[v] = u; }
+    }
+  }
+  if (!Number.isFinite(dist[1])) return [from, to]; // geometry should agree with regionsMeet; stay usable if it does not
+  const out = []; for (let at = 1; at >= 0; at = prev[at]) { out.push([...pts[at]]); if (at === 0) break; }
+  out.reverse();
+  // These are shore-preserving corners. Later cosmetic bend rounding must not cut across them again.
+  for (let i = 1; i + 1 < out.length; i++) out[i][5] = 1;
+  return out;
+}
+
+// Geometry for a land step between adjacent subhexes. Try every sampled point where the two regions
+// face the same part of their shared edge, then keep the shortest dry approach on the two sides.
+function landStepGeometry(h, ri, n, rj) {
+  if (!isSplit(h) && !isSplit(n)) return null;
+  const cache = S.adj.landGeom || (S.adj.landGeom = new Map());
+  const ck = `${h}|${ri}|${n}|${rj}`;
+  if (cache.has(ck)) return cache.get(ck);
+  const edge = sharedEdgePts(h, n), [hcX, hcY] = hexCenter(h), [ncX, ncY] = hexCenter(n);
+  const from = nodePoint(h, ri), to = nodePoint(n, rj);
+  let best = null, bd = Infinity;
+  for (const p of edge) {
+    if (regionAtEdge(h, p, hcX, hcY) !== (ri | 0) || regionAtEdge(n, p, ncX, ncY) !== (rj | 0)) continue;
+    const a = pathInRegion(h, ri, from, p), b = pathInRegion(n, rj, p, to);
+    const pts = [...a, ...b.slice(1)];
+    let d = 0; for (let i = 0; i + 1 < pts.length; i++) d += Math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]);
+    if (d < bd) { bd = d; best = pts; }
+  }
+  cache.set(ck, best);
+  cache.set(`${n}|${rj}|${h}|${ri}`, best ? [...best].reverse() : null);
+  return best;
+}
 // Which region of h a point on its boundary belongs to, stepped a little inside first. -1 in the
 // seam between regions.
 function regionAtEdge(h, m, cx, cy) {
@@ -4216,10 +4288,11 @@ function segCrossesMajor(p, q) {
 }
 // Does the march from a to b ford a *minor* river? Minor rivers aren't barriers and so aren't part
 // of the subhex split; centre to centre is all there is to go on for them.
-function minorCross(a, b) {
-  const [ax, ay] = hexCenter(a), [bx, by] = hexCenter(b);
-  for (const s of S.adj.riverByHex.get(a) || [])
-    if (s.minor && segIntersect(ax, ay, bx, by, s.x1, s.y1, s.x2, s.y2)) return true;
+function minorCross(a, b, geom) {
+  const path = geom?.length > 1 ? geom : [hexCenter(a), hexCenter(b)];
+  const rivers = new Set([...(S.adj.riverByHex.get(a) || []), ...(S.adj.riverByHex.get(b) || [])]);
+  for (let i = 0; i + 1 < path.length; i++) for (const s of rivers)
+    if (s.minor && segIntersect(path[i][0], path[i][1], path[i + 1][0], path[i + 1][1], s.x1, s.y1, s.x2, s.y2)) return true;
   return false;
 }
 // (There is no longer a hex-centre-to-hex-centre test for *major* rivers. Whether one is in the way
@@ -4717,21 +4790,24 @@ const DISEMBARK_NOTE = DISEMBARK ? 'disembark +' + DISEMBARK + 'd' : 'disembark'
 // centres: a river bending between two hexes can leave their centres on opposite sides while the
 // regions being marched between are both on the near side, and asking the centres said "ferry" for
 // a march that never approached the water.
-function landStep(a, b, o, road, crossMajor, bRi) {
+function landStep(a, b, o, road, crossMajor, bRi, geom) {
   // Terrain is a property of the ground being marched onto, which is the destination *region* — a
   // hex split between hill and flat charges whichever half the column actually enters.
   const key = pairKey(a, b), tb = regionTerrain(b, bRi);
   const mpi = landMilesPerIRL({ road, terrain: tb, forced: o.forced, liThird: o.liThird, cavOnly: o.cavOnly, weather: o.weather, colMiles: o.colMiles });
   if (mpi <= 0) return null;
   let irl = RULES.HEX_MILES / mpi, note = road ? 'road' : 'off-road';
-  if (RULES.WATER.has(tb) || S.adj.coastHexes.has(b)) note += ' (coastal strip)';
+  // "Coastal strip" means walkable ground in a hex whose sheet terrain is water. Merely having a
+  // coast line somewhere in an otherwise ordinary land hex (an inlet or an inland lake) does not turn
+  // every dry region of that hex into coastal-strip terrain.
+  if (RULES.WATER.has(tb)) note += ' (coastal strip)';
   let fer = false;
   if (crossMajor) {
     // No fording a major river, by anyone, on or off a road: only a ferry gets you over. And it is a
     // place rather than a piece of road, so a column that marches up to one boards it either way.
     if (!S.adj.ferry.has(key)) return null;
     note += ', ferry'; fer = true; irl += NUDGE;
-  } else if (minorCross(a, b)) {
+  } else if (minorCross(a, b, geom)) {
     if (road) note += ', bridge';
     else if (!o.cavOnly) { const f = fordIRLDays(o.army, o.weather); if (f === null) return null; irl += f; note += ', ford minor +' + f.toFixed(1) + 'd'; }
     else note += ', ford (cav, free)';
@@ -4880,14 +4956,15 @@ function expand(h, ri, af, ships, g, o) {
       const crossMajor = !meet;
       if (crossMajor && !(ferried && regionOnEdge(n, rj, e))) continue;
       // off-road step is always available (slower, no road bonus), and drops us off any road (g:0)
-      const off = landStep(h, n, o, false, crossMajor, rj);
+      const dryGeom = crossMajor ? null : landStepGeometry(h, ri, n, rj);
+      const off = landStep(h, n, o, false, crossMajor, rj, dryGeom);
       // A ferry step bends through the crossing itself, so the drawn line meets the water where the
       // road does and nowhere else. Just the one vertex, then on to the destination as usual —
       // splicing in the ferry's road instead let the line wander off the step and, at the end of a
       // route, out past the final waypoint and back.
       if (off) {
         const fa = off.fer ? S.adj.ferryAt.get(pairKey(h, n)) : null;
-        let geom;
+        let geom = off.fer ? null : dryGeom;
         // Only draw the crossing when it is genuinely on the way. Whether the river is in the way is
         // decided between hex centres, but the line is drawn between subhex centroids — and at a
         // stronghold, its marker — so the crossing can end up behind where this step sets off. Bending
@@ -6521,7 +6598,7 @@ function roundBends(pts) {
     // Marker centres and the sampled arcs which coincide with marker rings are boundary conditions,
     // not ordinary corners. Filleting the 15-degree facets of a waypoint arc was subtly changing its
     // radius at every sample; filleting a centre could cut the waypoint out of the route altogether.
-    if (V[3] || V[4] || B[4]) { out.push(V); continue; }
+    if (V[3] || V[4] || B[4] || V[5]) { out.push(V); continue; }
     const L1 = Math.hypot(V[0] - A[0], V[1] - A[1]), L2 = Math.hypot(B[0] - V[0], B[1] - V[1]);
     if (L1 < 1e-9 || L2 < 1e-9) continue;
     const u1 = [(V[0] - A[0]) / L1, (V[1] - A[1]) / L1], u2 = [(B[0] - V[0]) / L2, (B[1] - V[1]) / L2];

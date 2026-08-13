@@ -513,7 +513,7 @@ The panel's "How long you actually have" note keeps that table within reach of t
 
 ## Movement semantics
 
-- Route lines visually trace the drawn feature they use: a road step follows the road's drawn path, and a sailing step follows a drawn river's path where one connects the two hexes (open-sea and off-road steps go centre-to-centre).
+- Route lines visually trace the drawn feature they use: a road step follows the road's drawn path, and a sailing step follows a drawn river's path where one connects the two hexes. Open-sea and ordinary off-road steps go centre-to-centre; where that chord would cut across a lake, bay, or other concave water boundary, an off-road step stays in its solved land subhex and bends around the shore.
 - Road between two hexes (drawn line passing from one to the other) → road speed; crossing a river on a road = bridge.
 - Roads are a **connected network**, not just per-hex adjacency: an army keeps road speed only while following one continuous road. Where the drawn line goes matters — two roads that merely pass through the same hex are treated as separate unless their lines actually **touch or cross** inside that hex (a junction), so you can't cut a corner or hop between parallel roads for free. An army can always leave a road and march off-road between adjacent hexes at the slower off-road rate (it just loses the road bonus), and re-join any road at the hex where it arrives.
 - Ferry is **not drawn** — there is no ferry tool. A ferry is simply what a road does where it crosses a major river, which nobody can ford: the step is free for the whole column, wagons included, and the breakdown labels it `road, ferry` (a road over a *minor* river is a `bridge`). Draw the road across the river and the ferry is there.
