@@ -2338,6 +2338,42 @@ function setRealmName(layer, c, name) {
   renderRealmPicker();
 }
 
+/* Change the colour which identifies a realm everywhere it currently holds ground. The scan stays an
+   immutable source image, so the result is stored as ordinary Map painting overrides. Matching
+   Warlords counters move with the realm, and the combined edit is restored by one undo entry. */
+function recolorRealm(layer, from, hex, coalesce) {
+  const to = rgbKey(hex);
+  if (!from || to === from) return;
+  const cells = [...(realmCols.get(layer) || [])].filter(([, c]) => c === from).map(([k]) => k);
+  if (!cells.length) return;
+
+  pushUndoEntry('realm-recolor', JSON.stringify({ features: S.features, tokens: S.tokens }), coalesce);
+  const all = S.features.realms || (S.features.realms = {});
+  const byHex = all[layer] || (all[layer] = {});
+  for (const k of cells) {
+    const p = k.indexOf(':'), h = k.slice(0, p), ri = k.slice(p + 1);
+    (byHex[h] || (byHex[h] = {}))[ri] = to;
+  }
+
+  // Preserve even a built-in legend name: its old colour key no longer identifies this entity.
+  const oldName = realmName(layer, from);
+  const names = S.features.realmNames || (S.features.realmNames = {});
+  const byColour = names[layer] || (names[layer] = {});
+  if (oldName) byColour[to] = oldName;
+  delete byColour[from];
+  if (!Object.keys(byColour).length) delete names[layer];
+
+  if (layer === 'warlords') {
+    for (const t of S.tokens)
+      if (String(t.color).toLowerCase() === rgbHex(from)) t.color = hex.toLowerCase();
+    tokensSnap = JSON.stringify(S.tokens);
+  }
+  realmPaint = to;
+  realmCustom.set(layer, to);
+  commitFeatures();
+  renderTokens(); renderTokenList(); saveTokens(); renderRealmPicker();
+}
+
 /* The Realm tool's palette. Not a list kept by hand — the choices are the colours that layer actually
    uses, read off the paint, most-used first. Whatever realms are on the map are what you can paint
    with, and a realm added to a scan turns up here without anyone editing a table. Warlord colours are
@@ -2518,25 +2554,51 @@ function renderRealmPicker() {
     const tokenNames = tokenColourNames(rgbHex(c));
     b.title = `${label} · ${rgbHex(c)}`
             + (tokenNames.length ? `\n${tokenNames.length === 1 ? 'Token' : 'Tokens'}: ${tokenNames.join(', ')}` : '')
-            + `\nDouble-click the swatch to go to it; double-click the name to rename.`
+            + `\nClick the swatch to recolour; right-click for entity actions.`
             + (kin > 1 ? `\nOne of ${kin} colours under this name; they are labelled as one polity.` : '');
-    /* Double-clicking the swatch takes the map to the realm. The palette is read off the paint, so every
+    /* The entity menu can still take the map to the realm. The palette is read off the paint, so every
        entry in it is somewhere on the map by construction — but a wash of two subhexes on a coast three
        screens away is a colour you can select and then not find, and the question "where is this one?"
        has no other answer. It goes to the *largest* piece and only pans, never zooms, for the same reason
        the search only pans: you have already decided how closely you want to look.
 
-       On the swatch rather than on the whole button because the name is the rename target, and one
+       In the menu rather than on the whole button because the name is the rename target, and one
        element cannot carry two double-clicks. The clicks underneath still load the brush, which is no
        loss — you were pointing at that realm anyway. */
-    b.querySelector('.sw').ondblclick = e => { e.stopPropagation(); panToRealm(layer, c); };
-    b.querySelector('.nm').ondblclick = e => {
-      e.stopPropagation();
+    const rename = async () => {
       const cur = realmName(layer, c) ?? '';
-      const n = prompt(`Name for ${rgbHex(c)} on the ${layer} map.\n\n`
-                     + 'Give two or more colours the same name and they are labelled as one polity — '
-                     + 'which is how a federation is made. Clear the text to fall back to the legend.', cur);
+      const n = await askText(`Rename ${label}`, cur,
+        `Colour ${rgbHex(c)} on the ${layer} map.\n\n` +
+        'Give two or more colours the same name and they are labelled as one polity — ' +
+        'which is how a federation is made. Clear the text to fall back to the legend.');
       if (n !== null && n.trim() !== cur) setRealmName(layer, c, n);
+    };
+    const buildRecolour = box => {
+      let from = c;
+      buildColorPanel(box, TOKEN_COLORS, () => rgbHex(from), hex => {
+        const next = rgbKey(hex);
+        recolorRealm(layer, from, hex, `realmcolor:${layer}:${c}`);
+        from = next;
+      });
+    };
+    const recolour = anchor => {
+      const r = anchor.getBoundingClientRect();
+      openCtx(r.left - 6, r.bottom + 6, box => {
+        ctxHead(box, `<b>${escHtml(label)}</b> — colour`);
+        buildRecolour(box);
+      });
+    };
+    b.querySelector('.sw').onclick = e => { e.stopPropagation(); recolour(e.currentTarget); };
+    b.querySelector('.nm').ondblclick = e => { e.stopPropagation(); rename(); };
+    b.oncontextmenu = e => {
+      e.preventDefault(); e.stopPropagation();
+      openCtx(e.clientX, e.clientY, box => {
+        ctxHead(box, `<span class="sw" style="background:${rgbHex(c)}"></span><b>${escHtml(label)}</b>`);
+        ctxItem(box, 'Rename…', () => { closeCtx(); rename(); });
+        ctxFlyout(ctxItem(box, `<span class="sw" style="background:${rgbHex(c)}"></span>Recolour<span class="arw">▸</span>`),
+                  buildRecolour);
+        ctxItem(box, 'Centre largest area', () => { closeCtx(); panToRealm(layer, c); });
+      });
     };
   };
   for (const c of cols) colourSwatch(c);
@@ -3209,7 +3271,14 @@ function undoLast() {
   if (!u) return false;
   // Migrated on the way back too: the stack can hold a snapshot taken before the shape changed.
   if (u.k === 'features') { S.features = migrateFeatures(JSON.parse(u.d)); commitFeatures(); }
-  else if (u.k === 'tokens') {
+  else if (u.k === 'realm-recolor') {
+    const before = JSON.parse(u.d);
+    S.features = migrateFeatures(before.features);
+    S.tokens = normalizeTokens(before.tokens) || [];
+    tokensSnap = JSON.stringify(S.tokens);
+    commitFeatures();
+    renderTokens(); renderTokenList(); saveTokens(); renderRealmPicker();
+  } else if (u.k === 'tokens') {
     S.tokens = JSON.parse(u.d); tokensSnap = u.d;
     renderTokens(); renderTokenList(); saveTokens();
   } else if (u.k === 'routes') {
@@ -6304,9 +6373,9 @@ function renderIsoList() {
                        ISO_COLORS, () => og.color,
                        c => { pushUndoRoutes('isocolor' + i); og.color = c; computeRoute(); });
     };
-    div.querySelector('.nm').ondblclick = e => {
+    div.querySelector('.nm').ondblclick = async e => {
       e.stopPropagation();
-      const n = prompt('Origin name:', og.name);
+      const n = await askText('Rename origin', og.name);
       if (n && n.trim()) { pushUndoRoutes(); og.name = n.trim(); computeRoute(); }
     };
     div.querySelector('.mn').onclick = e => {
@@ -7558,6 +7627,34 @@ function waypointAt(h, ri) {
   });
   return best;
 }
+
+/* Where a traversed hex belongs in a route's waypoint list. Solver steps carry their leg index, so a
+   waypoint planted on a line can be spliced between the two stops which actually surround it instead
+   of being appended to the end. Trade-route steps may cover a whole chain in one hop; their internal
+   hexes belong to that same leg even though they do not each have a step row of their own. */
+function routeInsertionAt(routeIndex, h, ri) {
+  const rt = S.routes[routeIndex], steps = lastResults[routeIndex]?.steps;
+  if (!rt || !steps?.length) return null;
+  // A stop already in this exact place is already the draggable waypoint the gesture is asking for.
+  if (rt.wps.some(w => w.h === h && (w.ri | 0) === (ri | 0))) return null;
+  const candidates = [];
+  steps.forEach((st, j) => {
+    if (j === 0) return;                         // the route's starting waypoint
+    const direct = st.h === h && !st.wp;         // ordinary passed-through hex
+    const chain = st.chain || [];
+    const insideHop = chain.length > 2 && chain.slice(1, -1).includes(h);
+    if (!direct && !insideHop) return;
+    candidates.push({ at: Math.min(rt.wps.length - 1, (st.leg | 0) + 1),
+                      exact: (st.ri | 0) === (ri | 0), j });
+  });
+  candidates.sort((a, b) => Number(b.exact) - Number(a.exact) || a.j - b.j);
+  return candidates[0] || null;
+}
+
+function ordinal(n) {
+  const ord = n % 100 >= 11 && n % 100 <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] || 'th';
+  return n + ord;
+}
 // An empty route is left standing, exactly as removing the last waypoint by button leaves it: the
 // route is still yours to add to, and deleting it is the × in the list.
 /* ---------------- acting on a step of the readout ----------------
@@ -7879,9 +7976,9 @@ function openRouteMenu(i, x, y) {
     // Renaming lives here now. It used to be a double-click on the name in the row, which the name filled
     // nearly all of — so double-clicking "the row" mostly hit it, and the gesture the row plainly wants
     // is the breakdown. A menu the row already has is a better home for the rarer of the two.
-    ctxItem(box, 'Rename…', () => {
+    ctxItem(box, 'Rename…', async () => {
       closeCtx();
-      const n = prompt('Route name:', rt.name);
+      const n = await askText('Rename route', rt.name);
       if (n) { pushUndoRoutes(); rt.name = n; computeRoute(); }
     });
     ctxItem(box, 'Duplicate route', () => { closeCtx(); cloneRoute(i); });
@@ -8538,7 +8635,7 @@ svg.addEventListener('dblclick', e => {
   }
 });
 
-function drawClick(wx, wy, scale, e) {
+async function drawClick(wx, wy, scale, e) {
   if (S.tool === 'realm') { (realmDropper ? pickRealmAt : paintRealmAt)(wx, wy); return; }
   if (S.tool === 'erase') {
     const thr = 8 / scale * 1.5 + 3;
@@ -8641,8 +8738,9 @@ function drawClick(wx, wy, scale, e) {
        redrawn a hex away. The sheet's own name is offered in the message instead, which makes
        putting it back a matter of retyping what is in front of you rather than a gesture nobody
        could have guessed. */
-    const name = prompt(`Name for hex ${h}${sub}${m ? ' (stronghold)' : ''} — rename, or clear to remove.` +
-                        (!m && sheet ? `\nThe datasheet calls it ${sheet}.` : ''), cur);
+    const name = await askText(m ? 'Rename stronghold' : 'Name map location', cur,
+      `Hex ${h}${sub}${m ? ' · stronghold' : ''}. Clear the text to remove the name.` +
+      (!m && sheet ? `\nThe datasheet calls it ${sheet}.` : ''));
     if (name === null) return;
     pushUndo();
     const t = name.trim();
@@ -8733,7 +8831,7 @@ function overlappingRiver(nf) {
 
    The async clipboard API needs a secure context, so it is there on the published map and absent when
    the file is opened straight off disk. Rather than fail quietly in the case a person is most likely
-   to be testing in, both directions fall back to a prompt box: on copy it holds the text ready to be
+   to be testing in, both directions fall back to the app dialog: on copy it holds the text ready to be
    taken with Ctrl+C, on paste it waits for Ctrl+V. Clumsier, but it always works. */
 let toastT = null;
 function toast(msg, bad) {
@@ -8745,13 +8843,75 @@ function toast(msg, bad) {
   clearTimeout(toastT);
   toastT = setTimeout(() => t.classList.remove('on'), bad ? 4200 : 2000);
 }
+
+/* A single app-owned replacement for prompt, confirm and alert. Besides matching the map, this keeps
+   the entity being edited visible behind the question and gives clipboard fallbacks a proper multiline
+   field. The promise preserves the native calls' useful contract: text or true on OK, null/false on
+   cancel. */
+function appQuestion({ title, message = '', value, multiline = false, notice = false,
+                       ok = 'OK', cancel = 'Cancel', danger = false, select = true }) {
+  const dlg = document.getElementById('appDialog');
+  const form = dlg.querySelector('form');
+  const input = document.getElementById('appDialogInput');
+  const area = document.getElementById('appDialogText');
+  const field = multiline ? area : input;
+  const hasField = value !== undefined;
+  const cancelBtn = document.getElementById('appDialogCancel');
+  const okBtn = document.getElementById('appDialogOK');
+
+  document.getElementById('appDialogTitle').textContent = title;
+  const messageEl = document.getElementById('appDialogMessage');
+  messageEl.textContent = message;
+  messageEl.hidden = !message;
+  input.hidden = !hasField || multiline;
+  area.hidden = !hasField || !multiline;
+  if (hasField) field.value = String(value ?? '');
+  cancelBtn.hidden = notice;
+  cancelBtn.textContent = cancel;
+  okBtn.textContent = ok;
+  okBtn.classList.toggle('danger', danger);
+  okBtn.classList.toggle('on', !danger);
+  dlg.returnValue = '';
+
+  return new Promise(resolve => {
+    const finish = () => {
+      const accepted = dlg.returnValue === 'ok';
+      resolve(hasField ? (accepted ? field.value : null) : (accepted ? true : false));
+    };
+    form.onsubmit = e => { e.preventDefault(); dlg.close('ok'); };
+    cancelBtn.onclick = () => dlg.close('cancel');
+    input.onkeydown = e => {
+      if (e.key === 'Enter') { e.preventDefault(); dlg.close('ok'); }
+    };
+    area.onkeydown = e => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); dlg.close('ok'); }
+    };
+    // Some embedded browsers do not apply the native dialog's Escape default. Make cancellation an
+    // explicit part of the component so it behaves the same there and in a standalone browser.
+    dlg.onkeydown = e => {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); dlg.close('cancel'); }
+    };
+    dlg.addEventListener('close', finish, { once: true });
+    dlg.showModal();
+    requestAnimationFrame(() => {
+      if (hasField) { field.focus(); if (select) field.select(); }
+      else okBtn.focus();
+    });
+  });
+}
+const askText = (title, value = '', message = '', opts = {}) =>
+  appQuestion({ title, value, message, ...opts });
+const askConfirm = (title, message = '', opts = {}) =>
+  appQuestion({ title, message, ok: 'Confirm', danger: true, ...opts });
+const showNotice = (title, message = '') => appQuestion({ title, message, notice: true });
+
 async function copyText(text, what) {
   try {
     await navigator.clipboard.writeText(text);
     toast(what + ' copied');
   } catch {
     // No clipboard permission, or no secure context. Show the text instead of pretending.
-    window.prompt(what + ' — press Ctrl+C to copy, then Enter:', text);
+    await askText('Copy ' + what, text, 'Select the text and copy it.', { multiline: true });
   }
 }
 async function pasteText(what) {
@@ -8759,7 +8919,8 @@ async function pasteText(what) {
     const t = await navigator.clipboard.readText();
     if (t && t.trim()) return t;
   } catch {}
-  return window.prompt('Paste ' + what + ' here, then press Enter:', '') || '';
+  return await askText('Paste ' + what, '', 'Paste the text below, then choose OK.',
+                       { multiline: true, select: false }) || '';
 }
 
 function flashReject(p) {
@@ -9184,7 +9345,7 @@ document.getElementById('importInput').onchange = async e => {
     // Rendering and derivation are deliberately inside the transaction too. Schema validation should
     // catch bad input first, but an unexpected failure still restores both memory and local storage.
     if (previous) { S.features = previous; try { commitFeatures(); } catch {} }
-    alert('Not a valid features.json');
+    await showNotice('Import failed', 'That file is not a valid features.json.');
   }
   e.target.value = '';
 };
@@ -9296,9 +9457,9 @@ function setSaving(on) {
 }
 
 async function resetDrawing() {
-  if (!confirm('Discard local drawing and reload data/features.json?')) return;
+  if (!await askConfirm('Reset drawing?', 'Discard the local drawing and reload data/features.json?')) return;
   const ff = await fetchFeaturesFile();
-  if (!ff) return alert('Could not load data/features.json.');
+  if (!ff) return showNotice('Reset failed', 'Could not load data/features.json.');
   // Only while saving is on — off means storage is not written to *or* deleted from, so a reset made in
   // a throwaway session leaves the saved work the switch was turned off to protect.
   if (saveOn()) try {
@@ -9895,9 +10056,9 @@ function buildMarkGrid(box, h) {
     grid.appendChild(b);
   }
   box.appendChild(grid);
-  const custom = ctxItem(box, 'Custom text…', () => {
-    const v = prompt('Token text:', '');
+  const custom = ctxItem(box, 'Custom text…', async () => {
     closeCtx();
+    const v = await askText('New token', '', 'Enter the designation shown on the counter.');
     if (v && v.trim()) addToken(h, v.trim());
   });
   custom.style.marginTop = '5px';
@@ -10099,9 +10260,9 @@ function hexMenu(h, pt, wp) {
             commitFeatures();
             closeCtx();
           });
-          ctxItem(s, 'Rename…', () => {
-            const n = prompt(`Name for this stronghold (hex ${h}):`, shName(h, m));
+          ctxItem(s, 'Rename…', async () => {
             closeCtx();
+            const n = await askText('Rename stronghold', shName(h, m), `Hex ${h}`);
             if (n === null) return;
             pushUndo();
             shEnsure(h, shRi).name = n.trim();
@@ -10110,6 +10271,29 @@ function hexMenu(h, pt, wp) {
         }
       });
     }
+    /* A hex the solved line passes through can become a real waypoint in that exact leg. This is the
+       route-editing handle a line itself cannot be: once inserted, its ordinary marker can be dragged
+       like any other waypoint. Check every route because two marches may share a road; active first so
+       the route currently being worked on remains the first offer. */
+    const clickedRi = pt ? regionAt(h, pt) : 0;
+    const routeOrder = S.routes.map((_, i) => i)
+      .sort((a, b) => (a === S.activeRoute ? -1 : b === S.activeRoute ? 1 : a - b));
+    const insertions = routeOrder.map(ri => ({ ri, ins: routeInsertionAt(ri, h, clickedRi) }))
+                                 .filter(x => x.ins);
+    for (const { ri, ins } of insertions) {
+      const rt = S.routes[ri];
+      ctxItem(box, `Insert waypoint here<span class="arw">${escHtml(rt.name)} · ${ordinal(ins.at + 1)}</span>`, () => {
+        closeCtx();
+        pushUndoRoutes();
+        const w = { h, ri: clickedRi };
+        // Splitting a forced leg must not quietly turn its second half back to ordinary pace.
+        if (rt.wps[ins.at - 1]?.f) w.f = rt.wps[ins.at - 1].f;
+        rt.wps.splice(ins.at, 0, w);
+        S.activeRoute = ri;
+        computeRoute();
+      });
+    }
+
     /* Extending the route you are already building, from the menu rather than by clicking the map.
        A left-click does this too — but only while the map is listening for waypoints, and it is not
        whenever the Isochrone panel is open, where every click moves an origin instead. Plotting a
@@ -10118,10 +10302,11 @@ function hexMenu(h, pt, wp) {
 
        Nothing here changes the mode or the open panel, deliberately. The request is to add a
        waypoint, not to be taken somewhere else — that is the whole reason the entry exists. */
-    if (act) {
+    // When the active route already crosses this hex, insertion above is the intended action. Appending
+    // the same place at the far end would produce a large accidental loop under an almost identical row.
+    if (act && !insertions.some(x => x.ri === S.activeRoute)) {
       const n = act.wps.length + 1;
-      const ord = n % 100 >= 11 && n % 100 <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] || 'th';
-      ctxItem(box, `Add waypoint here<span class="arw">${escHtml(act.name)} · ${n}${ord}</span>`, () => {
+      ctxItem(box, `Add waypoint here<span class="arw">${escHtml(act.name)} · ${ordinal(n)}</span>`, () => {
         closeCtx();
         if (!S.adj) deriveAdj();
         pushUndoRoutes();
@@ -10266,18 +10451,18 @@ document.getElementById('routeOut').addEventListener('click', e => {
 function tokenMenu(t) {
   return box => {
     ctxHead(box, `<b>${escHtml(t.label)}</b>${t.name ? ' · ' + escHtml(t.name) : ''} — token`);
-    ctxItem(box, 'Rename…', () => {
-      const v = prompt('Token text:', t.label);
+    ctxItem(box, 'Rename…', async () => {
       closeCtx();
+      const v = await askText('Rename token', t.label, 'Enter the designation shown on the counter.');
       if (v != null && v.trim()) { t.label = v.trim().slice(0, TOK_MAXLEN); commitTokens(); }
     });
     /* The designation and the commander are two separate things to set, so they are two entries rather
        than one prompt asking for both. The item says which it is holding, so a counter with a commander
        shows the name here and one without shows the invitation. */
-    ctxItem(box, t.name ? `Commander: <b style="color:#fff">${escHtml(t.name)}</b>` : 'Commander…', () => {
-      const v = prompt('Who commands this force? Leave blank for none — not every force has a name.',
-                       t.name || '');
+    ctxItem(box, t.name ? `Commander: <b style="color:#fff">${escHtml(t.name)}</b>` : 'Commander…', async () => {
       closeCtx();
+      const v = await askText('Set commander', t.name || '',
+                              'Who commands this force? Leave blank for none — not every force has a name.');
       if (v == null) return;
       const n = v.trim().slice(0, TOK_NAME_MAXLEN);
       if (n) t.name = n; else delete t.name;
@@ -10321,17 +10506,18 @@ function setTokenPick(on) {
 document.getElementById('tokPlace').onclick = () => setTokenPick(!S.tokenPick);
 document.getElementById('tokStart').onclick = async () => {
   const arr = await fetchStartingTokens();
-  if (!arr) return alert('No data/tokens.json to load.');
-  if (S.tokens.length && !confirm(`Replace the ${S.tokens.length} tokens on the map with the ${arr.length} starting positions?`)) return;
+  if (!arr) return showNotice('Starting positions unavailable', 'No data/tokens.json could be loaded.');
+  if (S.tokens.length && !await askConfirm('Load starting positions?',
+      `Replace the ${S.tokens.length} tokens on the map with ${arr.length} starting positions?`)) return;
   S.tokens = arr;
   // Taking the shipped board wholesale also takes its colours, so this browser is up to date with that
   // publication by definition — recording it stops the recolour pass finding work to do on next boot.
   if (startingTokensStamp && saveOn()) try { localStorage.setItem(TOK_SRC_LS, startingTokensStamp); } catch {}
   commitTokens();
 };
-function clearAllTokens() {
+async function clearAllTokens() {
   if (!S.tokens.length) return;
-  if (!confirm(`Remove all ${S.tokens.length} tokens from the map?`)) return;
+  if (!await askConfirm('Clear all tokens?', `Remove all ${S.tokens.length} tokens from the map?`)) return;
   S.tokens = [];
   commitTokens();
 }
@@ -10351,7 +10537,7 @@ document.getElementById('tokImport').onchange = async e => {
     if (!arr) throw 0;
     S.tokens = arr;
     commitTokens();
-  } catch { alert('Not a valid tokens.json'); }
+  } catch { await showNotice('Import failed', 'That file is not a valid tokens.json.'); }
   e.target.value = '';
 };
 

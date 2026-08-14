@@ -302,11 +302,11 @@
           the active colour again removes your override. <b>Nobody</b> clears a claim from the source
           scan. Painted changes are included in the features JSON.
           <p><b>Custom colour…</b> adds a colour to the palette. <b>Pick from map</b> samples the next
-          subhex. Warlords also includes colours assigned to tokens. Double-click a swatch to pan to
-          the largest area using that colour.</p>
+          subhex. Warlords also includes colours assigned to tokens. Click an existing entity's swatch
+          to recolour it, or right-click its row to rename, recolour, or centre it on the map.</p>
           <p>Right-click the map to paint or clear one subhex, paint a whole commandery, undo, or reset
           the drawing to its shipped data. Commandery painting covers land only.</p>
-          <p>Double-click a colour name to rename it. Colours with the same name are treated as one
+          <p>Double-clicking a colour name still renames it directly. Colours with the same name are treated as one
           polity for map labels, while remaining separate paint colours. Clear a custom name to use
           the built-in legend again.</p>
           <p>The <b>A</b> button on the Borders, Commanderies and Warlords layer rows shows their names on
@@ -501,6 +501,22 @@
 </div>
 
 <div id="ctxMenu" hidden></div>
+
+<!-- Every text entry, notice and confirmation uses the map's own surface. Native alert/prompt boxes
+     carry the browser's branding, cannot be styled, and visually detach a small edit from the entity
+     being edited. One dialog serves all four shapes; script supplies only its words and field type. -->
+<dialog id="appDialog" aria-labelledby="appDialogTitle" aria-describedby="appDialogMessage">
+  <form method="dialog">
+    <h2 id="appDialogTitle"></h2>
+    <p id="appDialogMessage"></p>
+    <input id="appDialogInput" type="text" autocomplete="off">
+    <textarea id="appDialogText" rows="8"></textarea>
+    <div class="dialogActions">
+      <button class="btn" type="button" id="appDialogCancel">Cancel</button>
+      <button class="btn on" type="submit" id="appDialogOK">OK</button>
+    </div>
+  </form>
+</dialog>
 
 <script src="rules.js"></script>
 <script src="app.js"></script>
