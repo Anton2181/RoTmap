@@ -223,7 +223,7 @@ const S = {
   tokens: [], tokenPick: false,   // counters dropped on hexes; tokenPick = next tap places one
   /* Isochrones are a list for the same reason routes are: a campaign has several forces in it, and the
      interesting question is usually not "how far can this one get" but "where do these two meet".
-     `origins` each carry a hex, a colour and a column of their own; `data` is one reach map per origin,
+     `origins` each carry a hex, colour, spread, horizon and column of their own; `data` is one reach map per origin,
      index for index; `own` and `best` are what falls out of comparing them — which origin reaches each
      hex first, and how soon. An origin with h === null has been made but not yet placed. */
   iso: { origins: [], active: -1, data: [], parts: [], own: null, best: null }, isoPick: false,
@@ -3193,7 +3193,7 @@ function pushUndo() { pushUndoEntry('features', JSON.stringify(S.features)); }
 // Routes and tokens each keep the state as of their last commit, so the "before" snapshot is always
 // already to hand and no call site has to remember to take one at the right moment.
 let routesSnap = null, tokensSnap = null;
-// Isochrone origins ride along in the routes snapshot. They are cheap — a hex, a colour, a column —
+// Isochrone origins ride along in the routes snapshot. They are cheap — a point and its reach settings —
 // and now that each carries an army of its own they are exactly the sort of thing worth getting back
 // after a mistaken edit. The derived reach maps are not saved; they are recomputed from the origins.
 const snapRoutes = () => JSON.stringify({
@@ -4388,6 +4388,7 @@ function syncRouteForm() {
   setFor('settingsFor', rt ? rt.name : 'no route — defaults');
   setFor('isoFor', og ? og.name : 'no origin — defaults');
   syncingForm = false;
+  syncIsoForm();
 }
 function readRouteForm(changedId) {
   if (syncingForm) return;
@@ -5998,11 +5999,32 @@ function optColor(b, n) {
 }
 // An army-mode idea only: a straight-line spread has no orders in it to round up, and relief already
 // bills every leg in whole days, so there is nothing left over for the optimizer to shade.
-function isoOptimizing() {
-  return isoMode() === 'army' && !!document.getElementById('isoOpt')?.checked;
+const ISO_MAX_DEFAULT = { army: 7, message: 7, rumour: 7, relief: 4 };
+const ISO_MODE_NAME = { army: 'Army', message: 'Message', rumour: 'Rumour', relief: 'Relief' };
+function isoMode(og = activeIsoOrigin()) {
+  return og?.mode || document.getElementById('isoMode')?.value || 'army';
 }
-function isoMode() { return document.getElementById('isoMode')?.value || 'army'; }
-function isoRelief() { return isoMode() === 'relief'; }
+function isoMaxDays(og = activeIsoOrigin()) {
+  const mode = isoMode(og), n = +(og?.maxDays ?? document.getElementById('isoMax')?.value);
+  return n > 0 ? n : ISO_MAX_DEFAULT[mode];
+}
+function isoOptimizing(og = activeIsoOrigin()) {
+  const on = og ? !!og.optimize : !!document.getElementById('isoOpt')?.checked;
+  return isoMode(og) === 'army' && on;
+}
+function isoRelief(og = activeIsoOrigin()) { return isoMode(og) === 'relief'; }
+
+let syncingIsoForm = false;
+function syncIsoForm() {
+  const og = activeIsoOrigin(), mode = isoMode(og);
+  syncingIsoForm = true;
+  document.getElementById('isoMode').value = mode;
+  document.getElementById('isoMax').value = isoMaxDays(og);
+  document.getElementById('isoNews').value = og?.news || 'rumour';
+  document.getElementById('isoOpt').checked = !!og?.optimize;
+  syncingIsoForm = false;
+  updateIsoSettingsShown();
+}
 
 /* ---------------- relief: how far out a force can be stationed and still save the place ----------
    A siege begins somewhere. Word of it has to reach an army before that army can march, so the
@@ -6140,8 +6162,8 @@ function reliefAll(fromNode, o, newsSpeed, maxD) {
    days, which is a Voronoi diagram drawn in travel time rather than in miles, and looks nothing like
    one: a road or a river bends a border a long way, and a mountain range holds it still.
 
-   Each origin marches as its own army, so the race is between forces rather than between points. That
-   is deliberate but worth remembering when reading a border: it moves if you change either column. */
+   Each origin uses its own spread, horizon and (for army/relief modes) column, so the race is between
+   plans rather than bare points. A border moves when any of those settings changes. */
 const ISO_COLORS = PALETTE;      // the grid an origin's swatch opens, in the one order
 /* Handing out is a different question from reading. An origin's colour is drawn as a thin outline
    around the ground it claims, and the two quietest spares — near-white and charcoal — are the two
@@ -6161,7 +6183,12 @@ function freeIsoName() {
 // same force setting out from somewhere else, and retyping the army to find that out is the tedium
 // this list exists to remove.
 function newIsoOrigin(h, ri) {
-  return { h: h ?? null, ri: ri | 0, color: freeIsoColor(), name: freeIsoName(), set: { ...activeSettings() } };
+  const src = activeIsoOrigin(), mode = isoMode(src);
+  return { h: h ?? null, ri: ri | 0, color: freeIsoColor(), name: freeIsoName(),
+           mode, maxDays: isoMaxDays(src),
+           news: src?.news || document.getElementById('isoNews')?.value || 'rumour',
+           optimize: src?.optimize ?? !!document.getElementById('isoOpt')?.checked,
+           set: { ...activeSettings() } };
 }
 /* A board saved before any of this had one origin under `iso.origin`, or none, and no colours, names or
    columns on it. Run before anything reads the list, so no other code has to know the old shape. */
@@ -6172,7 +6199,9 @@ function migrateIso() {
     // Built by hand rather than through newIsoOrigin: `sea` is how the very oldest saves said which
     // half of a split hex they meant, and that has to be turned into a region index here.
     const ri = iso.origin.ri ?? Math.max(0, regionsOf(iso.origin.h).findIndex(r => !!r.sea === !!iso.origin.sea));
-    iso.origins.push({ h: iso.origin.h, ri: ri | 0, color: freeIsoColor(), name: freeIsoName(), set: { ...SETTINGS } });
+    iso.origins.push({ h: iso.origin.h, ri: ri | 0, color: freeIsoColor(), name: freeIsoName(),
+                       mode: 'army', maxDays: ISO_MAX_DEFAULT.army, news: 'rumour', optimize: false,
+                       set: { ...SETTINGS } });
     iso.origin = null;
     iso.active = iso.origins.length - 1;
   }
@@ -6181,6 +6210,10 @@ function migrateIso() {
     if (!og.color) og.color = freeIsoColor();
     if (!og.name) og.name = freeIsoName();
     if (!og.set) og.set = { ...SETTINGS };
+    if (!ISO_MAX_DEFAULT[og.mode]) og.mode = 'army';
+    if (!(+og.maxDays > 0)) og.maxDays = ISO_MAX_DEFAULT[og.mode];
+    if (!RULES.SPREAD[og.news]) og.news = 'rumour';
+    og.optimize = !!og.optimize;
   }
   if (iso.active >= iso.origins.length) iso.active = iso.origins.length - 1;
   if (iso.active < 0 && iso.origins.length) iso.active = 0;
@@ -6190,12 +6223,12 @@ const placedOrigins = () => S.iso.origins.filter(o => o.h != null).length;
 /* Who holds each hex, and how soon they get there. Strictly-less means a tie goes to the origin that
    already holds the hex, which is the earlier one in the list — arbitrary, but stable, and a contested
    hex must not flicker between two owners every time something unrelated is recomputed. */
-function assignIsoOwners(maxD) {
+function assignIsoOwners() {
   const own = new Map(), best = new Map();
   S.iso.data.forEach((m, i) => {
     if (!m) return;
     for (const [key, d] of m) {          // key is a subhex, so two halves of a hex can fall differently
-      if (d > maxD) continue;
+      if (d > isoMaxDays(S.iso.origins[i])) continue;
       const cur = best.get(key);
       if (cur === undefined || d < cur) { best.set(key, d); own.set(key, i); }
     }
@@ -6210,7 +6243,7 @@ function isoRunnerUp(key) {
   S.iso.data.forEach((m, i) => {
     if (!m || i === winner) return;
     const d = m.get(key);
-    if (d !== undefined && d < bd) { bd = d; bi = i; }
+    if (d !== undefined && d <= isoMaxDays(S.iso.origins[i]) && d < bd) { bd = d; bi = i; }
   });
   return bi < 0 ? null : { i: bi, d: bd };
 }
@@ -6259,9 +6292,10 @@ function renderIsoList() {
     div.className = 'rtitem' + (i === S.iso.active ? ' on' : '');
     const n = held.get(i) || 0;
     const where = og.h == null ? 'unplaced' : n ? `${n} hex${n === 1 ? '' : 'es'}` : `hex ${og.h}`;
+    const spread = `${ISO_MODE_NAME[isoMode(og)]} · ${isoMaxDays(og)}d`;
     div.innerHTML = `<span class="sw" style="background:${og.color}" title="Change colour"></span>` +
       `<span class="nm" title="Click to select, double-click to rename">${escHtml(og.name)}</span>` +
-      `<span class="tm">${where}</span>` +
+      `<span class="tm">${spread} · ${where}</span>` +
       `<span class="mn" title="More — copy or paste this origin's column, delete it">⋯</span>` +
       `<span class="x" title="Delete origin">×</span>`;
     div.querySelector('.sw').onclick = e => {
@@ -6375,15 +6409,72 @@ function placeIsoOrigin(h, ri) {
   S.isoPick = false;
 }
 
+/* Large isochrones are cheap to solve and expensive to *pan*. Seven message days cover nearly the
+   whole map: the vector answer is thousands of region subpaths plus an equally large mask per origin,
+   all of which the browser rasterises again whenever the SVG viewBox moves. Once an answer has settled,
+   paint those same paths into one map-sized bitmap. Panning then moves a single image; the origin rings
+   remain live SVG above it, and a failed/unsupported canvas simply leaves the vector answer in place. */
+const ISO_RASTER_MIN = 900;
+let isoRasterSeq = 0, isoRasterUrl = null;
+function queueIsoRaster(img, vector, byBand, outlines, color, n, lineW, seq) {
+  const build = () => {
+    if (seq !== isoRasterSeq) return;
+    try {
+      const cv = document.createElement('canvas');
+      cv.width = Math.ceil(S.G.image_width); cv.height = Math.ceil(S.G.image_height);
+      const ctx = cv.getContext('2d');
+      if (!ctx || typeof Path2D === 'undefined') return;
+      byBand.forEach((d, b) => {
+        if (!d) return;
+        ctx.fillStyle = color(b, n);
+        ctx.fill(new Path2D(d), 'evenodd');
+      });
+      // Clip each stroke to the outside of its own area, exactly as the SVG mask does. Drawing all
+      // casings before all colours preserves a neighbour's coloured edge over the shared dark casing.
+      const outsideStroke = (o, stroke, width, alpha) => {
+        const area = new Path2D(o.d), outside = new Path2D();
+        outside.rect(-20, -20, cv.width + 40, cv.height + 40);
+        outside.addPath(area);
+        ctx.save(); ctx.clip(outside, 'evenodd');
+        ctx.strokeStyle = stroke; ctx.lineWidth = width; ctx.lineJoin = 'round'; ctx.globalAlpha = alpha;
+        ctx.stroke(area); ctx.restore();
+      };
+      for (const o of outlines) outsideStroke(o, '#0c1015', 2 * (lineW(o.i) + 2.6), 0.55);
+      for (const o of [...outlines].sort((a, b) => (a.i === S.iso.active) - (b.i === S.iso.active)))
+        outsideStroke(o, o.og.color, 2 * lineW(o.i), 1);
+
+      const ready = url => {
+        if (!url) return;
+        if (seq !== isoRasterSeq) { if (url.startsWith('blob:')) URL.revokeObjectURL(url); return; }
+        if (url.startsWith('blob:')) isoRasterUrl = url;
+        img.setAttribute('href', url);
+        vector.remove();                         // do not leave the slow hidden geometry in the SVG
+      };
+      if (cv.toBlob) cv.toBlob(bl => ready(bl ? URL.createObjectURL(bl) : null), 'image/png');
+      else ready(cv.toDataURL('image/png'));
+    } catch { /* vector fallback is already on screen */ }
+  };
+  // Let the freshly computed vector answer reach the screen first; rasterising is a cache fill, not
+  // something an origin move should wait for. The timeout prevents a busy page postponing it forever.
+  if (typeof requestIdleCallback === 'function') requestIdleCallback(build, { timeout: 120 });
+  else setTimeout(build, 0);
+}
+
 function renderIso() {
+  const rasterSeq = ++isoRasterSeq;
+  if (isoRasterUrl) { URL.revokeObjectURL(isoRasterUrl); isoRasterUrl = null; }
   groups.iso.innerHTML = '';
   const lg = document.getElementById('isoLegend');
   lg.innerHTML = '';
   renderIsoList();
   if (!S.iso.own || !S.iso.own.size) return;
-  const maxD = +document.getElementById('isoMax').value || 7;
-  const opt = isoOptimizing();
-  const relief = isoRelief();
+  const live = S.iso.origins.filter((og, i) => S.iso.data[i]);
+  const modes = new Set(live.map(isoMode)), mixed = modes.size > 1;
+  const maxD = Math.max(1, ...live.map(isoMaxDays));
+  // Optimizer and relief palettes have special meanings. Use them only when that meaning applies to
+  // every visible origin; mixed spreads share ordinary absolute-day bands so their race stays legible.
+  const opt = !mixed && live.length > 0 && live.every(isoOptimizing);
+  const relief = !mixed && live.length > 0 && live.every(isoRelief);
   // All three modes shade the same way — bucket every hex, batch each bucket into one path — and
   // differ only in what the bucket means and what the chip beside it should say. Relief needs no
   // band at all: its figures are already whole days, so one band per day is the only honest cut,
@@ -6417,7 +6508,12 @@ function renderIso() {
     const b = bucket(d);
     byBand[b] = (byBand[b] || '') + regionShape(h, r);
   }
-  byBand.forEach((d, b) => { if (d) el('path', { d, fill: color(b, n), 'fill-rule': 'evenodd', stroke: 'none' }, groups.iso); });
+  const wantRaster = S.iso.best.size >= ISO_RASTER_MIN && !isoDrag;
+  const rasterImg = wantRaster
+    ? el('image', { x: 0, y: 0, width: S.G.image_width, height: S.G.image_height,
+                    'pointer-events': 'none' }, groups.iso) : null;
+  const vector = el('g', { 'data-iso-vector': 1 }, groups.iso);
+  byBand.forEach((d, b) => { if (d) el('path', { d, fill: color(b, n), 'fill-rule': 'evenodd', stroke: 'none' }, vector); });
   /* Outlines after every fill: a border drawn before the neighbouring area is painted would be half
      buried by it. Two passes rather than one, because a coloured line laid straight onto these fills
      has almost nothing to read against — the palette and the green-to-red ramp are the same brightness,
@@ -6439,16 +6535,16 @@ function renderIso() {
   for (const { d, i } of outlines) {
     const id = 'isoEdgeMask' + i;
     const mask = el('mask', { id, maskUnits: 'userSpaceOnUse',
-                              x: 0, y: 0, width: S.G.image_width, height: S.G.image_height }, groups.iso);
+                              x: 0, y: 0, width: S.G.image_width, height: S.G.image_height }, vector);
     el('rect', { x: 0, y: 0, width: S.G.image_width, height: S.G.image_height, fill: '#fff' }, mask);
     el('path', { d, fill: '#000', 'fill-rule': 'evenodd' }, mask);
   }
   for (const { d, i } of outlines)
     el('path', { d, fill: 'none', stroke: '#0c1015', 'stroke-width': 2 * (lineW(i) + 2.6),
-                 'stroke-linejoin': 'round', opacity: 0.55, mask: `url(#isoEdgeMask${i})` }, groups.iso);
+                 'stroke-linejoin': 'round', opacity: 0.55, mask: `url(#isoEdgeMask${i})` }, vector);
   for (const { d, og, i } of [...outlines].sort((a, b) => (a.i === S.iso.active) - (b.i === S.iso.active)))
     el('path', { d, fill: 'none', stroke: og.color, 'stroke-width': 2 * lineW(i),
-                 'stroke-linejoin': 'round', mask: `url(#isoEdgeMask${i})` }, groups.iso);
+                 'stroke-linejoin': 'round', mask: `url(#isoEdgeMask${i})` }, vector);
   S.iso.origins.forEach((og, i) => {
     if (og.h == null) return;
     const [ox, oy] = nodePoint(og.h, og.ri | 0);
@@ -6460,13 +6556,15 @@ function renderIso() {
     el('circle', { cx: ox, cy: oy, r: act ? 6.5 : 5.5, fill: '#fff', stroke: og.color,
                    'stroke-width': act ? 2.8 : 2, 'pointer-events': 'none' }, g);
   });
+  if (wantRaster) queueIsoRaster(rasterImg, vector, byBand, outlines, color, n, lineW, rasterSeq);
   // Waste is not a distance, and five chips reading "0.4–0.6 d" would be taken for one if left
   // unlabelled beside the band legend they replace.
-  if (opt || relief) {
+  if (opt || relief || mixed) {
     const cap = document.createElement('div');
     cap.className = 'isocap';
     cap.textContent = relief ? 'Total days: news out, relief march back:'
-                             : 'Time lost by rounding up:';
+                    : opt ? 'Time lost by rounding up:'
+                          : 'Arrival time · each origin uses its own spread and limit:';
     lg.appendChild(cap);
   }
   for (let b = 0; b < n; b++) {
@@ -7207,17 +7305,16 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
   // that now depends on which panel is open, and the readout below must describe the route whatever
   // panel that happens to be.
   const o = armyOpts(S.routes[S.activeRoute]?.set);
-  const mode = isoMode();
-  const isoMax = +document.getElementById('isoMax').value || 7;
-  const newsSpeed = RULES.SPREAD[document.getElementById('isoNews')?.value || 'rumour'] || RULES.SPREAD.rumour;
-  // One reach map per origin, each under its own column. Straight-line spreads ignore the column
-  // entirely, so for those the two origins differ only in where they stand. Relief keeps its two
+  // One reach map per origin, each under its own spread, horizon and (where applicable) column.
+  // Straight-line spreads ignore the column entirely. Relief keeps its two
   // legs alongside the total, because the total on its own does not say which of them is the
   // constraint — and that is the whole of what you do about it.
   if (!preview || previewIso) {
     S.iso.parts = [];
     S.iso.data = S.iso.origins.map((og, i) => {
       if (og.h == null) return null;
+      const mode = isoMode(og), isoMax = isoMaxDays(og);
+      const newsSpeed = RULES.SPREAD[og.news || 'rumour'] || RULES.SPREAD.rumour;
       if (mode === 'relief') {
         const r = reliefAll(og, armyOpts(og.set), newsSpeed, isoMax);
         S.iso.parts[i] = r.parts;
@@ -7227,7 +7324,7 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
            : mode === 'rumour' ? spreadAll(og, RULES.SPREAD.rumour, isoMax)
            : dijkstraAll(og, armyOpts(og.set), isoMax);
     });
-    assignIsoOwners(isoMax);
+    assignIsoOwners();
     renderIso();
   }
   const results = [];
@@ -8837,7 +8934,7 @@ function isoTip(h, ri) {
   // a march-bound hex wants a road or a shorter stretch of one, a news-bound hex wants a courier
   // posted rather than a garrison moved, and the raw figures in brackets say how near the whole-day
   // billing came to costing a day it never used.
-  const p = isoRelief() ? S.iso.parts?.[i]?.get(key) : null;
+  const p = isoRelief(og) ? S.iso.parts?.[i]?.get(key) : null;
   if (p) {
     let r = `<br>${d} IRL d ${many ? 'to relieve ' + escHtml(og?.name || 'it') : 'for relief to arrive'}` +
             `<br><span class="rg">news ${p.newsD} d (${p.news.toFixed(1)}) + march ${p.marchD} d (${p.march.toFixed(1)})</span>`;
@@ -8853,7 +8950,7 @@ function isoTip(h, ri) {
   let s = `<br>${d.toFixed(1)} IRL d from ${many ? escHtml(og?.name || 'origin') : 'origin'}`;
   // With the optimizer shading, the true cost alone is the least interesting of the three numbers:
   // what is being paid, and what of it is wasted, are the point.
-  if (isoOptimizing()) s += ` · ${optDays(d)} d order, ${optWaste(d).toFixed(2)} wasted`;
+  if (isoOptimizing(og)) s += ` · ${optDays(d)} d order, ${optWaste(d).toFixed(2)} wasted`;
   if (many) {
     const up = isoRunnerUp(key);
     if (up) s += `<br><span class="rg">${escHtml(S.iso.origins[up.i]?.name || 'other')} ` +
@@ -9245,24 +9342,18 @@ document.getElementById('isoPick').onclick = () => {
 };
 document.getElementById('isoAdd').onclick = addIsoOrigin;
 document.getElementById('isoClear').onclick = clearAllIsoOrigins;
-/* One box, two questions. "Max days" in the spread modes is how far out to bother looking, and seven
-   is a comfortable answer; in relief mode the same box is the budget the event gives you, and four is
-   the working figure. Carrying one number between them would mean a mode switch silently answering
-   a question you didn't ask — so each mode keeps its own, and keeps whatever you last set it to. */
-const ISO_MAX_DEFAULT = { army: 7, message: 7, rumour: 7, relief: 4 };
-const isoMaxFor = { ...ISO_MAX_DEFAULT };
-let isoLastMode = 'army';
+/* Spread, horizon, news speed and optimizer belong to the selected origin, just like its column.
+   Programmatic syncing when another row is selected must not write the displayed values back. */
 for (const id of ['isoBand', 'isoMax', 'isoMode', 'isoOpt', 'isoNews'])
   document.getElementById(id).addEventListener('change', () => {
-    const box = document.getElementById('isoMax');
-    if (id === 'isoMax') isoMaxFor[isoLastMode] = +box.value || ISO_MAX_DEFAULT[isoLastMode];
-    if (id === 'isoMode') {
-      const m = isoMode();
-      if (m !== isoLastMode) {
-        isoMaxFor[isoLastMode] = +box.value || isoMaxFor[isoLastMode];
-        isoLastMode = m;
-        box.value = isoMaxFor[m];
-      }
+    if (syncingIsoForm) return;
+    const og = activeIsoOrigin();
+    if (id !== 'isoBand' && og) {
+      pushUndoRoutes(`iso${S.iso.active}:${id}`);
+      if (id === 'isoMode') og.mode = document.getElementById(id).value;
+      else if (id === 'isoMax') og.maxDays = +document.getElementById(id).value || ISO_MAX_DEFAULT[isoMode(og)];
+      else if (id === 'isoNews') og.news = document.getElementById(id).value;
+      else if (id === 'isoOpt') og.optimize = document.getElementById(id).checked;
     }
     updateIsoSettingsShown(); computeRoute();
   });

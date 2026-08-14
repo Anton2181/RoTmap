@@ -154,7 +154,7 @@
         </div>
         <label class="chk" id="isoOptWrap" title="Shade by the unused part of the final ordered day. A 3.2-day march wastes 0.8 days of a 4-day order."><input type="checkbox" id="isoOpt"> Optimizer — shade by wasted day</label>
         <div class="btnrow">
-          <button class="btn" type="button" id="isoAdd" title="Add an origin with its own colour and column.">Add origin</button>
+          <button class="btn" type="button" id="isoAdd" title="Add an origin with its own colour, spread, time limit, and column.">Add origin</button>
           <button class="btn" type="button" id="isoPick" title="Move the selected origin on the next map tap.">Move origin</button>
           <button class="btn danger" type="button" id="isoClear">Clear all</button>
         </div>
@@ -164,7 +164,8 @@
           <summary>How the isochrone works</summary>
           Click the map to move the selected origin. Drag an origin to update its reach live.
           Outside this panel, <b>Shift</b>+click moves it. Right-click a hex to add, move, or remove an
-          origin. Each origin has its own colour and column settings.
+          origin. Each origin has its own colour, spread type, time limit, and column settings. Select
+          an origin before changing the controls above; its row shows the spread and limit it will use.
           <p>With several origins, each subhex belongs to the one that reaches it first. Hover to see the
           runner-up and the time difference. Use an origin's swatch, name, or <b>⋯</b> menu to edit it.</p>
           <p>Coasts and major rivers can split a hex into separate subhexes. Only reachable subhexes are

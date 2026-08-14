@@ -272,6 +272,18 @@ already on. They sit **above** the route entries rather than replacing them: whi
 what you are most likely to want, not what you are allowed to want, and a route you were building
 does not stop existing because you opened another panel.
 
+Spread type and horizon belong to the origin as well. Selecting an origin loads its own Army,
+Message, Rumour, or Relief mode and its own maximum-day limit into the controls; changing either edits
+only that origin. Mixed origins still compete on arrival time, so a five-day courier spread can be
+shown against a twelve-day army reach without either setting overwriting the other. Origin rows show
+the saved spread and limit, and old saved origins migrate to Army with a seven-day horizon.
+
+Large settled isochrones are raster-cached. A seven-day courier circle can cover almost every subhex;
+keeping its thousands of SVG fragments and ownership masks live made the browser redraw all of that
+geometry on every pan. The vector answer appears immediately, is painted once into a map-sized bitmap
+when the browser is idle, and is then removed; origin rings remain live SVG controls above the cache.
+Small reaches and unsupported canvases keep the vector fallback.
+
 ## The route row, and two surfaces in one corner
 
 **Double-clicking a route row opens its breakdown.** The step table is what a route is *for* — a route is a question and the table is the answer — and reaching it meant knowing the card had a switch of its own somewhere else.
