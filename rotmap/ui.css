@@ -48,6 +48,7 @@
 
   --rail-w:  52px;
   --panel-w: 328px;
+  --route-tool-w: 148px;
 
   --shadow-1: 0 2px 8px #0006;
   --shadow-2: 0 12px 34px #0009, 0 2px 6px #0006;
@@ -399,7 +400,29 @@ body.panel-shut #panel { display: none; }
    the swatch comes first and the time is pushed to the far edge where a column of them lines up. */
 #routeBtns { display: flex; flex-direction: column; align-items: flex-end; gap: var(--s2); max-height: 46vh; overflow-y: auto; }
 #routeBtns:empty { display: none; }
-.rtbtn { width: 148px; min-width: 148px; }
+.maptool.rtbtn {
+  width: var(--route-tool-w); min-width: var(--route-tool-w); padding: 0; gap: 0; overflow: hidden;
+}
+.rtmain {
+  display: flex; align-items: center; gap: var(--s2); flex: 1 1 auto; min-width: 0;
+  padding: 7px 6px 7px 11px; background: none; color: inherit;
+  border: 0; cursor: pointer;
+}
+.rtmain:hover { background: #ffffff08; }
+.rtbtn.off { color: var(--ink-3); border-color: var(--line); }
+.rtbtn.off .sw { opacity: .45; }
+.rtvis {
+  display: flex; align-items: center; justify-content: center;
+  flex: 0 0 30px; align-self: stretch; width: 30px; padding: 0 7px;
+  background: none; color: inherit; border: 0; border-left: 1px solid var(--line);
+  cursor: pointer;
+}
+.rtvis:hover { background: #ffffff0c; color: var(--ink); }
+.rtmain:focus-visible, .rtvis:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.rtvis svg { fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.rtvis .slash { display: none; stroke: var(--bad); stroke-width: 2.2; }
+.rtvis.off { color: var(--ink-3); }
+.rtvis.off .slash { display: initial; }
 /* A control inside a control: the button shows the route, the swatch recolours it. At 11px it needs
    to say so on approach, so it lifts a ring on hover — the button around it is already a pointer,
    and without that nothing would distinguish the one part of it that does something else. */
@@ -415,7 +438,7 @@ body.panel-shut #panel { display: none; }
 /* A shared campaign clock for every visible route. It belongs to the route legend rather than to one
    route card: one day must mean the same moment for every column being compared on the map. */
 #routeTimeline {
-  box-sizing: border-box; width: 148px; padding: 7px 9px 8px;
+  box-sizing: border-box; width: var(--route-tool-w); padding: 7px 9px 8px;
   background: #1a1f27e6; color: var(--ink);
   border: 1px solid var(--line-2); border-radius: var(--r2);
   box-shadow: var(--shadow-1); backdrop-filter: blur(6px);

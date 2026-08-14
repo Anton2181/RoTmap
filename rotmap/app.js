@@ -7417,7 +7417,7 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
        `pointer-events: none`, since it is a drawn answer rather than a control and has no business
        intercepting anything. */
     const r = rt.wps.length > 1 ? routeLeg(rt, armyOpts(rt.set)) : null;
-    if (r && r.pts.length > 1) {
+    if (!rt.hidden && r && r.pts.length > 1) {
       const sw = act ? 2.8 : 2, op = act ? 0.95 : 0.55;
       const schedule = liveWaypoint ? null : routeTimelineSchedule(rt, r);
       // The stops, wanted before the line is drawn so the arrowheads can be kept off them.
@@ -7482,7 +7482,7 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
         el('path', attrs, groups.route);
       });
     }
-    rt.wps.forEach((w, wi) => {
+    if (!rt.hidden) rt.wps.forEach((w, wi) => {
       const [cx, cy] = endPoint(w.h, w.ri | 0); // every waypoint is a stop, and stops sit at the marker
       const sea = !!(region(w.h, w.ri | 0)?.sea && !region(w.h, w.ri | 0)?.river);
       /* Draggable, so a march can be adjusted rather than retyped. It was remove-and-re-add, which for a
@@ -7619,6 +7619,7 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
 function waypointAt(h, ri) {
   let best = null, bs = Infinity;
   S.routes.forEach((rt, i) => {
+    if (rt.hidden) return;
     rt.wps.forEach((w, wi) => {
       if (w.h !== h) return;
       const score = (i === S.activeRoute ? 0 : 2) + ((w.ri | 0) === (ri | 0) ? 0 : 1);
@@ -7634,7 +7635,7 @@ function waypointAt(h, ri) {
    hexes belong to that same leg even though they do not each have a step row of their own. */
 function routeInsertionAt(routeIndex, h, ri) {
   const rt = S.routes[routeIndex], steps = lastResults[routeIndex]?.steps;
-  if (!rt || !steps?.length) return null;
+  if (!rt || rt.hidden || !steps?.length) return null;
   // A stop already in this exact place is already the draggable waypoint the gesture is asking for.
   if (rt.wps.some(w => w.h === h && (w.ri | 0) === (ri | 0))) return null;
   const candidates = [];
@@ -11595,7 +11596,7 @@ function tickRouteTime(ts) {
   else routeTimeFrame = requestAnimationFrame(tickRouteTime);
 }
 function renderRouteTimeline(results) {
-  const totals = S.routes.map((rt, i) => routeTimelineSchedule(rt, results?.[i]).total).filter(Boolean);
+  const totals = S.routes.map((rt, i) => rt.hidden ? 0 : routeTimelineSchedule(rt, results?.[i]).total).filter(Boolean);
   const max = totals.length ? Math.max(...totals) : 0;
   if (!max) { routeTimeline.hidden = true; stopRouteTime(); return; }
   const followedEnd = routeTimeDay === null || Math.abs(routeTimeDay - routeTimeMax) < 0.04;
@@ -11645,22 +11646,33 @@ function hideCard() {
 }
 document.getElementById('routeCardClose').onclick = hideCard;
 
-/* A button per route, sitting on the map. It is three things at once: a legend saying which colour
+function setRouteHidden(i, hidden) {
+  const rt = S.routes[i];
+  if (!rt || !!rt.hidden === !!hidden) return;
+  pushUndoRoutes();
+  if (hidden) rt.hidden = true; else delete rt.hidden;
+  computeRoute();
+  toast(`${rt.name} ${hidden ? 'hidden' : 'shown'} — Ctrl+Z to undo`);
+}
+
+/* A panel per route, sitting on the map. It is three things at once: a legend saying which colour
    is which, a switcher — the active route is the one the readout and the settings panel describe —
    and the way a dismissed readout is called back. Pressing the one already showing puts it away. */
 function renderRouteButtons(results) {
   routeBtns.innerHTML = '';
   S.routes.forEach((rt, i) => {
     const act = i === S.activeRoute && !routeCard.hidden;
+    const row = document.createElement('div');
+    row.className = 'maptool rtbtn' + (act ? ' on' : '') + (rt.hidden ? ' off' : '');
     const b = document.createElement('button');
     b.type = 'button';
-    b.className = 'maptool rtbtn' + (act ? ' on' : '');
+    b.className = 'rtmain';
     const r = results?.[i];
     const tm = r ? (r.fail ? '✗' : routeDays(rt, r)) : rt.wps.length + ' wp';
     b.innerHTML = `<span class="sw" style="background:${escHtml(rt.color)}"></span>` +
                   `<span class="nm">${escHtml(rt.name)}</span>` +
                   `<span class="tm" title="${escHtml(routeDaysTitle(rt, r))}">${tm}</span>`;
-    b.title = `Show ${rt.name}. Click the swatch to recolour it, right-click for route actions.`;
+    b.title = `Open ${rt.name}. Click the swatch to recolour it or right-click for route actions.`;
     b.onclick = () => {
       if (act) return hideCard();
       S.activeRoute = i;
@@ -11683,8 +11695,19 @@ function renderRouteButtons(results) {
     // The same menu the list row has. This button stands for the route just as much as that row does,
     // and with the panel shut it is the only handle on it — so duplicating or emptying a route from
     // here should not mean opening the panel first to find the identical menu.
-    b.oncontextmenu = e => { e.preventDefault(); e.stopPropagation(); openRouteMenu(i, e.clientX, e.clientY); };
-    routeBtns.appendChild(b);
+    const vis = document.createElement('button');
+    vis.type = 'button';
+    vis.className = 'rtvis' + (rt.hidden ? ' off' : '');
+    vis.setAttribute('aria-pressed', rt.hidden ? 'false' : 'true');
+    vis.setAttribute('aria-label', `${rt.hidden ? 'Show' : 'Hide'} ${rt.name} on map`);
+    vis.title = `${rt.hidden ? 'Show' : 'Hide'} ${rt.name} on map`;
+    vis.innerHTML = `<svg viewBox="0 0 22 22" aria-hidden="true">` +
+      `<path class="eye" d="M2.2 11s3.4-5.5 8.8-5.5 8.8 5.5 8.8 5.5-3.4 5.5-8.8 5.5S2.2 11 2.2 11Z"/>` +
+      `<circle cx="11" cy="11" r="2.7"/><path class="slash" d="m4 4 14 14"/></svg>`;
+    vis.onclick = e => { e.stopPropagation(); setRouteHidden(i, !rt.hidden); };
+    row.oncontextmenu = e => { e.preventDefault(); e.stopPropagation(); openRouteMenu(i, e.clientX, e.clientY); };
+    row.append(b, vis);
+    routeBtns.appendChild(row);
   });
   renderRouteTimeline(results);
 }
