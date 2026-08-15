@@ -339,6 +339,12 @@ It is silent where it would be misleading: over the last waypoint itself, while 
 
 A stop is moved by dragging its marker, and the march re-solves live for each subhex the marker is held over, before it is dropped. Isochrone origins use the same gesture and repaint their reach live while held. Before, the only removal was the *last* waypoint, so changing one in the middle of a route meant taking the whole tail off behind it and rebuilding — while the thing you could see and point at was the one thing that would not move.
 
+An interior waypoint on a stronghold constrains the route to that subhex without pulling the drawn
+line over to the stronghold marker. Its ring stays on the keep so it remains the thing you selected
+and drag, while the incoming and outgoing road, river, or ordinary march geometry carries on
+naturally. Only the route's actual start and destination are drawn to a stronghold gate. This avoids
+the small out-and-back loop made when a through-route passed a keep near the side of its hex.
+
 Three details, each of which had to be got right for it to feel like moving a thing rather than operating a control. The marker follows the pointer directly and the hex under it is **outlined**, because a marker that jumped from node to node would hide which hex it was about to land on. It carries its **subhex**, unlike a counter, so dropping a stop on the far bank of a river means the far bank. And the route re-solves **on drop, not continuously**: each solve is a fresh pathfind over the whole march, and following the pointer with it would compute a dozen answers a second that nobody asked for.
 
 A press that does not move is **inert** — deliberately not treated as a click, since a click on bare map plants a waypoint and a press on a marker that turns out not to have moved should not plant a second stop on the one already there.

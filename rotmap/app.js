@@ -4116,6 +4116,17 @@ function strongholdPoint(h, ri) {
 // The anchor for a route's first and last point. You march to the gate of a place, not to the middle
 // of the ground around it, so a route that begins or ends at a stronghold is drawn to its marker.
 const endPoint = (h, ri) => strongholdPoint(h, ri) || nodePoint(h, ri);
+/* A stronghold is a geometric destination only at the ends of a route. This is the fallback point
+   used when a leg has no surveyed feature geometry of its own; interior waypoints use their ordinary
+   subhex node. Their draggable ring can still sit on the stronghold marker without pulling the route
+   over to it — routeLeg joins the incoming and outgoing solved geometry naturally. */
+const routeWaypointPoint = (rt, wi) => {
+  const w = rt?.wps?.[wi];
+  if (!w) return [0, 0];
+  return wi === 0 || wi === rt.wps.length - 1
+    ? endPoint(w.h, w.ri | 0)
+    : nodePoint(w.h, w.ri | 0);
+};
 const isSplit = h => { const s = S.adj.sub.get(h); return !!(s && s.regions.length > 1); };
 // Does region ri of h occupy the shared edge with hex n (so movement can cross there)?
 // edgePts may be null when neither hex is coast-split (a whole region always spans the edge).
@@ -5458,17 +5469,21 @@ function routeLeg(rt, o) {
     // Which leg this step belongs to, and whether it *is* a waypoint. The readout needs both to
     // turn "do something at this step" into "do something at this waypoint".
     st.leg = leg ?? 0; st.wp = !!wp;
-    // A waypoint is a place the column actually stops, so the line goes to its stronghold marker if
-    // it has one — the same anchoring the route's start and end have always had.
+    // The route's true start and destination go to a stronghold marker. An interior waypoint only
+    // constrains the subhex, so it uses that subhex's ordinary node and cannot pull the line into a
+    // keep-and-back loop.
     // A coastal/split hex can be reached in a different solver region from the one the user selected.
-    // The drawn stop must use the placed waypoint's region or it will miss the visible marker.
+    // Any fallback node must therefore use the placed waypoint's region, not the solver's arrival.
     const placedWp = wp ? wps[(leg ?? 0) + 1] : null;
+    const placedWi = wp ? (leg ?? 0) + 1 : -1;
+    const interiorWp = !!placedWp && placedWi < wps.length - 1;
     const anchor = placedWp
-      ? waypointPoint(endPoint(placedWp.h, placedWp.ri | 0))
+      ? waypointPoint(routeWaypointPoint(rt, placedWi))
       : nodePoint(st.h, st.ri);
     // Afloat and with no drawn river to trace: aim at the water rather than at the bank's midpoint.
-    // A stop keeps its marker either way — the ring is drawn there and the line must agree with it.
-    const afloatAt = (!wp && /sail/.test(st.note || '') && riverPointIn(st.h, st.ri)) || anchor;
+    // Only a true route end is forced to its anchor; an interior waypoint uses this as a fallback.
+    const afloatAt = ((!wp || interiorWp) && /sail/.test(st.note || '') && riverPointIn(st.h, st.ri))
+      || (interiorWp ? nodePoint(st.h, st.ri) : anchor);
     steps.push(st);
     if (first) {
       const placedStart = wps[0];
@@ -5500,18 +5515,18 @@ function routeLeg(rt, o) {
       const np = nodePoint(st.h, st.ri), last = gpts[gpts.length - 1];
       const landsOnNode = gpts.length > 1 && Math.hypot(last[0] - np[0], last[1] - np[1]) < 0.01;
       // Feature geometry ends wherever the surveyed road or river sample ends, which need not be the
-      // stronghold marker. A waypoint is nevertheless a place the route actually visits. Omitting
-      // this last connection made a river-following route visibly sail past its stop; at an
-      // intermediate waypoint the following leg then started from the wrong point too.
-      if (wp) {
+      // waypoint anchor. A true route end must connect to its stronghold; at an interior waypoint the
+      // incoming feature is left intact and the following leg carries on from that natural geometry.
+      if (wp && !interiorWp) {
         allPts.push(...(landsOnNode ? gpts.slice(0, -1) : gpts));
         finishWaypoint(anchor);
         continue;
       }
       allPts.push(...(nxt && landsOnNode ? gpts.slice(0, -1) : gpts));
+      if (interiorWp) legPointStart = Math.max(0, allPts.length - 1);
       continue;
     }
-    if (wp) { finishWaypoint(anchor); continue; } // a stop is reached, never cut past or shortcut to
+    if (wp && !interiorWp) { finishWaypoint(anchor); continue; }
     /* A step that changes only the column's *state* — going ashore, taking ship, spending the month
        securing one — does not move it an inch, and so has nothing to contribute to the line: it
        happens where the line already is. Drawing it anyway meant drawing to the subhex's own centre,
@@ -5519,7 +5534,10 @@ function routeLeg(rt, o) {
        again into the next reach, the line left the river, struck out twenty-two units across dry
        country to the middle of the bank, and came back. */
     const prev = flat[idx - 1]?.st;
-    if (prev && st.h === prev.h && (st.ri | 0) === (prev.ri | 0)) continue;
+    if (prev && st.h === prev.h && (st.ri | 0) === (prev.ri | 0)) {
+      if (interiorWp) legPointStart = Math.max(0, allPts.length - 1);
+      continue;
+    }
     /* The shortcut above is a cosmetic liberty — the column *was* at this node, and the only reason
        to leave it out is that drawing in and out again looks like a spike. It is only a liberty while
        it stays honest about the water. Cutting the corner off a hex whose two halves are split by a
@@ -5538,9 +5556,14 @@ function routeLeg(rt, o) {
       const from = allPts[allPts.length - 1];
       const ng = stepGeom(nxt.st, st.h);
       const to = ng && ng.length ? ng[0]
-               : (nxt.wp ? endPoint(nxt.st.h, nxt.st.ri) : nodePoint(nxt.st.h, nxt.st.ri));
-      if (crossing || !from || !to || !segCrossesMajor(from, to)) continue;
+               : (nxt.wp ? routeWaypointPoint(rt, (nxt.leg ?? 0) + 1)
+                         : nodePoint(nxt.st.h, nxt.st.ri));
+      if (crossing || !from || !to || !segCrossesMajor(from, to)) {
+        if (interiorWp) legPointStart = Math.max(0, allPts.length - 1);
+        continue;
+      }
       allPts.push(afloatAt);
+      if (interiorWp) legPointStart = Math.max(0, allPts.length - 1);
       continue;
     }
     // Off-road / plain march (no feature to trace). If the next step rejoins a drawn feature
@@ -5552,13 +5575,13 @@ function routeLeg(rt, o) {
       if (ng && ng.length) joinPt = ng[0];
     }
     allPts.push(joinPt || afloatAt);
+    if (interiorWp) legPointStart = Math.max(0, allPts.length - 1);
   }
   // A geometry step (sailing a river, or a road) ends at the feature's mid-hex point, which can
   // stop short of the destination hex's node point (its marker) — e.g. getting off a river into
   // the hex left the final leg undrawn. Connect the line to the last waypoint's marker.
   if (flat.length) {
-    const placedLast = wps[wps.length - 1];
-    const np = waypointPoint(endPoint(placedLast.h, placedLast.ri | 0));
+    const np = waypointPoint(routeWaypointPoint(rt, wps.length - 1));
     const lp = allPts[allPts.length - 1];
     if (!lp || Math.hypot(lp[0] - np[0], lp[1] - np[1]) > 0.5) allPts.push(np);
     else lp[3] = 2;
@@ -7517,7 +7540,7 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
       });
     }
     if (!rt.hidden) rt.wps.forEach((w, wi) => {
-      const [cx, cy] = endPoint(w.h, w.ri | 0); // every waypoint is a stop, and stops sit at the marker
+      const [cx, cy] = endPoint(w.h, w.ri | 0);
       const sea = !!(region(w.h, w.ri | 0)?.sea && !region(w.h, w.ri | 0)?.river);
       /* Draggable, so a march can be adjusted rather than retyped. It was remove-and-re-add, which for a
          waypoint in the *middle* of a route meant taking the tail off behind it — the only removal is the
