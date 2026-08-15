@@ -3484,6 +3484,7 @@ function deriveAdj() {
   // Both edge caches are answers about the shape of the ground, and the ground is about to be
   // re-derived. The point sampling only depends on the grid, but it costs nothing to drop.
   edgePtsCache = new Map(); edgeReachCache = new Map();
+  isoRegionShapeCache.clear(); isoSpreadCellCache = null;
   const roads = new Set(), ferry = new Set();
   const tradeByHex = new Map();
   const riverByHex = new Map();
@@ -5956,6 +5957,27 @@ function hpop(a) {
 const nk = (h, ri) => h * MAX_REGIONS + (ri | 0);
 const nkH = k => (k / MAX_REGIONS) | 0;
 const nkRi = k => k % MAX_REGIONS;
+const isoRegionShapeCache = new Map();
+let isoSpreadCellCache = null;
+function isoRegionShape(key) {
+  let d = isoRegionShapeCache.get(key);
+  if (d !== undefined) return d;
+  const h = nkH(key), r = region(h, nkRi(key));
+  d = r ? regionShape(h, r) : '';
+  isoRegionShapeCache.set(key, d);
+  return d;
+}
+function isoSpreadCells() {
+  if (isoSpreadCellCache) return isoSpreadCellCache;
+  const a = [];
+  for (const idS in S.hexes) {
+    const id = +idS;
+    if (!realHex(id)) continue;
+    const [x, y] = hexCenter(id);
+    a.push([id, x, y, Math.min(regionsOf(id).length, MAX_REGIONS)]);
+  }
+  return isoSpreadCellCache = a;
+}
 
 /* Which subhexes a column can be said to *hold*, as against merely to cross. Sea is somewhere a force
    can be only if it could ever be afloat — which means either it has ships, or it is at liberty to go
@@ -6005,14 +6027,10 @@ function spreadAll(fromNode, speedMiPerDay, maxD) {
   const maxPx = maxD * speedMiPerDay * pxPerMile;
   const [ox, oy] = hexCenter(fromNode.h);
   const best = new Map();
-  for (const idS in S.hexes) {
-    const id = +idS;
-    if (!realHex(id)) continue;
-    const [cx, cy] = hexCenter(id);
+  for (const [id, cx, cy, n] of isoSpreadCells()) {
     const px = Math.hypot(cx - ox, cy - oy);
     if (px > maxPx) continue;
     const d = (px / pxPerMile) / speedMiPerDay;
-    const n = Math.min(regionsOf(id).length, MAX_REGIONS);
     for (let ri = 0; ri < n; ri++) best.set(nk(id, ri), d);
   }
   return best;
@@ -6329,8 +6347,7 @@ function isoAreaD(idx) {
   let d = '';
   for (const [key, o] of S.iso.own) {
     if (o !== idx) continue;
-    const h = nkH(key), r = region(h, nkRi(key));
-    if (r) d += regionShape(h, r);
+    d += isoRegionShape(key);
   }
   return d;
 }
@@ -6529,13 +6546,15 @@ function queueIsoRaster(img, vector, byBand, outlines, color, n, lineW, seq) {
   else setTimeout(build, 0);
 }
 
-function renderIso() {
+function renderIso({ preview = false } = {}) {
   const rasterSeq = ++isoRasterSeq;
   if (isoRasterUrl) { URL.revokeObjectURL(isoRasterUrl); isoRasterUrl = null; }
   groups.iso.innerHTML = '';
   const lg = document.getElementById('isoLegend');
-  lg.innerHTML = '';
-  renderIsoList();
+  if (!preview) {
+    lg.innerHTML = '';
+    renderIsoList();
+  }
   if (!S.iso.own || !S.iso.own.size) return;
   const live = S.iso.origins.filter((og, i) => S.iso.data[i]);
   const modes = new Set(live.map(isoMode)), mixed = modes.size > 1;
@@ -6572,10 +6591,8 @@ function renderIso() {
      never overlap, so batching a few hundred of them into one path is safe under that rule. */
   const byBand = [];
   for (const [key, d] of S.iso.best) {
-    const h = nkH(key), r = region(h, nkRi(key));
-    if (!r) continue;
     const b = bucket(d);
-    byBand[b] = (byBand[b] || '') + regionShape(h, r);
+    byBand[b] = (byBand[b] || '') + isoRegionShape(key);
   }
   const wantRaster = S.iso.best.size >= ISO_RASTER_MIN && !isoDrag;
   const rasterImg = wantRaster
@@ -6626,6 +6643,7 @@ function renderIso() {
                    'stroke-width': act ? 2.8 : 2, 'pointer-events': 'none' }, g);
   });
   if (wantRaster) queueIsoRaster(rasterImg, vector, byBand, outlines, color, n, lineW, rasterSeq);
+  if (preview) return;
   // Waste is not a distance, and five chips reading "0.4–0.6 d" would be taken for one if left
   // unlabelled beside the band legend they replace.
   if (opt || relief || mixed) {
@@ -7338,9 +7356,26 @@ const routeIsSubject = () => (UI.pane === 'route' && !UI.shut) || !routeCard.hid
    because the panel is placed once during script evaluation, before there is a map to draw on. */
 const relightRoutes = () => { if (S.G && groups.route) computeRoute({ preview: true }); };
 
+function solveIsoOrigin(og) {
+  if (!og || og.h == null) return { best: null, parts: null };
+  const mode = isoMode(og), isoMax = isoMaxDays(og);
+  const newsSpeed = RULES.SPREAD[og.news || 'rumour'] || RULES.SPREAD.rumour;
+  if (mode === 'relief') {
+    const r = reliefAll(og, armyOpts(og.set), newsSpeed, isoMax);
+    return { best: r.best, parts: r.parts };
+  }
+  return {
+    best: mode === 'message' ? spreadAll(og, RULES.SPREAD.message, isoMax)
+        : mode === 'rumour' ? spreadAll(og, RULES.SPREAD.rumour, isoMax)
+        : dijkstraAll(og, armyOpts(og.set), isoMax),
+    parts: null
+  };
+}
+
 function computeRoute({ preview = false, previewIso = false } = {}) {
   const out = document.getElementById('routeOut');
   const liveWaypoint = preview && !previewIso && !!wpDrag;
+  const liveIsoPreview = preview && previewIso && !!isoDrag;
   if (liveWaypoint) {
     // A waypoint drag changes one route. Keep every other route's existing SVG in place and replace
     // only the dragged route; clearing the whole layer made a one-marker gesture rebuild every line,
@@ -7349,7 +7384,7 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
     for (const e of groups.route.querySelectorAll(
       `[data-rt="${i}"], [data-route-owner="${i}"]`)) e.remove();
   }
-  else groups.route.innerHTML = '';
+  else if (!liveIsoPreview) groups.route.innerHTML = '';
   // Anything that recomputes the route — a waypoint placed or dragged, a settings box, an undo, a
   // road drawn — moves the ground the hover preview was measured from, so the cached field goes.
   routeProbe = null;
@@ -7379,22 +7414,21 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
   // legs alongside the total, because the total on its own does not say which of them is the
   // constraint — and that is the whole of what you do about it.
   if (!preview || previewIso) {
-    S.iso.parts = [];
-    S.iso.data = S.iso.origins.map((og, i) => {
-      if (og.h == null) return null;
-      const mode = isoMode(og), isoMax = isoMaxDays(og);
-      const newsSpeed = RULES.SPREAD[og.news || 'rumour'] || RULES.SPREAD.rumour;
-      if (mode === 'relief') {
-        const r = reliefAll(og, armyOpts(og.set), newsSpeed, isoMax);
-        S.iso.parts[i] = r.parts;
-        return r.best;
-      }
-      return mode === 'message' ? spreadAll(og, RULES.SPREAD.message, isoMax)
-           : mode === 'rumour' ? spreadAll(og, RULES.SPREAD.rumour, isoMax)
-           : dijkstraAll(og, armyOpts(og.set), isoMax);
-    });
+    if (liveIsoPreview) {
+      const i = isoDrag.oi, solved = solveIsoOrigin(S.iso.origins[i]);
+      S.iso.data[i] = solved.best;
+      S.iso.parts[i] = solved.parts;
+    } else {
+      S.iso.parts = [];
+      S.iso.data = S.iso.origins.map((og, i) => {
+        const solved = solveIsoOrigin(og);
+        S.iso.parts[i] = solved.parts;
+        return solved.best;
+      });
+    }
     assignIsoOwners();
-    renderIso();
+    renderIso({ preview: liveIsoPreview });
+    if (liveIsoPreview) return;
   }
   const results = [];
   const singled = routeIsSubject();

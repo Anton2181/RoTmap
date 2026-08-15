@@ -286,6 +286,15 @@ geometry on every pan. The vector answer appears immediately, is painted once in
 when the browser is idle, and is then removed; origin rings remain live SVG controls above the cache.
 Small reaches and unsupported canvases keep the vector fallback.
 
+Dragging an origin stays synchronous and vector: every crossed subhex gets a real recalculation, with
+no debounce, raster preview, or delayed catch-up. The drag fast path solves only the origin being
+moved, reuses the other origins' fields, leaves the route drawing and route report alone, and does not
+rebuild the isochrone rows or legend until drop. Hex centres, subhex counts, and subhex path strings are
+cached because none of that geometry changes during a drag (the caches are cleared when adjacency is
+rebuilt). On the 4,113-hex test map a seven-day Message update takes about 4–8 ms in this path; sending
+the same pointer update through the full route/report repaint took roughly 470–490 ms. Drop still runs
+the complete render and builds the settled raster cache described above.
+
 ## The route row, and two surfaces in one corner
 
 **Double-clicking a route row opens its breakdown.** The step table is what a route is *for* — a route is a question and the table is the answer — and reaching it meant knowing the card had a switch of its own somewhere else.
