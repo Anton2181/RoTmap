@@ -624,10 +624,19 @@ const legionColorFor = label => {
 
    The warlords are then laid over it. A legion holding ground the empire's map does not already show
    as one of those two is still the empire's ground, in the sense that map is drawing — so it takes
-   the pale shade. The Blue Scarves are the exception, being nobody's subject: they keep their own
-   colour and appear on the Borders map as a realm in their own right. */
+   the pale shade. The exceptions are the realms in BORDERS_INDEPENDENT — the Blue Scarves, who were
+   never the empire's, and Legions I, II, VI and XIII, who are no longer: being nobody's subject, they
+   keep their own colour and appear on the Borders map as realms in their own right. */
 const EMPIRE_LIGHT = '218,133,255', EMPIRE_DARK = '199,69,209';
-const BORDERS_INDEPENDENT = new Set(['106,181,216']);   // Blue Scarves
+/* Who is nobody's subject, by name rather than by colour value — the names are the fact, and the
+   triples are looked up from the same legend the scan is read against, so a colour changed in
+   WARLORD_NAMES carries through here instead of leaving a stale literal that quietly matches nothing.
+   The Blue Scarves were never anyone's, and the first, second, sixth and thirteenth legions have
+   stopped being the empire's: what they hold, they hold in their own right, so the Borders map says
+   so rather than washing them back into the pale imperial shade. */
+const BORDERS_INDEPENDENT = new Set(
+  ['Blue Scarves', 'Legion I', 'Legion II', 'Legion VI', 'Legion XIII']
+    .map(n => rgbKey(WARLORD_HEX[n])));
 
 const realmScans = new Map();   // layer id -> { d, w, h } decoded pixels
 // layer id -> Map("hex:region" -> "r,g,b"). Kept from the paint so the readout can answer for the
@@ -660,8 +669,9 @@ function regionShape(hx, r) {
 // so nothing here may be cached against them.
 /* The warlords, laid over the realms' own map. Ground a legion holds that the Borders scan does not
    already show as the empire's takes the paler of the empire's two shades — it is being held *from*
-   the empire, and this map is about who holds what by right. The Blue Scarves are not that: they are
-   independent, so they are drawn in their own colour instead of being coloured in as anyone's.
+   the empire, and this map is about who holds what by right. The realms in BORDERS_INDEPENDENT are not
+   that: they are independent, so they are drawn in their own colour instead of being coloured in as
+   anyone's.
 
    Applied after the inheritance pass, so a spit that took its realm from the land beside it can still
    be overruled by a legion sitting on it, and left out of the Warlords layer's own paint, which goes
@@ -1803,9 +1813,9 @@ function realmLabelCandidates(id) {
    Placement cannot be a per-layer question, and treating it as one produced two visible faults as soon
    as Borders and Warlords were switched on at once. Each layer laid out its own names in ignorance of
    the other's, so a legion's name and the name of the imperial ground it sits on were written across
-   each other; and the Blue Scarves, who appear on *both* maps — being nobody's subject, they keep their
-   own colour on the Borders map instead of being coloured in as the empire's — had their name written
-   twice in the same place, once from each layer.
+   each other; and the independent realms, which appear on *both* maps — being nobody's subject, they keep
+   their own colour on the Borders map instead of being coloured in as the empire's — had their names
+   written twice in the same place, once from each layer.
 
    So the candidates from every visible name group go into one pool, and one pass places them. Two rules
    come out of that:
@@ -9086,7 +9096,8 @@ function snapMarker(p) {
    imperial ground is still holding imperial ground. A realm in that set is nobody's subject, so
    `overlayWarlords` writes its own colour straight through instead — meaning the colour is on the
    Borders map *because it is that realm*, by construction rather than by matching triple, and the
-   legend is describing it rather than guessing at it. That is the Blue Scarves. */
+   legend is describing it rather than guessing at it. That is the Blue Scarves and the four legions
+   that have taken their ground for their own — I, II, VI and XIII. */
 function realmTip(h, ri) {
   const found = [];
   for (const id of ['borders', 'warlords']) {                 // by right first, then who sits on it
@@ -9103,9 +9114,9 @@ function realmTip(h, ri) {
   }
   /* One line per *answer*, not one per layer. With both maps up the pair usually differ — a legion sits
      on imperial ground, and saying so twice is the point of having both — but where they agree they agree
-     because it is the same fact arriving twice, which is what happens over the Blue Scarves: they keep
-     their own colour on the Borders map by construction, so both layers name them and the readout said it
-     twice. Identical name *and* identical colour is the test; same name in two colours is a federation
+     because it is the same fact arriving twice, which is what happens over every independent realm: they
+     keep their own colour on the Borders map by construction, so both layers name them and the readout
+     said it twice. Identical name *and* identical colour is the test; same name in two colours is a federation
      holding ground on both maps and still worth two lines.
 
      And no "Borders"/"Warlords" qualifier. It was there to say which map a line came from, which sounds
@@ -9703,7 +9714,7 @@ function buildLayerUI() {
 
    Whose names get built is *not* just this layer's, though. Since the two realm layers are placed
    together, switching either one changes what the other is allowed to draw — turn Warlords on and the
-   Blue Scarves label it takes over has to come off Borders — so the whole pass is redone whenever the
+   independent realms' labels it takes over have to come off Borders — so the whole pass is redone whenever the
    set of visible name groups changes.
 
    Which is why the rebuild is guarded rather than unconditional: `apply` also runs on every frame of an
