@@ -631,12 +631,26 @@ const EMPIRE_LIGHT = '218,133,255', EMPIRE_DARK = '199,69,209';
 /* Who is nobody's subject, by name rather than by colour value — the names are the fact, and the
    triples are looked up from the same legend the scan is read against, so a colour changed in
    WARLORD_NAMES carries through here instead of leaving a stale literal that quietly matches nothing.
-   The Blue Scarves were never anyone's, and the first, second, sixth and thirteenth legions have
-   stopped being the empire's: what they hold, they hold in their own right, so the Borders map says
-   so rather than washing them back into the pale imperial shade. */
+   The Blue Scarves were never anyone's, and the first, sixth and thirteenth legions have stopped
+   being the empire's: what they hold, they hold in their own right, so the Borders map says so
+   rather than washing them back into the pale imperial shade. The second is independent too, but
+   not on its own account — see BORDERS_MERGE. */
 const BORDERS_INDEPENDENT = new Set(
-  ['Blue Scarves', 'Legion I', 'Legion II', 'Legion VI', 'Legion XIII']
+  ['Blue Scarves', 'Legion I', 'Legion VI', 'Legion XIII']
     .map(n => rgbKey(WARLORD_HEX[n])));
+/* Realms that are somebody else's on the Borders map, by name: the second legion does not hold its
+   ground for itself, it holds it as part of the Blue Scarves, so that map paints and names it as
+   them. Only that map. The Warlords scan is a picture of who *sits* where and the second legion is
+   still its own host on it, so its navy stays untouched there — which is the same division of labour
+   the two layers have everywhere else: one says who holds the ground now, the other by what right.
+
+   A colour-to-colour remap rather than a second name in the legend, because "the same colour and the
+   same name" is one fact and not two: hand the ground the Blue Scarves' colour before anything reads
+   it, and the name, the tooltip, the legend, the swatch, the label and the area totals all follow
+   from that one line without any of them being told separately. */
+const BORDERS_MERGE = new Map(
+  [['Legion II', 'Blue Scarves']]
+    .map(([from, to]) => [rgbKey(WARLORD_HEX[from]), rgbKey(WARLORD_HEX[to])]));
 
 const realmScans = new Map();   // layer id -> { d, w, h } decoded pixels
 // layer id -> Map("hex:region" -> "r,g,b"). Kept from the paint so the readout can answer for the
@@ -671,7 +685,7 @@ function regionShape(hx, r) {
    already show as the empire's takes the paler of the empire's two shades — it is being held *from*
    the empire, and this map is about who holds what by right. The realms in BORDERS_INDEPENDENT are not
    that: they are independent, so they are drawn in their own colour instead of being coloured in as
-   anyone's.
+   anyone's — their own, or the colour BORDERS_MERGE says they hold their ground under.
 
    Applied after the inheritance pass, so a spit that took its realm from the land beside it can still
    be overruled by a legion sitting on it, and left out of the Warlords layer's own paint, which goes
@@ -679,7 +693,8 @@ function regionShape(hx, r) {
 function overlayWarlords(cols) {
   const w = realmCols.get('warlords');
   if (!w) return;
-  for (const [k, c] of w) {
+  for (const [k, c0] of w) {
+    const c = BORDERS_MERGE.get(c0) ?? c0;   // whoever this ground answers to on *this* map
     if (BORDERS_INDEPENDENT.has(c)) { cols.set(k, c); continue; }
     const cur = cols.get(k);
     if (cur !== EMPIRE_LIGHT && cur !== EMPIRE_DARK) cols.set(k, EMPIRE_LIGHT);
@@ -9096,8 +9111,9 @@ function snapMarker(p) {
    imperial ground is still holding imperial ground. A realm in that set is nobody's subject, so
    `overlayWarlords` writes its own colour straight through instead — meaning the colour is on the
    Borders map *because it is that realm*, by construction rather than by matching triple, and the
-   legend is describing it rather than guessing at it. That is the Blue Scarves and the four legions
-   that have taken their ground for their own — I, II, VI and XIII. */
+   legend is describing it rather than guessing at it. That is the Blue Scarves and the legions that
+   have taken their ground for their own — I, VI and XIII — plus II, which holds its ground as part of
+   the Blue Scarves and so arrives here already wearing their colour and answering to their name. */
 function realmTip(h, ri) {
   const found = [];
   for (const id of ['borders', 'warlords']) {                 // by right first, then who sits on it
