@@ -620,37 +620,97 @@ const legionColorFor = label => {
 
 /* The Borders scan paints the empire in two shades of purple — the pale one and the strong one — and
    those two are what "held by the empire" looks like on that map. Sampled from the scan itself rather
-   than guessed: they are far and away its two commonest washes, at 11% and 7% of the map.
-
-   The warlords are then laid over it. A legion holding ground the empire's map does not already show
-   as one of those two is still the empire's ground, in the sense that map is drawing — so it takes
-   the pale shade. The exceptions are the realms in BORDERS_INDEPENDENT — the Blue Scarves, who were
-   never the empire's, and Legions I, II, VI and XIII, who are no longer: being nobody's subject, they
-   keep their own colour and appear on the Borders map as realms in their own right. */
+   than guessed: they are far and away its two commonest washes, at 11% and 7% of the map. */
 const EMPIRE_LIGHT = '218,133,255', EMPIRE_DARK = '199,69,209';
-/* Who is nobody's subject, by name rather than by colour value — the names are the fact, and the
-   triples are looked up from the same legend the scan is read against, so a colour changed in
-   WARLORD_NAMES carries through here instead of leaving a stale literal that quietly matches nothing.
-   The Blue Scarves were never anyone's, and the first, sixth and thirteenth legions have stopped
-   being the empire's: what they hold, they hold in their own right, so the Borders map says so
-   rather than washing them back into the pale imperial shade. The second is independent too, but
-   not on its own account — see BORDERS_MERGE. */
-const BORDERS_INDEPENDENT = new Set(
-  ['Blue Scarves', 'Legion I', 'Legion VI', 'Legion XIII']
-    .map(n => rgbKey(WARLORD_HEX[n])));
-/* Realms that are somebody else's on the Borders map, by name: the second legion does not hold its
-   ground for itself, it holds it as part of the Blue Scarves, so that map paints and names it as
-   them. Only that map. The Warlords scan is a picture of who *sits* where and the second legion is
-   still its own host on it, so its navy stays untouched there — which is the same division of labour
-   the two layers have everywhere else: one says who holds the ground now, the other by what right.
+/* The warlords are laid over the empire's own map, and the Borders map asks one question of each of
+   them: whose is this ground, by right? There are three answers and no fourth. It is the empire's —
+   a legion holding imperial ground is still holding imperial ground, in the sense that map is
+   drawing, so it takes the pale shade. It is the realm's own — nobody's subject, so it keeps its own
+   colour and appears as a realm in its own right. Or it is somebody *else's* — held not from the
+   empire but as part of another realm, which is that realm's colour and that realm's name, because on
+   a map of who holds what by right two halves of one polity are one polity.
 
-   A colour-to-colour remap rather than a second name in the legend, because "the same colour and the
-   same name" is one fact and not two: hand the ground the Blue Scarves' colour before anything reads
-   it, and the name, the tooltip, the legend, the swatch, the label and the area totals all follow
-   from that one line without any of them being told separately. */
-const BORDERS_MERGE = new Map(
-  [['Legion II', 'Blue Scarves']]
-    .map(([from, to]) => [rgbKey(WARLORD_HEX[from]), rgbKey(WARLORD_HEX[to])]));
+   One rule per realm, then, rather than a set for the second answer and a table for the third: they
+   were never two mechanics, only two of the three things a single rule can say.
+
+   What the map ships knowing is written below, and it is a **default rather than a fact** — anything
+   stored in the features file beats it, colour for colour, set from the palette's entity menu. That is
+   the relationship WARLORD_NAMES already has with the names given by hand: the legend is what the map
+   came with, not what it is stuck with. By name and not by colour value, because the names are the
+   fact; the triples are looked up from the same legend the scan is read against, so a colour changed
+   in WARLORD_NAMES carries through here instead of leaving a stale literal that quietly matches
+   nothing.
+
+   Today: the Blue Scarves were never anyone's, and the first, sixth and thirteenth legions have
+   stopped being the empire's — what they hold, they hold in their own right, so the Borders map says
+   so rather than washing them back into the pale imperial shade. The second holds its ground as part
+   of the Blue Scarves, so on that map it *is* the Blue Scarves, colour and name alike. Only on that
+   map: the Warlords scan is a picture of who *sits* where and the second legion is still its own host
+   in its own navy there, which is the division of labour the two layers have everywhere else. */
+const BORDERS_RULE_SHIPPED = new Map(Object.entries({
+  'Blue Scarves': 'self',
+  'Legion I': 'self',
+  'Legion VI': 'self',
+  'Legion XIII': 'self',
+  'Legion II': 'Blue Scarves',
+}).map(([realm, rule]) => [rgbKey(WARLORD_HEX[realm]),
+                          rule === 'self' ? 'self' : rgbKey(WARLORD_HEX[rule])]));
+/* What the Borders map says about one warlord colour: `'empire'`, `'self'`, or the colour of whoever
+   it holds its ground under. The stored answer first, the shipped one behind it, and `'empire'` behind
+   that — most of the warlords are the empire's subjects, which is what makes subjection the default
+   rather than a tenth entry in a table nobody would maintain.
+
+   A rule stored as `'empire'` is therefore not quite the same thing as no rule at all, though the two
+   paint identically: it is the difference between a realm nobody has ruled on and one ruled *back*.
+   The menu needs that difference to know whether it has anything to offer a way out of. */
+const borderRule = c => S.features?.borderRule?.[c] ?? BORDERS_RULE_SHIPPED.get(c) ?? 'empire';
+/* Whose colour a piece of ground flies on the Borders map, following the chain to its end: the second
+   legion holds under the Blue Scarves, and were the Scarves ever to hold under somebody else, the
+   second would follow them there — which is what "part of" has to mean if it is to survive the realm
+   it points at changing hands.
+
+   Walked rather than looked up once, and stopped the moment it revisits a realm it has already been
+   through. The menu will not build a chain that bites its own tail — it refuses to offer a target that
+   already leads back — but an imported features file can carry one, and a map that hangs while
+   painting is a worse answer than a map that paints a colour somebody will notice is wrong. */
+function borderHolder(c) {
+  const seen = new Set([c]);
+  for (;;) {
+    const r = borderRule(c);
+    if (r === 'self' || r === 'empire' || seen.has(r)) return c;
+    seen.add(r);
+    c = r;
+  }
+}
+/* Would pointing `from` at its holder eventually arrive back at `target`? Asked by the menu of every
+   realm it is about to offer, so that the one thing it cannot say is a circle. */
+function borderChainHits(from, target) {
+  const seen = new Set();
+  for (let c = from; !seen.has(c); c = borderRule(c)) {
+    if (c === target) return true;
+    seen.add(c);
+    const r = borderRule(c);
+    if (r === 'self' || r === 'empire') return false;
+  }
+  return false;
+}
+/* Set from the palette's entity menu, and stored with the drawing rather than in the code, so it
+   exports, imports and undoes with the rest of the hand-made work — the same argument realmNames
+   makes, and the reason this is a rule rather than a few subhexes painted blue by hand. A paint is a
+   claim about *ground*; this is a claim about a *realm*, and only the second one survives either scan
+   being redrawn. Passing null clears the rule and hands the colour back to whatever the map ships. */
+function setBorderRule(c, rule) {
+  pushUndo();
+  const all = S.features.borderRule || (S.features.borderRule = {});
+  if (rule) all[c] = rule; else delete all[c];
+  commitFeatures();
+  renderRealmPicker();
+}
+// How a rule reads in a menu row: the realm it points at, named the way the palette names it.
+const borderRuleLabel = c => {
+  const r = borderRule(c);
+  return r === 'self' ? 'its own' : r === 'empire' ? "the empire's" : realmLabel('warlords', borderHolder(c));
+};
 
 const realmScans = new Map();   // layer id -> { d, w, h } decoded pixels
 // layer id -> Map("hex:region" -> "r,g,b"). Kept from the paint so the readout can answer for the
@@ -683,9 +743,10 @@ function regionShape(hx, r) {
 // so nothing here may be cached against them.
 /* The warlords, laid over the realms' own map. Ground a legion holds that the Borders scan does not
    already show as the empire's takes the paler of the empire's two shades — it is being held *from*
-   the empire, and this map is about who holds what by right. The realms in BORDERS_INDEPENDENT are not
-   that: they are independent, so they are drawn in their own colour instead of being coloured in as
-   anyone's — their own, or the colour BORDERS_MERGE says they hold their ground under.
+   the empire, and this map is about who holds what by right. A realm whose rule says `'self'` is not
+   that: it is independent, so it is drawn in its own colour instead of being coloured in as
+   anyone's — or as somebody else's, where a realm holds its ground as part of another and the rule
+   says so, in which case the colour written through is the holder's.
 
    Applied after the inheritance pass, so a spit that took its realm from the land beside it can still
    be overruled by a legion sitting on it, and left out of the Warlords layer's own paint, which goes
@@ -694,8 +755,8 @@ function overlayWarlords(cols) {
   const w = realmCols.get('warlords');
   if (!w) return;
   for (const [k, c0] of w) {
-    const c = BORDERS_MERGE.get(c0) ?? c0;   // whoever this ground answers to on *this* map
-    if (BORDERS_INDEPENDENT.has(c)) { cols.set(k, c); continue; }
+    const c = borderHolder(c0);   // whoever this ground answers to on *this* map, chain and all
+    if (borderRule(c) === 'self') { cols.set(k, c); continue; }
     const cur = cols.get(k);
     if (cur !== EMPIRE_LIGHT && cur !== EMPIRE_DARK) cols.set(k, EMPIRE_LIGHT);
   }
@@ -2538,6 +2599,46 @@ function panToRealm(layer, c) {
   applyViewBox();
   return true;
 }
+/* The one question the Borders map asks of a warlord, asked where the warlord lives: on its own
+   swatch in the Warlords palette. It has to be there rather than on the Borders palette, and the
+   reason is the mechanic working: a realm held as part of another has no colour of its own on the
+   Borders map any more — that was the point — so there is no Borders swatch left to right-click. The
+   legion exists on the Warlords legend; the Borders map is only reporting it. So the row says which
+   map it speaks for, because a setting on one palette that changes another is otherwise a trap.
+
+   Three answers, and then the realms. "Part of" is offered for every colour that holds ground on the
+   Warlords map, named the way the palette names it — except this one, and except any whose own chain
+   already leads back here, which is the only thing the menu refuses: a circle has no holder at its
+   end and nothing sensible to paint. */
+function buildBorderRuleMenu(sm, c, label) {
+  const cur = borderRule(c);
+  const stored = S.features.borderRule?.[c];
+  ctxHead(sm, `<b>${escHtml(label)}</b> — on the Borders map`);
+  const choice = (val, html) => {
+    const it = ctxItem(sm, html, () => { setBorderRule(c, val); closeCtx(); });
+    if (val === cur) it.style.color = '#fff';
+    return it;
+  };
+  choice('empire', `<span class="sw" style="background:rgb(${EMPIRE_LIGHT})"></span>The empire's`);
+  choice('self', `<span class="sw" style="background:${rgbHex(c)}"></span>Its own`);
+  const others = realmPalette('warlords').filter(o => o !== c && !borderChainHits(o, c));
+  if (others.length) {
+    ctxSep(sm);
+    for (const o of others)
+      choice(o, `<span class="sw" style="background:${rgbHex(o)}"></span>Part of ${escHtml(realmLabel('warlords', o))}`);
+  }
+  /* Only when there is something to go back *to*. Clearing a stored rule hands the colour back to the
+     table the map ships with, which is the same escape the terrain menu gives back to the datasheet —
+     and the same reason it is worth having: a default you have overruled and cannot restore is a
+     default you have lost. */
+  if (stored !== undefined && stored !== (BORDERS_RULE_SHIPPED.get(c) ?? 'empire')) {
+    ctxSep(sm);
+    const was = BORDERS_RULE_SHIPPED.get(c);
+    const wasLabel = !was ? "the empire's" : was === 'self' ? 'its own' : realmLabel('warlords', was);
+    ctxItem(sm, `As the map ships<span class="arw">${escHtml(wasLabel)}</span>`,
+            () => { setBorderRule(c, null); closeCtx(); });
+  }
+}
 function renderRealmPicker() {
   const wrap = document.getElementById('realmPick');
   if (!wrap) return;
@@ -2579,6 +2680,9 @@ function renderRealmPicker() {
     const tokenNames = tokenColourNames(rgbHex(c));
     b.title = `${label} · ${rgbHex(c)}`
             + (tokenNames.length ? `\n${tokenNames.length === 1 ? 'Token' : 'Tokens'}: ${tokenNames.join(', ')}` : '')
+            + (layer === 'warlords' && borderRule(c) !== 'empire'
+                 ? `\nOn the Borders map: ${borderRule(c) === 'self' ? 'a realm in its own right' : 'part of ' + borderRuleLabel(c)}`
+                 : '')
             + `\nClick the swatch to recolour; right-click for entity actions.`
             + (kin > 1 ? `\nOne of ${kin} colours under this name; they are labelled as one polity.` : '');
     /* The entity menu can still take the map to the realm. The palette is read off the paint, so every
@@ -2622,6 +2726,9 @@ function renderRealmPicker() {
         ctxItem(box, 'Rename…', () => { closeCtx(); rename(); });
         ctxFlyout(ctxItem(box, `<span class="sw" style="background:${rgbHex(c)}"></span>Recolour<span class="arw">▸</span>`),
                   buildRecolour);
+        if (layer === 'warlords')
+          ctxFlyout(ctxItem(box, `On the Borders map<span class="arw">${escHtml(borderRuleLabel(c))} ▸</span>`),
+                    sm => buildBorderRuleMenu(sm, c, label));
         ctxItem(box, 'Centre largest area', () => { closeCtx(); panToRealm(layer, c); });
       });
     };
@@ -3338,6 +3445,10 @@ function migrateFeatures(f) {
   if (!f.strongholds) f.strongholds = {};
   if (!f.realms) f.realms = {};        // hand-painted realm colours, per scan layer
   if (!f.realmNames) f.realmNames = {}; // and what those colours are called, per layer and colour
+  /* Not per layer, and deliberately: this is a rule about what the Borders map makes of a *Warlords*
+     colour, so a layer key would have to name one of the two and would then be describing the wrong
+     one. There is only ever one pair of layers to ask it of. */
+  if (!f.borderRule) f.borderRule = {};  // warlord colour -> 'self' | 'empire' | the colour it holds under
   for (const id in f.strongholds) {
     const v = f.strongholds[id];
     let list = Array.isArray(v) ? v : v ? [v] : [];
@@ -3371,6 +3482,8 @@ function validFeatureFile(f) {
       x.pts.every(p => Array.isArray(p) && p.length >= 2 && Number.isFinite(p[0]) && Number.isFinite(p[1])))) return false;
   if (!f.labels || typeof f.labels !== 'object' || Array.isArray(f.labels)) return false;
   if (!f.strongholds || typeof f.strongholds !== 'object' || Array.isArray(f.strongholds)) return false;
+  // Optional, since files written before border rules existed have none; wrong-shaped is still a no.
+  if (f.borderRule && (typeof f.borderRule !== 'object' || Array.isArray(f.borderRule))) return false;
   for (const v of Object.values(f.strongholds)) {
     const list = Array.isArray(v) ? v : [v];
     if (!list.every(m => m && typeof m === 'object' && !Array.isArray(m) &&
@@ -9106,14 +9219,17 @@ function snapMarker(p) {
    map and is meant to be: name a wash once and it starts answering, everywhere, for good.
 
    The Warlords legend gets to speak for the Borders layer in exactly one case, and it is not a
-   coincidence of colour: `BORDERS_INDEPENDENT`. Every other warlord is overlaid onto that map as the
-   empire's own pale shade, because Borders is about who holds what *by right* and a legion holding
-   imperial ground is still holding imperial ground. A realm in that set is nobody's subject, so
-   `overlayWarlords` writes its own colour straight through instead — meaning the colour is on the
-   Borders map *because it is that realm*, by construction rather than by matching triple, and the
-   legend is describing it rather than guessing at it. That is the Blue Scarves and the legions that
-   have taken their ground for their own — I, VI and XIII — plus II, which holds its ground as part of
-   the Blue Scarves and so arrives here already wearing their colour and answering to their name. */
+   coincidence of colour: a realm whose border rule is `'self'`. Every other warlord is overlaid onto
+   that map as the empire's own pale shade, because Borders is about who holds what *by right* and a
+   legion holding imperial ground is still holding imperial ground. A realm ruled independent is
+   nobody's subject, so `overlayWarlords` writes its own colour straight through instead — meaning the
+   colour is on the Borders map *because it is that realm*, by construction rather than by matching
+   triple, and the legend is describing it rather than guessing at it. Today that is the Blue Scarves
+   and the legions that have taken their ground for their own — I, VI and XIII.
+
+   A realm held *as part of* another arrives here already wearing the holder's colour, so it needs no
+   case of its own: the second legion reaches this test as the Blue Scarves and is named as them,
+   which is the whole of what "the same colour and the same name" was asking for. */
 function realmTip(h, ri) {
   const found = [];
   for (const id of ['borders', 'warlords']) {                 // by right first, then who sits on it
@@ -9123,7 +9239,7 @@ function realmTip(h, ri) {
     if (!c) continue;
     // The same name the palette shows, so a colour renamed there is renamed here too — the readout
     // and the swatch are the two places a realm says what it is and they must not disagree.
-    const legend = id === 'warlords' || BORDERS_INDEPENDENT.has(c);
+    const legend = id === 'warlords' || borderRule(c) === 'self';
     const name = S.features.realmNames?.[id]?.[c] ?? (legend ? WARLORD_BY_RGB.get(c) : null);
     if (!name && id === 'borders') continue;                  // an unnamed wash has nothing to say
     found.push({ id, c, name });
