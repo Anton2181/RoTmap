@@ -7974,6 +7974,10 @@ function setWaypointAction(ri, wi, action, wait = 0) {
    Taking ship is a week standing still and getting off again is a day, and a list of hexes that passes
    over them in silence reads as a much shorter journey than it is — so those keep their place, named
    and costed, while everything about the ground underfoot is dropped. */
+/* The marker a hex wears in the clipboard so that pasting the line back rebuilds the orders it was
+   written from — `[visit]`, `[pass]`, `[wait 3d]`, and `forced` alongside any of them. It goes on the
+   **detailed** copy, which is the one whose job is to say everything; the simple copy is hex numbers
+   and arrows and is meant to be pasted into a message rather than back into the map. */
 function waypointClipboardTag(rt, wi) {
   const w = rt.wps[wi], action = waypointAction(rt, w);
   const words = [action === 'wait' ? `wait ${wpWaitAt(rt, w)}d` : action];
@@ -7985,34 +7989,39 @@ function stepsToText(ri, simple) {
   if (!rt || !r || r.fail || !r.steps?.length) return null;
   const parts = [];
   let prevH = null;
+  /* A waypoint's marker belongs to its *hex*, and the step carrying the flag is not always the step
+     that printed one: a column that waits after embarking flags a stage inside the hex it is already
+     standing in. So the marker is walked back to the last part that begins with a hex number rather
+     than appended to whatever was pushed last. Written immediately after the number and before any
+     parenthetical, which is what lets the importer find it — and reads correctly besides, the marker
+     being an order given to that hex and the bracket a description of the ground. */
+  const tagLastHex = wi => {
+    for (let k = parts.length - 1; k >= 0; k--) if (/^\d+\b/.test(parts[k])) {
+      parts[k] = parts[k].replace(/^(\d+)/, '$1' + waypointClipboardTag(rt, wi)); return;
+    }
+  };
   r.steps.forEach((st, j) => {
     const sameHex = st.h === prevH; prevH = st.h;
-    const wait = j === 0 ? wpWait(rt, 0) : st.wp ? wpWait(rt, st.leg + 1) : 0;
-    const addWait = () => { if (wait) parts.push(`Wait (${wait} day${wait === 1 ? '' : 's'})`); };
     if (simple) {
-      const tagLastHex = wi => {
-        for (let k = parts.length - 1; k >= 0; k--) if (/^\d+\b/.test(parts[k])) {
-          parts[k] += waypointClipboardTag(rt, wi); return;
-        }
-      };
-      if (!sameHex) {
-        parts.push(String(st.h));
-        if (j === 0) tagLastHex(0);
-        if (st.wp) tagLastHex(st.leg + 1);
-        return;
-      }
-      // A stage inside a hex is not another place to march to, so it only earns a place by costing
-      // something — which is exactly what distinguishes embarking from shuffling over a bridge.
-      if (j > 0 && st.irl >= 0.005) parts.push(stageLabel(st));
-      if (st.wp) tagLastHex(st.leg + 1);
+      // Hex numbers and arrows, and nothing else that is not a stop. A stage inside a hex is not
+      // another place to march to, so it only earns a place by costing something — which is exactly
+      // what distinguishes embarking from shuffling over a bridge, and is a week of the column's time
+      // that the numbers either side of it cannot account for on their own.
+      if (!sameHex) parts.push(String(st.h));
+      else if (j > 0 && st.irl >= 0.005) parts.push(stageLabel(st));
       return;
     }
-    if (j > 0 && sameHex && st.irl < 0.005) { addWait(); return; }
+    /* The detailed copy carries the orders as well as the march, and is therefore the one Paste hexes
+       can read back into waypoints. A wait is said once, in the marker, rather than again in prose
+       beside it: `[wait 2d]` is no harder to read than "Wait (2 days)" and is the notation the
+       importer understands, where the sentence was only ever for the eye. */
+    const tag = () => { if (j === 0) tagLastHex(0); else if (st.wp) tagLastHex(st.leg + 1); };
+    if (j > 0 && sameHex && st.irl < 0.005) { tag(); return; }
     const terr = terrainLabel(st.h, st.ri, st.sea).toLowerCase();
     if (j === 0) parts.push(`${st.h} (${terr}, start)`);
     else if (sameHex) parts.push(st.note || 'in hex');       // a stage, not a hex: embark, disembark
     else parts.push(`${st.h} (${terr}${st.note ? ', ' + st.note : ''})`);
-    addWait();
+    tag();
   });
   if (simple) return parts.join(' -> ');
   const ord = orderedOf(rt, r);
