@@ -676,7 +676,8 @@
    {
     "x": 2942.7,
     "y": 1216.2,
-    "name": "Tbiši"
+    "name": "Tbiši",
+    "fort": true
    }
   ],
   "2497": [
@@ -1470,6 +1471,7 @@
    "255,94,156": "Legion III"
   }
  },
+ "borderRule": {},
  "features": [
   {
    "type": "coast",
@@ -37691,6 +37693,5 @@
     ]
    ]
   }
- ],
- "borderRule": {}
+ ]
 }
