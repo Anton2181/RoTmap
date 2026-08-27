@@ -254,6 +254,7 @@
           <button class="btn" type="button" data-tool="stronghold" data-dev>Stronghold</button>
           <button class="btn" type="button" data-tool="label" data-dev>Label</button>
           <button class="btn" type="button" data-tool="realm">Map painting</button>
+          <button class="btn" type="button" data-tool="comm" data-dev>Commandery</button>
           <button class="btn" type="button" data-tool="erase" data-dev>Erase</button>
         </div>
         <!-- Only while the Map painting tool is up. Built from the scan and, for Warlords, token colours
@@ -268,6 +269,16 @@
                rather than styled: every browser draws this control its own way and none of them the
                way the panel does, so the swatch is the button and this is only the mechanism. -->
           <input type="color" id="realmCustomInput" value="#842a4b" aria-label="Custom realm colour">
+        </div>
+        <!-- Only while the Commandery tool is up, and only locally: the provinces are data, and this
+             edits the reading of them by hand. There is no palette because there are over a hundred
+             of them and no swatch grid would tell them apart — the brush is loaded off the map. -->
+        <div id="commPick" hidden data-dev>
+          <div id="commLoaded"></div>
+          <div class="btnrow">
+            <button class="btn" type="button" id="commPickBtn" title="Click a hex to load the province that administers it.">Pick from map</button>
+            <button class="btn" type="button" id="commNobody" title="Paint hexes out of every province.">Nobody</button>
+          </div>
         </div>
         <div class="btnrow">
           <button class="btn" type="button" id="undoBtn">Undo</button>
@@ -295,6 +306,16 @@
           Click the starting point after at least three points to close a loop, such as a small island.
           Hold <b>E</b> to snap anywhere along an edge. <b>Shift</b>+click an existing coast to change
           which side is sea.
+        </details>
+        <details class="hint" data-dev>
+          <summary>Commandery</summary>
+          <b>Pick from map</b>, then click the ground whose province you want; the brush holds it. Click or
+          drag to move hexes into it. Where the province is wholly one realm’s — on the Warlords map,
+          the Borders map, or both — that realm takes the new ground too, so the three maps go on
+          agreeing — and only the piece that moved is painted, so the far bank of a strait keeps
+          whatever it held. <b>Nobody</b> takes ground out of every province. Painting is per piece of
+          land, so a hex a coast or a major river has cut in two can have its two banks in different
+          provinces; the shipped file still names whole hexes, and this is laid over it.
         </details>
         <details class="hint">
           <summary>Map painting</summary>

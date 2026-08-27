@@ -664,20 +664,46 @@ const BORDERS_RULE_SHIPPED = new Map(Object.entries({
    paint identically: it is the difference between a realm nobody has ruled on and one ruled *back*.
    The menu needs that difference to know whether it has anything to offer a way out of. */
 const borderRule = c => S.features?.borderRule?.[c] ?? BORDERS_RULE_SHIPPED.get(c) ?? 'empire';
-/* Whose colour a piece of ground flies on the Borders map, following the chain to its end: the second
-   legion holds under the Blue Scarves, and were the Scarves ever to hold under somebody else, the
-   second would follow them there — which is what "part of" has to mean if it is to survive the realm
-   it points at changing hands.
+/* Is this colour a warlord's? The legend's own eleven, plus whatever the Warlords layer is currently
+   painting — a colour recoloured by hand is still that warlord's colour, and the legend key it left
+   behind is not. The set is rebuilt when the paint is: `paintRealm` hands `realmCols` a brand-new Map
+   each time, so comparing the Map itself is an exact test of staleness and costs one identity check.
 
-   Walked rather than looked up once, and stopped the moment it revisits a realm it has already been
-   through. The menu will not build a chain that bites its own tail — it refuses to offer a target that
-   already leads back — but an imported features file can carry one, and a map that hangs while
-   painting is a worse answer than a map that paints a colour somebody will notice is wrong. */
-function borderHolder(c) {
+   Asked by the chain below, and the reason it has to be asked is that the two kinds of holder answer
+   differently. A warlord is a subject of the empire until told otherwise, so a warlord named as a
+   holder passes the question on: whose is *he*? A realm on the Borders map is not — it is already an
+   answer about that map, standing there in its own colour — so naming one ends the chain. */
+let warlordColourSet = null, warlordColourFrom = null;
+function isWarlordColour(c) {
+  const m = realmCols.get('warlords');
+  if (m !== warlordColourFrom) {
+    warlordColourFrom = m;
+    warlordColourSet = new Set([...WARLORD_BY_RGB.keys(), ...(m?.values() || [])]);
+  }
+  return warlordColourSet.has(c);
+}
+/* What the Borders map paints over a warlord's ground: a colour, or null for the empire's own shade.
+   Null rather than the shade itself because "the empire's" is not simply that colour — ground the
+   scan already paints as the imperial core stays the core, and only unclaimed-looking ground takes
+   the pale wash. That distinction is the caller's to keep, so this says *which answer* and lets the
+   caller paint it.
+
+   The chain is followed to its end: the second legion holds under the Blue Scarves, and were the
+   Scarves ever to hold under somebody else, the second would follow them there — which is what "part
+   of" has to mean if it is to survive the realm it points at changing hands. It stops on a realm of
+   the Borders map, which has no rule to pass the question to, and it stops the moment it revisits a
+   realm it has already been through. The menu will not build a chain that bites its own tail — it
+   refuses to offer a target that already leads back — but an imported features file can carry one,
+   and a map that hangs while painting is a worse answer than a map that paints a colour somebody
+   will notice is wrong. */
+function borderPaint(c) {
   const seen = new Set([c]);
   for (;;) {
     const r = borderRule(c);
-    if (r === 'self' || r === 'empire' || seen.has(r)) return c;
+    if (r === 'self') return c;
+    if (r === 'empire') return null;
+    if (seen.has(r)) return c;              // a circle: stop on a realm inside it
+    if (!isWarlordColour(r)) return r;      // a realm of the Borders map is an answer, not a question
     seen.add(r);
     c = r;
   }
@@ -706,10 +732,15 @@ function setBorderRule(c, rule) {
   commitFeatures();
   renderRealmPicker();
 }
-// How a rule reads in a menu row: the realm it points at, named the way the palette names it.
+/* How a rule reads in a menu row: the realm it points at, named the way that realm is named. Asked of
+   the Borders layer first, since that is the map this rule speaks for and a name given there is the
+   name the ground will answer to; the warlords legend is the fallback for a holder that only exists
+   as a warlord, and the bare hex for a wash nobody has named yet. */
 const borderRuleLabel = c => {
   const r = borderRule(c);
-  return r === 'self' ? 'its own' : r === 'empire' ? "the empire's" : realmLabel('warlords', borderHolder(c));
+  if (r === 'self') return 'its own';
+  if (r === 'empire') return "the empire's";
+  return realmName('borders', r) ?? realmName('warlords', r) ?? rgbHex(r);
 };
 
 const realmScans = new Map();   // layer id -> { d, w, h } decoded pixels
@@ -755,8 +786,8 @@ function overlayWarlords(cols) {
   const w = realmCols.get('warlords');
   if (!w) return;
   for (const [k, c0] of w) {
-    const c = borderHolder(c0);   // whoever this ground answers to on *this* map, chain and all
-    if (borderRule(c) === 'self') { cols.set(k, c); continue; }
+    const c = borderPaint(c0);    // whoever this ground answers to on *this* map, chain and all
+    if (c) { cols.set(k, c); continue; }
     const cur = cols.get(k);
     if (cur !== EMPIRE_LIGHT && cur !== EMPIRE_DARK) cols.set(k, EMPIRE_LIGHT);
   }
@@ -812,7 +843,7 @@ function paintCommanderies() {
       // A province holding no named settlement still covers ground and still wants telling apart, so
       // it is coloured from what it *is* rather than from what it is called. It gets no label: there
       // is nothing to write.
-      const nm = commSeats[i]?.name;
+      const nm = commSeat(i)?.name;
       c = nameColor(nm || `${S.commanderies[i]?.tier || 'tier'}#${i}`, taken);
       taken.add(c); colOf.set(i, c);
       if (nm) commColorName.set(c, nm);
@@ -2484,6 +2515,121 @@ function setRealmDropper(on) {
   svg.classList.toggle('picking', realmDropper);
   renderRealmPicker();
 }
+/* ---------------- the Commandery tool ----------------
+   Dev-only, and marked so in the HTML: the provinces are *data*, read from three scans by a Python
+   tool and shipped as a hex list. This edits that reading by hand, which is the map's own making
+   rather than a reader's business, so the button and this panel both carry `data-dev` and neither
+   reaches the published build.
+
+   There is no palette, and there could not be one: there are over a hundred provinces and no reader
+   of a swatch grid could tell Sava's colour from Tarani's. So the brush is loaded off the map — point
+   at a province and the tool holds it — which is the same act as choosing it and needs no list at
+   all. `Nobody` is the other brush, and is a real answer rather than the absence of one: it says this
+   hex is administered by no province, which is not the same as never having been edited.
+
+   The unit is the **hex**, because that is what a commandery is made of. The subhex refinement is
+   derived from the coastlines afterwards, so painting half a hex would be asking a question the data
+   has no way to keep. */
+let commPaint = null;        // the anchor hex of the loaded province, or 'none', or null
+let commDropper = false;
+let commSweep = 0;           // one coalesce key per drag, so a sweep is one Ctrl+Z
+function setCommDropper(on) {
+  commDropper = !!on;
+  svg.classList.toggle('picking', commDropper);
+  renderCommPicker();
+}
+// Which colour the Commanderies layer is painting a province in. Read off the paint rather than
+// recomputed, since the colour is hashed from the province's name and the hash lives in the painter.
+function commColour(i) {
+  const cols = realmCols.get('comm');
+  if (!cols) return null;
+  for (const [k, ci] of commanderyCells()) if (ci === i) return cols.get(k) || null;
+  return null;
+}
+/* Lifting a province off the map, the way the Realm tool lifts a colour — and off the *piece* under
+   the pointer rather than the hex around it, since the two banks of a strait can be in different
+   provinces and the one you pointed at is the one you meant. Ground no province administers picks up
+   Nobody, which is the brush that takes ground *out* — the eraser of this tool rather than a failed
+   pick. */
+function pickCommanderyAt(wx, wy) {
+  const h = nearestHex(wx, wy);
+  if (!h || S.hexes[h].t === 'N/A') return setCommDropper(false);
+  const cm = commanderyAt(h, regionAt(h, [wx, wy]));
+  commPaint = cm ? commAnchor(cm.i) : 'none';
+  setCommDropper(false);
+}
+/* Painting one piece of land. Ground already in the loaded province is left alone rather than
+   toggled: a sweep crosses its own work constantly, and a brush that undid itself on the second pass
+   would be unusable dragged. Taking ground back out is what Nobody is for.
+
+   Water is not painted at all. Administered ground is land — the rule the whole cell map is built on
+   — so a click on the sea side of a shore hex does nothing rather than quietly moving the land
+   beside it. */
+function paintCommanderyAt(wx, wy, coalesce) {
+  const h = nearestHex(wx, wy);
+  if (!h || S.hexes[h].t === 'N/A' || commPaint === null) return;
+  if (!commIndex) commanderyBuild();
+  const ri = regionAt(h, [wx, wy]);
+  if (!regWalkable(regionsOf(h)[ri])) return;
+  const cur = commanderyCells().get(h + ':' + ri);
+  if (commPaint === 'none' ? cur === undefined : cur === commByAnchor.get(+commPaint)) return;
+  setCommanderyAt(h, ri, commPaint, coalesce);
+}
+function renderCommPicker() {
+  const wrap = document.getElementById('commPick');
+  if (!wrap) return;                       // published build: the tool is not there to render
+  const on = S.mode === 'draw' && S.tool === 'comm';
+  wrap.hidden = !on;
+  if (!on) { if (commDropper) { commDropper = false; svg.classList.remove('picking'); } return; }
+  const box = document.getElementById('commLoaded');
+  box.innerHTML = '';
+  const add = (label, css, cls) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'realmsw' + (cls ? ' ' + cls : '');
+    b.innerHTML = `<span class="sw" style="background:${css}"></span><span class="nm">${escHtml(label)}</span>`;
+    box.appendChild(b);
+    return b;
+  };
+  const nobody = 'repeating-linear-gradient(45deg,#333 0 4px,#555 4px 8px)';
+  if (commPaint === null) {
+    box.innerHTML = '<div class="emptynote">Pick a province from the map to load the brush.</div>';
+  } else if (commPaint === 'none') {
+    const b = add('Nobody', nobody);
+    b.classList.add('on');
+    b.title = 'Painting takes a hex out of every province.';
+  } else {
+    const i = commByAnchor?.get(+commPaint);
+    const cm = i === undefined ? null : { i, tier: S.commanderies[i].tier, name: commSeat(i)?.name };
+    const c = cm ? commColour(cm.i) : null;
+    const b = add(cm?.name || `Unnamed province`, c ? `rgb(${c})` : nobody);
+    b.classList.add('on');
+    b.title = cm ? `${cm.name || 'Unnamed'} · ${cm.tier} · ${commHexList(cm.i).length} hexes` : '';
+    b.onclick = () => { if (cm) panToCommandery(cm.i); };
+  }
+  const pick = document.getElementById('commPickBtn');
+  if (pick) pick.classList.toggle('on', commDropper);
+}
+// The same pan the realm palette's "Centre largest area" does, aimed at a province instead: the brush
+// names something that may be three screens away, and "where is this one?" has no other answer.
+function panToCommandery(i) {
+  const cells = new Set();
+  for (const [k, ci] of commanderyCells()) if (ci === i) cells.add(k);
+  if (!cells.size) return;
+  let x = 0, y = 0;
+  for (const k of cells) { const p = cellPoint(k); x += p[0]; y += p[1]; }
+  S.vb = { ...S.vb, x: x / cells.size - S.vb.w / 2, y: y / cells.size - S.vb.h / 2 };
+  applyViewBox();
+}
+/* The Commanderies layer, switched on the way the Realm tool switches on the scan it paints: painting
+   a map you cannot see is not a thing anyone wants to do, and this one is drawn from the datasheet
+   rather than fetched, so there is nothing to wait for. */
+function ensureCommLayer() {
+  const L = LAYERS.find(x => x.id === 'comm');
+  if (!L) return;
+  if (!L._built) { L._built = true; Promise.resolve(L.lazy?.()).then(renderCommPicker); }
+  if (L._chk && !L._chk.checked) { L._chk.checked = true; L._apply(); }
+}
 /* Reaching for the tool is as good as asking for the layer, and asking for it means seeing it. Read
    the scan if it has not been read, so there is a palette to choose from — and redraw the picker when
    it arrives, since reading a scan is a round trip and the palette comes from what it paints.
@@ -2599,17 +2745,70 @@ function panToRealm(layer, c) {
   applyViewBox();
   return true;
 }
-/* The one question the Borders map asks of a warlord, asked where the warlord lives: on its own
-   swatch in the Warlords palette. It has to be there rather than on the Borders palette, and the
-   reason is the mechanic working: a realm held as part of another has no colour of its own on the
-   Borders map any more — that was the point — so there is no Borders swatch left to right-click. The
-   legion exists on the Warlords legend; the Borders map is only reporting it. So the row says which
-   map it speaks for, because a setting on one palette that changes another is otherwise a trap.
+/* Every realm a warlord's ground could belong to on the Borders map, in the two kinds there are.
 
-   Three answers, and then the realms. "Part of" is offered for every colour that holds ground on the
-   Warlords map, named the way the palette names it — except this one, and except any whose own chain
-   already leads back here, which is the only thing the menu refuses: a circle has no holder at its
-   end and nothing sensible to paint. */
+   `borders` is that map's own realms — the washes its scan paints, which is where a legion's ground
+   by right most often belongs: it is the Third Prince's, or Selonken's, and always was. Read from
+   what the layer is painting *and* from every colour named by hand, because a wash entirely covered
+   by the warlords overlay is not in the paint any more and is still perfectly good as a holder —
+   losing it from this list because a legion is standing on it would be exactly backwards. One row
+   per wash, named where it has a name and by its hex where it has not: two washes under one name are
+   a federation, and which of them a realm joins is a question only the map's author can answer.
+
+   `warlords` is the other kind, and the two are kept apart in the menu because they behave
+   differently once chosen — a warlord passes the question on, a realm of the Borders map ends it.
+   Warlord colours are filtered out of the first list so that neither appears twice. */
+function borderTargets(c) {
+  const named = Object.keys(S.features.realmNames?.borders || {});
+  const seen = new Set(), borders = [];
+  for (const col of [...realmPalette('borders'), ...named]) {
+    if (seen.has(col) || isWarlordColour(col)) continue;
+    seen.add(col);
+    borders.push(col);
+  }
+  return { borders, warlords: realmPalette('warlords').filter(o => o !== c && !borderChainHits(o, c)) };
+}
+/* A realm invented here rather than read off a scan. The Borders map is a picture of who holds what by
+   right, and a warlord's ground can perfectly well belong to a polity that picture never drew — a
+   claimant nobody recognised when it was painted, a successor state, a name for what four legions have
+   between them. Such a realm has no ground of its own: it exists exactly where a rule puts it, which
+   is why it is made from this menu and not from a paint tool.
+
+   Its colour is *made from its name*, by the same hash the commanderies use, against everything both
+   scans already paint — so it is stable, unlike a colour handed out in order, and cannot collide with
+   a realm already on the map. From then on it is an ordinary wash: it sits in the Borders palette, and
+   right-clicking it there recolours it, renames it, or takes the map to it like any other. Both halves
+   — the name and the rule — go in under one undo entry, since half of this realm is no realm at all. */
+async function newBorderRealm(c, label) {
+  const raw = await askText('A new realm on the Borders map', '',
+    `${realmLabel('warlords', c)} will hold its ground as part of it, and take its colour and its name.\n\n` +
+    'The realm is made here rather than painted: it holds what the rule gives it and nothing else. ' +
+    'Its colour comes from the name, and can be changed afterwards from the Borders palette.');
+  const name = (raw || '').trim().slice(0, 40);
+  if (!name) return;
+  const taken = new Set([...realmPalette('borders'), ...realmPalette('warlords'), EMPIRE_LIGHT, EMPIRE_DARK]);
+  const col = nameColor(name, taken);
+  pushUndo();
+  const names = S.features.realmNames || (S.features.realmNames = {});
+  (names.borders || (names.borders = {}))[col] = name;
+  (S.features.borderRule || (S.features.borderRule = {}))[c] = col;
+  commitFeatures();
+  renderRealmPicker();
+  toast(`${label} holds its ground as ${name}`);
+}
+/* The one question the Borders map asks of a warlord, asked where the warlord lives: on its own swatch
+   in the Warlords palette. It has to be there rather than on the Borders palette, and the reason is
+   the mechanic working: a realm held as part of another has no colour of its own on the Borders map
+   any more — that was the point — so there is no Borders swatch left to right-click. The legion exists
+   on the Warlords legend; the Borders map is only reporting it. So the row says which map it speaks
+   for, because a setting on one palette that changes another is otherwise a trap.
+
+   The empire's own answer stays first and stays separate from the wash named for it, because they are
+   not the same instruction: *the empire's* leaves ground the scan already paints as the imperial core
+   alone and washes only the rest, where naming that wash would paint over the core as well.
+
+   The one thing the menu refuses to say is a circle: a realm whose own chain already leads back here
+   is left out, since a chain with no end has no colour at the end of it. */
 function buildBorderRuleMenu(sm, c, label) {
   const cur = borderRule(c);
   const stored = S.features.borderRule?.[c];
@@ -2619,14 +2818,23 @@ function buildBorderRuleMenu(sm, c, label) {
     if (val === cur) it.style.color = '#fff';
     return it;
   };
+  const part = (o, layer) =>
+    choice(o, `<span class="sw" style="background:${rgbHex(o)}"></span>Part of ${escHtml(realmLabel(layer, o))}`);
   choice('empire', `<span class="sw" style="background:rgb(${EMPIRE_LIGHT})"></span>The empire's`);
   choice('self', `<span class="sw" style="background:${rgbHex(c)}"></span>Its own`);
-  const others = realmPalette('warlords').filter(o => o !== c && !borderChainHits(o, c));
-  if (others.length) {
+  const { borders, warlords } = borderTargets(c);
+  if (borders.length) {
     ctxSep(sm);
-    for (const o of others)
-      choice(o, `<span class="sw" style="background:${rgbHex(o)}"></span>Part of ${escHtml(realmLabel('warlords', o))}`);
+    ctxHead(sm, 'Realms of the Borders map');
+    for (const o of borders) part(o, 'borders');
   }
+  if (warlords.length) {
+    ctxSep(sm);
+    ctxHead(sm, 'Warlords');
+    for (const o of warlords) part(o, 'warlords');
+  }
+  ctxSep(sm);
+  ctxItem(sm, 'Part of a new realm…', () => { closeCtx(); newBorderRealm(c, label); });
   /* Only when there is something to go back *to*. Clearing a stored rule hands the colour back to the
      table the map ships with, which is the same escape the terrain menu gives back to the datasheet —
      and the same reason it is worth having: a default you have overruled and cannot restore is a
@@ -3449,6 +3657,12 @@ function migrateFeatures(f) {
      colour, so a layer key would have to name one of the two and would then be describing the wrong
      one. There is only ever one pair of layers to ask it of. */
   if (!f.borderRule) f.borderRule = {};  // warlord colour -> 'self' | 'empire' | the colour it holds under
+  // Hand edits to the provinces: "hex:region" -> the anchor of the commandery that piece of land
+  // belongs to, or 'none'. Per subhex, because a hex a strait has cut in two can hold two banks in
+  // different provinces. Laid over the shipped hex lists by deriveCommCells, so the file goes on
+  // being the map's own answer and this is only where it has been overruled. A bare hex key is the
+  // older whole-hex form and is still read, as every piece of land in that hex.
+  if (!f.comm) f.comm = {};
   for (const id in f.strongholds) {
     const v = f.strongholds[id];
     let list = Array.isArray(v) ? v : v ? [v] : [];
@@ -3484,6 +3698,7 @@ function validFeatureFile(f) {
   if (!f.strongholds || typeof f.strongholds !== 'object' || Array.isArray(f.strongholds)) return false;
   // Optional, since files written before border rules existed have none; wrong-shaped is still a no.
   if (f.borderRule && (typeof f.borderRule !== 'object' || Array.isArray(f.borderRule))) return false;
+  if (f.comm && (typeof f.comm !== 'object' || Array.isArray(f.comm))) return false;
   for (const v of Object.values(f.strongholds)) {
     const list = Array.isArray(v) ? v : [v];
     if (!list.every(m => m && typeof m === 'object' && !Array.isArray(m) &&
@@ -4781,11 +4996,17 @@ const COMM_RANK = { major: 0, fortress: 1, ordinary: 2 };
 let commIndex = null;     // hex -> index into S.commanderies
 let commSeats = null;     // index -> { h, name, kind } | null, the settlement it is named for
 let commCells = null;     // "hex:region" -> index; the subhex reading, see commanderyCells
+let commHexes = null;     // index -> the hexes it holds *after* hand edits, ascending
+let commByAnchor = null;  // anchor hex -> index; how a hand edit names a commandery, see commAnchor
+let commCellsBase = null; // the same reading with no hand edits at all, for telling an edit from a no-op
 
 /* Dropped whenever the strongholds or the hand-written labels might have moved under us; the next
    question rebuilds it. Cheap enough (a few hundred lookups) that nothing tries to be cleverer.
    `commCells` goes too, since it is keyed by region index and those move when a coastline is redrawn. */
-function commanderiesChanged() { commIndex = null; commSeats = null; commCells = null; }
+function commanderiesChanged() {
+  commIndex = null; commSeats = null; commCells = null; commHexes = null; commByAnchor = null;
+  commCellsBase = null;
+}
 
 /* A commandery, per **subhex** rather than per hex.
 
@@ -4809,10 +5030,31 @@ function commanderiesChanged() { commIndex = null; commSeats = null; commCells =
    your coast pushed out past what the scan drew belongs to the commandery it can be walked to, and a chain
    of such slivers resolves because each round sees what the last one settled. */
 function commanderyCells() {
-  if (commCells) return commCells;
+  return commCells || (commCells = deriveCommCells(S.features?.comm || {}));
+}
+/* The same reading with nothing overruled — what the shipped file alone says about every piece of
+   ground, inheritance and all. Built only when the Commandery tool asks, and asked for exactly one
+   reason: so that an edit which merely restores the file's own answer can be recognised as the
+   nothing it is and left unstored. Comparing against the hex list instead would miss the slivers,
+   which belong to a province by inheritance rather than by being listed, and would then store a
+   difference for painting one back where it already was. */
+function commanderyBaseCells() {
+  return commCellsBase || (commCellsBase = deriveCommCells({}));
+}
+/* Who administers each subhex, in three passes: what the file says, what has been said by hand over
+   it, and what the pieces the file could not know about inherit from their neighbours.
+
+   The hand edits go in **before** the inheritance rather than after, and that is the whole reason the
+   pass is written this way round. An edit is a statement about a piece of ground, so it should be
+   able to *feed* the inheritance — a sliver beside a piece just painted into Sava should be able to
+   follow it there — and it must not be overwritten by it. `'none'` is a real edit and not the absence
+   of one: it says this piece is administered by nobody, which is a thing the inheritance would
+   otherwise be free to overturn on the next round. So settled-as-nobody is tracked as settled, and
+   the inheritance only ever fills what nothing has spoken for. */
+function deriveCommCells(edits) {
   if (!commIndex) commanderyBuild();
   if (!S.adj) deriveAdj();
-  commCells = new Map();
+  const cells = new Map();
   for (const [h, i] of commIndex) {
     if (!S.hexes[h] || S.hexes[h].t === 'N/A') continue;
     const rs = regionsOf(h);
@@ -4822,7 +5064,24 @@ function commanderyCells() {
        quietly let nine **river mouths** in: a bay a drawn river empties into is reached by that river and
        is still the sea. The channel is in; the mouth is not. */
     for (let ri = 0; ri < rs.length; ri++)
-      if (regWalkable(rs[ri])) commCells.set(h + ':' + ri, i);
+      if (regWalkable(rs[ri])) cells.set(h + ':' + ri, i);
+  }
+  /* Said by hand. Keyed by subhex, because a hex split by a strait can hold two pieces of land that
+     belong to different provinces — which is the case a hex-keyed edit cannot say at all, and the
+     reason these are not stored per hex. A key with no region on it is the older whole-hex form and
+     is read as every piece of land in that hex, so nothing written before this became per-piece is
+     lost; nothing writes that form any more. */
+  const settled = new Set();
+  const put = (k, a) => {
+    settled.add(k);
+    if (a === 'none') cells.delete(k); else { const i = commByAnchor.get(+a); if (i !== undefined) cells.set(k, i); else settled.delete(k); }
+  };
+  for (const [key, a] of Object.entries(edits)) {
+    if (key.includes(':')) { put(key, a); continue; }
+    const h = +key;
+    if (!S.hexes[h] || S.hexes[h].t === 'N/A') continue;
+    const rs = regionsOf(h);
+    for (let ri = 0; ri < rs.length; ri++) if (regWalkable(rs[ri])) put(h + ':' + ri, a);
   }
   /* The inheritance pass, confined to hexes a drawn coast or river has actually cut up — `S.adj.sub` holds
      exactly those — so nothing can creep across whole hexes of unadministered ground. A piece takes the
@@ -4831,12 +5090,12 @@ function commanderyCells() {
      being in none. */
   for (;;) {
     const round = new Map();
-    for (const [h, cells] of S.adj.sub) {
+    for (const [h, sub] of S.adj.sub) {
       if (!S.hexes[h] || S.hexes[h].t === 'N/A') continue;
-      const rs = cells.regions;
+      const rs = sub.regions;
       for (let ri = 0; ri < rs.length; ri++) {
         if (!regWalkable(rs[ri])) continue;
-        if (commCells.has(h + ':' + ri)) continue;
+        if (cells.has(h + ':' + ri) || settled.has(h + ':' + ri)) continue;
         const votes = new Map();
         let none = 0;
         for (const n of neighbors(h)) {
@@ -4844,7 +5103,7 @@ function commanderyCells() {
           const nrs = regionsOf(n);
           for (let rj = 0; rj < nrs.length; rj++) {
             if (!regWalkable(nrs[rj]) || !regionsMeet(h, ri, n, rj)) continue;
-            const c = commCells.get(n + ':' + rj);
+            const c = cells.get(n + ':' + rj);
             if (c === undefined) none++; else votes.set(c, (votes.get(c) || 0) + 1);
           }
         }
@@ -4854,17 +5113,50 @@ function commanderyCells() {
       }
     }
     if (!round.size) break;
-    for (const [k, c] of round) commCells.set(k, c);
+    for (const [k, c] of round) cells.set(k, c);
   }
-  return commCells;
+  return cells;
 }
 
+/* How a hand edit names the commandery it moves a hex into. Not by index: the index is a position in
+   a file the Python tool rewrites, and a rebuilt `commanderies.json` would silently point every edit
+   at whichever province had shuffled into that slot. Not by name either — a province is named for the
+   settlement inside it, so renaming a town would rename the province and orphan the edit, and a
+   province holding no settlement has no name to be known by at all.
+
+   So: its **lowest hex**, read off the shipped list and never off the edited one. That is stable
+   against renaming, against reordering, and against the edits themselves — moving hexes in and out
+   cannot change what the file says the province started as, which is exactly the property an
+   identity needs. It survives a rebuild too, as long as the province still holds the hex it was
+   anchored on; where a rebuild moves even that, the edit points at nothing and is dropped, which is
+   the honest outcome and says so rather than landing in the wrong province. */
+const commAnchor = i => Math.min(...S.commanderies[i].hexes);
 function commanderyBuild() {
   commIndex = new Map();
-  commSeats = S.commanderies.map((c, i) => {
+  commByAnchor = new Map();
+  S.commanderies.forEach((c, i) => {
+    commByAnchor.set(commAnchor(i), i);
     for (const h of c.hexes) commIndex.set(h, i);
+  });
+}
+/* What each province holds and what it is named for, both read off the **subhexes** rather than off
+   the file's hex list. They have to be: a hex split by a strait can have its two banks in different
+   provinces now, so "the hexes of province i" is a question only the cell map can answer, and the
+   settlement a province is named for has to be looked for in the ground the province actually holds.
+
+   A hex counts for a province if any piece of it does. That is the right coarseness for naming — a
+   town stands in a hex, and the marker does not say which bank — and it means a province that holds
+   half a hex is still named after the town on it, which is what anyone reading the map would expect.
+   Built together and cached together, since one is walked to produce the other. */
+function commanderyMembers() {
+  if (commSeats) return;
+  const cells = commanderyCells();
+  const byHex = S.commanderies.map(() => new Set());
+  for (const [k, i] of cells) byHex[i].add(+k.slice(0, k.indexOf(':')));
+  commHexes = byHex.map(set => [...set].sort((a, b) => a - b));
+  commSeats = S.commanderies.map((c, i) => {
     let best = null;
-    for (const h of c.hexes) {                    // ascending, so ties fall to the lowest hex
+    for (const h of commHexes[i]) {                 // ascending, so ties fall to the lowest hex
       /* Exactly the settlements the map draws, by asking the same function the renderer does. A
          datasheet stronghold with no marker of its own still counts, and counts as ordinary — the
          sheet says one is there, not what kind. One that has been **erased** does not: this used to
@@ -4881,6 +5173,91 @@ function commanderyBuild() {
     return best;
   });
 }
+const commSeat = i => { commanderyMembers(); return commSeats[i]; };
+const commHexList = i => { commanderyMembers(); return commHexes[i]; };
+/* Is this province wholly one realm's, on one layer? The question the expansion asks before it moves
+   any ground, and it is asked of the province as it stands — the piece about to join is not a member
+   yet and so cannot dilute the answer.
+
+   Every subhex, and unheld ground counts against: a province with a corner nobody holds is not wholly
+   anybody's, and expanding it should not hand that corner's neighbours to a realm on the strength of
+   ground the realm does not have. Null when the layer has not been read at all, which is not "no" but
+   "cannot say" — and comes to the same thing here, since a layer nobody has switched on is one nobody
+   is watching the expansion happen on. */
+function commUniformColour(layer, i) {
+  const cols = realmCols.get(layer);
+  if (!cols) return null;
+  let one = null;
+  for (const [k, ci] of commanderyCells()) {
+    if (ci !== i) continue;
+    const c = cols.get(k);
+    if (!c) return null;                       // a piece of it is nobody's: not wholly anyone's
+    if (one === null) one = c; else if (c !== one) return null;
+  }
+  return one;
+}
+/* Move one **subhex** into a commandery — or, with `'none'`, out of every commandery.
+
+   The subhex and not the hex, because a hex a strait or a river has cut in two can hold two pieces of
+   land in different provinces, and the file's hex list has no way to say so. The list stays the
+   shipped statement and stays per hex; what is said by hand is said about the ground itself.
+
+   **The realms follow.** A province wholly one warlord's that grows a piece has grown that warlord's
+   ground too: the administrative map and the map of who holds it are two pictures of the same fact,
+   and letting them disagree is how a province ends up sticking out of the realm that administers it.
+   The two layers are asked separately, because they routinely differ — a province can be wholly
+   Legion IX's and split across two realms by right, and then the legion follows and the border does
+   not. Where a layer says nothing yet (its scan unread) it is not asked and does not move. Only the
+   piece that moved is painted, so the far bank of a strait keeps whatever it held.
+
+   It writes over whoever held that piece before. That is what an expansion *is*: ground changes
+   hands. It goes in as an ordinary hand-painted override, which means it shows in the palette,
+   exports with the drawing, and comes back with one Ctrl+Z along with the move that caused it.
+
+   `coalesce` folds a whole sweep into one undo entry: dragging across twenty pieces is one action to
+   the hand doing it and should be one to the key that takes it back. */
+function setCommanderyAt(h, ri, anchor, coalesce) {
+  if (!S.hexes[h] || S.hexes[h].t === 'N/A') return;
+  if (!commIndex) commanderyBuild();
+  const i = anchor === 'none' ? null : commByAnchor.get(+anchor);
+  if (anchor !== 'none' && i === undefined) return;      // an anchor naming no province: nothing to do
+  const key = h + ':' + (ri | 0);
+  const follow = i === null ? []
+    : ['warlords', 'borders'].map(L => [L, commUniformColour(L, i)]).filter(([, c]) => c);
+  pushUndoEntry('features', JSON.stringify(S.features), coalesce);
+  const cm = S.features.comm || (S.features.comm = {});
+  /* An edit that restores what the file already says is not an edit. Stored as a difference it would
+     survive a rebuild of `commanderies.json` that moved this ground somewhere else on purpose,
+     quietly dragging it back — so it is dropped and the file is left to speak. Compared against the
+     full edit-free reading rather than against the hex list, so a sliver that belongs to a province
+     by inheritance counts as already there rather than as something to write down. */
+  const base = commanderyBaseCells().get(key);
+  if (anchor === 'none' ? base === undefined : base === i) delete cm[key];
+  else cm[key] = anchor === 'none' ? 'none' : +anchor;
+  delete cm[h];                    // an older whole-hex edit has stopped speaking for this hex
+  for (const [L, c] of follow) {
+    const all = S.features.realms || (S.features.realms = {});
+    const byHex = all[L] || (all[L] = {});
+    (byHex[h] || (byHex[h] = {}))[ri | 0] = c;
+  }
+  commitFeatures();
+  renderCommPicker();
+}
+/* The province of a hex taken whole, now that its pieces may disagree: whichever holds the most of
+   it by area. Area rather than a count of pieces, because a hex cut by a strait is usually a shore
+   and a sliver, and "most of this hex is Sava's" is the answer anyone asking about the hex wants.
+   Ties fall to the lower index, which is arbitrary and has to be — the question itself is. */
+function commanderyOfHex(h) {
+  const cells = commanderyCells(), rs = regionsOf(h);
+  let best = null, bestA = 0;
+  for (let ri = 0; ri < rs.length; ri++) {
+    const i = cells.get(h + ':' + ri);
+    if (i === undefined) continue;
+    const a = cellArea(rs[ri]);
+    if (a > bestA) { bestA = a; best = i; }
+  }
+  return best;
+}
 /* The commandery a piece of ground is in, as { i, tier, name, hexes }, or null. `name` is null for one
    holding no named settlement at all — possible in principle, and better said than silently blanked.
 
@@ -4890,18 +5267,17 @@ function commanderyBuild() {
    Asked about a hex, it falls back to the hex list, so a hex whose only land is an inherited sliver still
    answers rather than coming back empty. */
 function commanderyAt(h, ri) {
-  if (!commIndex) commanderyBuild();
-  const i = ri == null ? commIndex.get(+h) : commanderyCells().get(+h + ':' + (ri | 0));
-  if (i === undefined) return null;
-  return { i, tier: S.commanderies[i].tier, name: commSeats[i]?.name ?? null,
-           seat: commSeats[i]?.h ?? null, hexes: S.commanderies[i].hexes };
+  const i = ri == null ? commanderyOfHex(+h) : commanderyCells().get(+h + ':' + (ri | 0));
+  if (i === undefined || i === null) return null;
+  return { i, tier: S.commanderies[i].tier, name: commSeat(i)?.name ?? null,
+           seat: commSeat(i)?.h ?? null, hexes: commHexList(i) };
 }
 // Every named commandery, for the search. Unnamed ones are left out: there would be nothing to type.
 function commanderyList() {
-  if (!commIndex) commanderyBuild();
+  commanderyMembers();
   const out = [];
   S.commanderies.forEach((c, i) => {
-    if (commSeats[i]) out.push({ i, tier: c.tier, name: commSeats[i].name, hexes: commanderySize(i) });
+    if (commSeat(i)) out.push({ i, tier: c.tier, name: commSeat(i).name, hexes: commanderySize(i) });
   });
   return out;
 }
@@ -8519,10 +8895,12 @@ svg.addEventListener('pointerdown', e => {
     }
   }
   // An armed dropper takes the click and lays nothing down, so it must not open a sweep either.
-  if (e.button === 0 && S.mode === 'draw' && (S.tool === 'erase' || (S.tool === 'realm' && !realmDropper))) {
-    // Realm shares the eraser's drag: both are "apply this to whatever I sweep over", and both want
-    // the whole sweep to be one press of Ctrl+Z.
-    S.dragErase = { undoPushed: false, paint: S.tool === 'realm' };
+  if (e.button === 0 && S.mode === 'draw' &&
+      (S.tool === 'erase' || (S.tool === 'realm' && !realmDropper) || (S.tool === 'comm' && !commDropper))) {
+    // Realm and Commandery share the eraser's drag: all three are "apply this to whatever I sweep
+    // over", and all three want the whole sweep to be one press of Ctrl+Z.
+    S.dragErase = { undoPushed: false, paint: S.tool === 'realm' ? 'realm' : S.tool === 'comm' ? 'comm' : null,
+                    sweep: 'comm-sweep:' + (++commSweep) };
     svg.setPointerCapture(e.pointerId);
     return;
   }
@@ -8647,7 +9025,9 @@ svg.addEventListener('pointermove', e => {
   }
   if (S.dragErase && (e.buttons & 1) && Math.hypot(e.clientX - downPos[0], e.clientY - downPos[1]) > tapSlop(e)) {
     const [wx, wy, s] = toWorld(e);
-    if (S.dragErase.paint) paintRealmDrag(wx, wy); else eraseWholeAt(wx, wy, s);
+    if (S.dragErase.paint === 'comm') paintCommanderyAt(wx, wy, S.dragErase.sweep);
+    else if (S.dragErase.paint) paintRealmDrag(wx, wy);
+    else eraseWholeAt(wx, wy, s);
     return;
   }
   onHover(e);
@@ -8842,6 +9222,7 @@ svg.addEventListener('dblclick', e => {
 
 async function drawClick(wx, wy, scale, e) {
   if (S.tool === 'realm') { (realmDropper ? pickRealmAt : paintRealmAt)(wx, wy); return; }
+  if (S.tool === 'comm') { (commDropper ? pickCommanderyAt : paintCommanderyAt)(wx, wy); return; }
   if (S.tool === 'erase') {
     const thr = 8 / scale * 1.5 + 3;
     // strongholds (custom placements/flags AND datasheet ones) — nearest marker wins over lines
@@ -9487,6 +9868,7 @@ function setMode(m) {
   svg.classList.toggle('routing', m === 'route');
   if (m !== 'draw' && S.drawing) finishDrawing();
   renderRealmPicker();
+  renderCommPicker();
 }
 document.getElementById('toolBtns').addEventListener('click', e => {
   const b = e.target.closest('button'); if (!b) return;
@@ -9497,7 +9879,9 @@ document.getElementById('toolBtns').addEventListener('click', e => {
   // Reaching for the tool is as good as asking for the layer: read the scan if it has not been, so
   // there is a palette to choose from and something on screen to paint against.
   if (S.tool === 'realm') ensureRealmLayer();
+  if (S.tool === 'comm') ensureCommLayer();
   renderRealmPicker();
+  renderCommPicker();
 });
 document.getElementById('realmLayer')?.addEventListener('change', () => {
   realmPaint = null;                       // a colour from one scan means nothing on the other
@@ -9509,6 +9893,8 @@ document.getElementById('realmLayer')?.addEventListener('change', () => {
    you can see what you are mixing against the map behind it. The colour is armed as it is mixed —
    closing the dialog leaves the brush loaded with whatever you settled on, which is what picking a
    colour is for. */
+document.getElementById('commPickBtn')?.addEventListener('click', () => setCommDropper(!commDropper));
+document.getElementById('commNobody')?.addEventListener('click', () => { commPaint = 'none'; setCommDropper(false); });
 document.getElementById('realmCustomInput')?.addEventListener('input', e => {
   const c = rgbKey(e.target.value);
   realmCustom.set(document.getElementById('realmLayer').value, c);

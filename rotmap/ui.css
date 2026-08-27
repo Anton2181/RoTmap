@@ -838,6 +838,11 @@ body.colsizing { cursor: col-resize; user-select: none; }
   box-shadow: var(--shadow-2);
   font-size: var(--f2); color: var(--ink);
 }
+/* A flyout can be a list of every realm on both maps, which is longer than any screen. Capped and
+   scrolled rather than left to run off the bottom: fitPopup clamps the top edge to keep a popup on
+   screen, so an over-tall one does not spill — it simply puts its last rows somewhere unreachable.
+   The cap is measured before placement, so the popup is still positioned against its real height. */
+.ctxsub { max-height: min(70vh, 560px); overflow-y: auto; overscroll-behavior: contain; }
 #ctxMenu[hidden] { display: none; }
 /* Two menus can be shown at once — a token's and its hex's — so it has to be able to scroll rather
    than run off the bottom of the screen. */
