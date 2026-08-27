@@ -2465,20 +2465,58 @@ function recolorRealm(layer, from, hex, coalesce) {
   if (!cells.length) return;
 
   pushUndoEntry('realm-recolor', JSON.stringify({ features: S.features, tokens: S.tokens }), coalesce);
+  /* Which of these cells the *rule* is painting rather than the scan — worked out here, before the
+     rules are touched, because the test is what they say now and they are about to say something
+     else. A cell is the overlay's if the Warlords layer holds it and its border answer is this
+     colour; that is precisely the ground `overlayWarlords` will repaint by itself. */
+  const overlaid = new Set();
+  if (layer === 'borders') {
+    const w = realmCols.get('warlords');
+    if (w) for (const k of cells) { const c = w.get(k); if (c !== undefined && borderPaint(c) === from) overlaid.add(k); }
+  }
+  /* The border rules are keyed *and* valued by colour, so a recolour has to move through them before
+     anything else is decided — a realm that exists only because a rule points at it would otherwise
+     keep its old colour everywhere the rule paints, which is everywhere it grows to next.
+
+     Three moves, and each is the same argument the legend name below makes: the old triple has
+     stopped identifying this entity. A warlord's own answer follows its colour, and is written out in
+     full even when it came from the shipped table, since that table is keyed by the colour the
+     warlord used to be. Every rule *pointing* at this realm follows it. And a rule that only exists
+     in the shipped table but points here is written out too, for the same reason. */
+  const rules = S.features.borderRule || (S.features.borderRule = {});
+  if (BORDERS_RULE_SHIPPED.has(from) || from in rules) rules[to] = borderRule(from);
+  delete rules[from];
+  for (const [k, v] of BORDERS_RULE_SHIPPED) if (v === from && !(k in rules)) rules[k] = to;
+  for (const k in rules) if (rules[k] === from) rules[k] = to;
+
   const all = S.features.realms || (S.features.realms = {});
   const byHex = all[layer] || (all[layer] = {});
+  /* Ground the *rule* is painting needs no override: the rule has just been pointed at the new
+     colour, so the overlay will paint it correctly on its own, and pinning it here would freeze this
+     realm at the extent it happened to have when it was recoloured — which is exactly the bug being
+     fixed, in the opposite direction. What is left is ground the scan itself paints, where the scan
+     is immutable and an override is the only way to say anything at all. */
   for (const k of cells) {
+    if (overlaid.has(k)) continue;
     const p = k.indexOf(':'), h = k.slice(0, p), ri = k.slice(p + 1);
     (byHex[h] || (byHex[h] = {}))[ri] = to;
   }
+  if (!Object.keys(byHex).length) delete all[layer];
 
-  // Preserve even a built-in legend name: its old colour key no longer identifies this entity.
-  const oldName = realmName(layer, from);
+  /* Preserve even a built-in legend name: its old colour key no longer identifies this entity. On
+     **every** layer that had a name for it, not only the one being recoloured — a warlord that is a
+     realm in its own right on the Borders map is named there out of the same legend, and moving its
+     colour while leaving the name behind would strike it dumb on a map it had been answering for.
+     A layer with nothing to say about the old colour writes nothing, so this costs nothing where the
+     realm only ever existed on one of them. */
   const names = S.features.realmNames || (S.features.realmNames = {});
-  const byColour = names[layer] || (names[layer] = {});
-  if (oldName) byColour[to] = oldName;
-  delete byColour[from];
-  if (!Object.keys(byColour).length) delete names[layer];
+  for (const L of ['warlords', 'borders']) {
+    const oldName = realmName(L, from);
+    const byColour = names[L] || (names[L] = {});
+    if (oldName) byColour[to] = oldName;
+    delete byColour[from];
+    if (!Object.keys(byColour).length) delete names[L];
+  }
 
   if (layer === 'warlords') {
     for (const t of S.tokens)
