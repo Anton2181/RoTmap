@@ -86,6 +86,12 @@ So one marching day's roll is read twice, and the calculator keeps the two apart
 | Blizzard | each IRL day of any marching | −1 morale, certain |
 | Hot | day forced marching, or day marching over 60 mi | a check, no morale cost |
 
+Forced marching and night marching are **ordered in whole IRL days** — one day, two, three, never a
+part of one. A stretch therefore ends wherever the column has got to when the last day runs out,
+which is usually the middle of a hex: that hex is part hurried and part not, and costs the two rates
+in proportion. It also makes the count exact — N days of forced marching is N checks, with nothing
+left over to round up.
+
 A day that is both forced **and** by night rolls both checks. Neither sailing nor the month spent
 securing a fleet is marching, and neither calls for anything. Checks are counted over the **whole march** and rounded up once — "after five in game days
 of forced march, check morale" is a running total, not something each order restarts — so where the
