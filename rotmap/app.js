@@ -5502,6 +5502,13 @@ function landStep(a, b, o, road, crossMajor, bRi, geom) {
   // A night-marching column still has to cross roadless ground by daylight, so the note says which
   // of the two this step was: the distinction is the whole of what the night rule does to a route.
   let irl = RULES.HEX_MILES / mpi, note = road ? 'road' : 'off-road';
+  /* On a tie, take the road. For most columns off-road is genuinely slower and this decides nothing,
+     but light infantry keep their road pace off it, so the two are exactly equal and the search took
+     whichever it happened to reach first — the same march came back `RRRR` below the ⅓ threshold and
+     `oRoR` above it, at the same cost, with the drawn line wandering off the road and back for no
+     reason anyone could see. A hair's weight against leaving the road settles it without ever
+     outweighing a real difference: a shorter way round still wins by whole tenths of a day. */
+  if (!road) irl += NUDGE;
   if (o.night) note += nightStep(o, road) ? ' (night)' : ' (by day — no night march off-road)';
   else if (o.dayNight) note += dayNightStep(o, road) ? ' (day+night)' : ' (by day — no night march off-road)';
   // "Coastal strip" means walkable ground in a hex whose sheet terrain is water. Merely having a
