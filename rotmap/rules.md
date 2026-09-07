@@ -79,8 +79,10 @@ So one marching day's roll is read twice, and the calculator keeps the two apart
 | Blizzard | each IRL day of any marching | −1 morale, certain |
 | Hot | day forced marching, or day marching over 60 mi | a check, no morale cost |
 
-A day that is both forced **and** by night rolls both checks. Part-days round up, per leg. Sailing is
-not marching and calls for nothing.
+A day that is both forced **and** by night rolls both checks. Sailing is not marching and calls for
+nothing. Checks are counted over the **whole march** and rounded up once — "after five in game days
+of forced march, check morale" is a running total, not something each order restarts — so where the
+waypoints fall no longer changes what a march costs in morale.
 
 The morale loss is a binomial in the number of checks and does not depend on the order they come in,
 which is what lets the optimiser rearrange legs freely and still be exact. The *failure* risk does
@@ -92,13 +94,18 @@ fails. (**Stubborn** — no morale loss on defeat — touches only battle, which
 model, so it is not offered.)
 
 With **Forced march** or **Night march** ticked the box stops meaning "the whole route" and starts
-meaning "where it pays": the legs to march hard are chosen as the fastest set that still leaves the
-army at or above its allowed floor with the certainty asked for, and those choices override any legs
-marked by hand. Where the floor is already out of reach the gentlest march is shown instead, and the
+meaning "where it pays". Night marching is chosen a leg at a time, since keeping to the road can
+change which road; forced marching is then chosen **hex by hex** — because ceil(D) ≤ N is just
+D ≤ N, a budget of N checks is exactly a budget of N days spent marching hard, and which steps to
+spend them on is a knapsack. Both override any legs marked by hand. Where the floor is already out of reach the gentlest march is shown instead, and the
 card says so.
 
-Not modelled: recovery towards resting morale (1 per 20 IRL days), rest, supply, pay, battle, and the
-feedback from a consequence back into the march — a desertion shortens the column and would speed the
+**Rest-drift.** Every 20 IRL days of marching, morale moves 1 towards the army's resting morale (9,
+or 6 for a majority-peasant army): down if it is over, up if it is under. Applied after the march's
+losses, which is exact for any route under 20 days and a simplification only where an outcome crosses
+resting morale mid-march.
+
+Not modelled: rest, supply, pay, battle, and the feedback from a consequence back into the march — a desertion shortens the column and would speed the
 army up, which is not a trade worth optimising into.
 
 ## Rivers

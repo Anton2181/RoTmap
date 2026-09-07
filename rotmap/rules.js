@@ -169,7 +169,7 @@ RULES.MORALE = {
   DOUBLES: 6 / 36,               // the marching rider: 6 doubles out of 36 faces
   MARCHING_CITY_WAGON_PER_INF: 30, // "at least 1 wagon for every 30 infantry", and over 6 miles long
   POET_BONUS: 2,                 // "your morale rolls count as 2 higher for ... failed consequences"
-  RECOVERY_IRL_DAYS: 20,         // "every 20 IRL days, morale changes by 1 towards resting" — not modelled
+  RECOVERY_IRL_DAYS: 20,         // "every 20 IRL days, morale changes by 1 towards resting" 
 };
 
 // Weather riders on morale. Speed multipliers live in WEATHER; these are what the same weather does
@@ -224,7 +224,7 @@ function binomDist(n, p) {
    on the order the checks come in — which is what lets the optimiser reorder and re-mark legs freely
    and still get an exact answer. The weather's automatic losses are certain, so they simply shift it.
    Morale floors at 0; an army there fails every check it makes. */
-function moraleDist(start, checks, detLoss, max) {
+function moraleDist(start, checks, detLoss, max, drifts, rest) {
   const cap = max || RULES.MORALE.MAX;
   const dist = new Array(cap + 1).fill(0);
   const loss = binomDist(checks, RULES.MORALE.DOUBLES);
@@ -232,11 +232,37 @@ function moraleDist(start, checks, detLoss, max) {
     const m = Math.max(0, Math.min(cap, start - detLoss - k));
     dist[m] += loss[k];
   }
-  return dist;
+  return moraleDrift(dist, drifts || 0, rest);
 }
+
+/* "Every 20 IRL days, morale changes by 1 towards an army's resting morale. If it is over, it goes
+   down by 1, and if it is under, it goes up by 1." Applied to the whole distribution a step at a
+   time, because the direction depends on where each outcome sits: one march can leave some of its
+   possible armies above resting and some below, and the same tick pulls them opposite ways.
+
+   Taken after the march's losses rather than interleaved with them. For any route shorter than 20 IRL
+   days that is exact, since there are no ticks at all; beyond it, the two orderings differ only where
+   an outcome crosses resting morale mid-march, which is the price of not carrying elapsed time
+   through the whole distribution. */
+function moraleDrift(dist, ticks, rest) {
+  const target = rest ?? RULES.MORALE.REST;
+  let cur = dist;
+  for (let t = 0; t < ticks; t++) {
+    const next = new Array(cur.length).fill(0);
+    for (let m = 0; m < cur.length; m++) {
+      if (!cur[m]) continue;
+      next[m === target ? m : m > target ? m - 1 : m + 1] += cur[m];
+    }
+    cur = next;
+  }
+  return cur;
+}
+// How many rest-drift ticks a march of this many IRL days earns.
+function moraleDrifts(irlDays) { return Math.floor((irlDays || 0) / RULES.MORALE.RECOVERY_IRL_DAYS); }
+
 // P(the army finishes at or above `floor`).
-function moraleAtLeast(start, checks, detLoss, floor, max) {
-  const d = moraleDist(start, checks, detLoss, max);
+function moraleAtLeast(start, checks, detLoss, floor, max, drifts, rest) {
+  const d = moraleDist(start, checks, detLoss, max, drifts, rest);
   let p = 0;
   for (let m = Math.max(0, floor); m < d.length; m++) p += d[m];
   return p;
@@ -244,10 +270,10 @@ function moraleAtLeast(start, checks, detLoss, floor, max) {
 /* The most checks a march can carry and still finish at or above `floor` with at least `conf`
    confidence. Monotone in the number of checks, so this counts up until it breaks; -1 means the
    deterministic losses alone already put the army under, and no arrangement of legs can help. */
-function moraleCheckBudget(start, detLoss, floor, conf, max) {
-  if (moraleAtLeast(start, 0, detLoss, floor, max) < conf) return -1;
+function moraleCheckBudget(start, detLoss, floor, conf, max, drifts, rest) {
+  if (moraleAtLeast(start, 0, detLoss, floor, max, drifts, rest) < conf) return -1;
   let n = 0;
-  while (n < 400 && moraleAtLeast(start, n + 1, detLoss, floor, max) >= conf) n++;
+  while (n < 400 && moraleAtLeast(start, n + 1, detLoss, floor, max, drifts, rest) >= conf) n++;
   return n;
 }
 
@@ -261,7 +287,7 @@ function moraleCheckBudget(start, detLoss, floor, conf, max) {
    carries no doubles rider — the Hot weather checks — so it threatens the army without wearing it
    down, and the two kinds cannot be added together. `poet` shifts the *consequence* two rows up the table
    without changing whether the roll failed, which is what the trait says. */
-function moraleOutlook(start, legs, { poet = false, max = RULES.MORALE.MAX } = {}) {
+function moraleOutlook(start, legs, { poet = false, max = RULES.MORALE.MAX, drifts = 0, rest } = {}) {
   const cap = max, zeros = () => new Array(cap + 1).fill(0);
   /* Two distributions are carried, not one. `dist` is every path, and answers what morale the army
      ends on. `clean` is only those paths that have not yet failed a check, and its total mass at the
@@ -314,7 +340,8 @@ function moraleOutlook(start, legs, { poet = false, max = RULES.MORALE.MAX } = {
       dist = nd; clean = nc;
     }
   }
-  return { anyFail: 1 - clean.reduce((a, b) => a + b, 0), expFails, sizeLoss, dets, byResult, dist };
+  return { anyFail: 1 - clean.reduce((a, b) => a + b, 0), expFails, sizeLoss, dets, byResult,
+           dist: moraleDrift(dist, drifts, rest) };
 }
 
 /* Whether the Marching City tradition covers this column's forced marching: "if your army is more

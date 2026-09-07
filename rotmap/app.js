@@ -4786,7 +4786,7 @@ const ROUTE_SETTINGS = {
   // `moraleConf` how sure of that the commander wants to be. With the pace boxes ticked these three
   // are what the optimiser solves against: they turn "march hard" into "march as hard as this army
   // can stand". `moraleMax` is 12 by default and 9 for a peasant-majority army.
-  morale: 9, moraleMin: 6, moraleConf: 50, moraleMax: 12,
+  morale: 9, moraleMin: 8, moraleConf: 50, moraleMax: 12, moraleRest: 9,
   marchingCity: false, poet: false,
 };
 const SETTINGS_LS = 'rotmap_settings_v1';
@@ -4812,8 +4812,18 @@ function activeSettings() {
   const rt = S.routes[S.activeRoute];
   if (!rt) return SETTINGS;
   if (!rt.set) rt.set = { ...SETTINGS };      // a route from before settings existed
-  return rt.set;
+  return withSettingDefaults(rt.set);
 }
+/* A route saved before a setting existed has no opinion about it, and reading a missing *number* as
+   zero is not neutral the way a missing checkbox is: a route drawn before morale was modelled would
+   come back claiming an army of morale 0, which the card then reported as an army with none left.
+   Filled in on read rather than migrated on load, so nothing is written to a route the user has not
+   touched. */
+function withSettingDefaults(set) {
+  for (const k of SETTING_NUMS) if (set[k] === undefined) set[k] = ROUTE_SETTINGS[k] ?? 0;
+  return set;
+}
+
 function armyOpts(set) {
   const st = set || activeSettings();
   const v = id => +st[id] || 0;
@@ -4838,7 +4848,7 @@ function armyOpts(set) {
     colMiles: columnMiles(army),
     forced: c('forced'), night: c('night'), fleet: c('fleet'),
     morale: v('morale'), moraleMin: v('moraleMin'), moraleConf: v('moraleConf'),
-    moraleMax: v('moraleMax') || RULES.MORALE.MAX,
+    moraleMax: v('moraleMax') || RULES.MORALE.MAX, moraleRest: v('moraleRest') || RULES.MORALE.REST,
     marchingCity: c('marchingCity'), poet: c('poet'),
     // Two independent permissions, not one. `secureFleet` licenses only the month spent getting
     // ships you don't have; boarding ships you *do* have is licensed by having them, which is what
@@ -4867,7 +4877,8 @@ function legOpts(o, w) {
 
 /* The panel is a view of one settings object. Writing a box writes through to whichever object is
    active and recomputes; changing the active route rereads the boxes from it. */
-const SETTING_NUMS = ['li', 'cav', 'inf', 'wag', 'non', 'morale', 'moraleMin', 'moraleConf', 'moraleMax'];
+const SETTING_NUMS = ['li', 'cav', 'inf', 'wag', 'non', 'morale', 'moraleMin', 'moraleConf',
+                      'moraleMax', 'moraleRest'];
 const SETTING_CHKS = ['forced', 'night', 'marines', 'embark', 'fleet', 'noTrade', 'logistician',
                       'marchingCity', 'poet', 'stops'];
 /* Boxes that are on unless something says otherwise. Every route saved before a box existed has no
@@ -4904,7 +4915,7 @@ function readRouteForm(changedId) {
   // claim that the army has none — it is a box the user is halfway through typing in. These three
   // keep their defaults rather than reading back as zero and declaring every route impossible.
   for (const [id, dflt] of [['morale', ROUTE_SETTINGS.morale], ['moraleMax', ROUTE_SETTINGS.moraleMax],
-                            ['moraleConf', ROUTE_SETTINGS.moraleConf]])
+                            ['moraleRest', ROUTE_SETTINGS.moraleRest], ['moraleConf', ROUTE_SETTINGS.moraleConf]])
     if (document.getElementById(id).value === '') st[id] = dflt;
   for (const id of SETTING_CHKS) st[id] = document.getElementById(id).checked;
   st.weather = document.getElementById('weather').value;
@@ -5770,6 +5781,28 @@ function departHexCost(h, ri, afloat, note, o) {
 function dijkstraField(fromH, fromRi, af0, sh0, o) {
   const dist = new Map(), prev = new Map();
   const departCost = (afloat, note) => departHexCost(fromH, fromRi, afloat, note, o);
+  /* Which nodes are still "in the hex the column started in, having never left it". Testing
+     `h === fromH` alone was not that: a path that leaves the origin hex and later re-enters another
+     part of it — the far bank of a river running through it, a coastal strip across an inlet — would
+     be charged for setting out a second time, on top of the ordinary entry cost it had just paid.
+     Found by walking only the moves that stay inside the origin hex, which is a handful of nodes and
+     settles the question exactly: any node reached by leaving is not in this set, and any node in it
+     that could also be reached the long way round is cheaper this way, so Dijkstra keeps this one. */
+  const insideOrigin = new Set();
+  {
+    const seed = sk(fromH, fromRi, af0, sh0, 0), stack = [[fromH, fromRi, af0, sh0, 0]];
+    insideOrigin.add(seed);
+    while (stack.length) {
+      const [h, ri, af, sh, g] = stack.pop();
+      for (const mv of expand(h, ri, af, sh, g, o)) {
+        if (mv.toH !== fromH) continue;
+        const k = sk(mv.toH, mv.toRi, mv.af, mv.ships, mv.g);
+        if (insideOrigin.has(k)) continue;
+        insideOrigin.add(k);
+        stack.push([mv.toH, mv.toRi, mv.af, mv.ships, mv.g]);
+      }
+    }
+  }
   dist.set(sk(fromH, fromRi, af0, sh0, 0), 0);
   const pq = [[0, fromH, fromRi, af0, sh0, 0]];
   while (pq.length) {
@@ -5784,7 +5817,7 @@ function dijkstraField(fromH, fromRi, af0, sh0, o) {
          at a time from each waypoint in turn — so charging every field's own origin would bill each
          interior waypoint twice, once for the leg that enters it and once for the leg that leaves.
          `chargeDepart` is how the caller says which field is the real beginning. */
-      const leaving = o.chargeDepart !== false && h === fromH && mv.toH !== fromH;
+      const leaving = o.chargeDepart !== false && mv.toH !== fromH && insideOrigin.has(k1);
       const dep = leaving ? departCost(af, mv.note) : 0;
       const stepIrl = mv.irl + dep;
       const k2 = sk(mv.toH, mv.toRi, mv.af, mv.ships, mv.g), nd = d + stepIrl;
@@ -6038,8 +6071,12 @@ function legMoraleCost(o, mode, steps, irl) {
 }
 
 // Does this route, spending this many checks and losing this much outright, still clear the bar?
-function moraleFeasible(o, checks, det) {
-  return moraleAtLeast(o.morale, checks, det, o.moraleMin, o.moraleMax) >= o.moraleConf / 100;
+/* Rest-drift depends on how long the march takes, so feasibility is a question about a whole
+   arrangement rather than about its morale spend alone — which is why it is asked at selection time,
+   where the cost is known, rather than folded into the search. */
+function moraleFeasible(o, checks, det, irlDays) {
+  return moraleAtLeast(o.morale, checks, det, o.moraleMin, o.moraleMax,
+                       moraleDrifts(irlDays), o.moraleRest) >= o.moraleConf / 100;
 }
 
 
@@ -6056,9 +6093,10 @@ function moraleCardHTML(o, r) {
   if (!r || r.fail) return '';
   const mo = r.morale || { checks: 0, det: 0, plain: 0, legCosts: [] };
   const conf = o.moraleConf / 100;
-  const dist = moraleDist(o.morale, mo.checks, mo.det, o.moraleMax);
-  const pAt = moraleAtLeast(o.morale, mo.checks, mo.det, o.moraleMin, o.moraleMax);
-  const risk = mo.checks + mo.plain + mo.det;
+  const drifts = moraleDrifts(r.irl);
+  const dist = moraleDist(o.morale, mo.checks, mo.det, o.moraleMax, drifts, o.moraleRest);
+  const pAt = moraleAtLeast(o.morale, mo.checks, mo.det, o.moraleMin, o.moraleMax, drifts, o.moraleRest);
+  const risk = mo.checks + mo.plain + mo.det + drifts;
   /* Only a certainty may print as 100%, and only an impossibility as 0. Rounding 99.7% up put
      "100% at or above 6" directly above "below: 0.3%", which is a plain contradiction on the same
      card. Near either end the decimal is kept for the same reason: at those odds the difference
@@ -6092,14 +6130,15 @@ function moraleCardHTML(o, r) {
   const met = pAt >= conf;
   const belowP = 1 - pAt;
   const out = moraleOutlook(o.morale, mo.legCosts.length ? mo.legCosts : [{ checks: mo.checks, plain: mo.plain, det: mo.det }],
-                            { poet: o.poet, max: o.moraleMax });
+                            { poet: o.poet, max: o.moraleMax, drifts, rest: o.moraleRest });
   // The consequences table, worst first — a mutiny is the thing worth seeing, however unlikely.
   const results = Object.entries(out.byResult).map(([k, p]) => [+k, p])
     .filter(([, p]) => p > 0.0005).sort((a, b) => a[0] - b[0]).slice(0, 4);
   return `<div class="moralecard">` +
     `<div class="mhead">after this march` +
       `<span class="mspend">${mo.checks} check${mo.checks === 1 ? '' : 's'}` +
-      `${mo.det ? ` · −${mo.det} certain` : ''}${mo.plain ? ` · ${mo.plain} heat check${mo.plain === 1 ? '' : 's'}` : ''}</span></div>` +
+      `${mo.det ? ` · −${mo.det} certain` : ''}${mo.plain ? ` · ${mo.plain} heat check${mo.plain === 1 ? '' : 's'}` : ''}` +
+      `${drifts ? ` · ${drifts} rest-drift toward ${o.moraleRest}` : ''}</span></div>` +
     `<div class="mbig ${met ? 'ok' : 'no'}">${pct(pAt)} <span>at or above ${o.moraleMin}` +
       ` — ${met ? 'meets' : 'misses'} the ${o.moraleConf}% asked</span></div>` +
     `<div class="mchart" style="--floor:${o.moraleMin}">${bars.join('')}</div>` +
@@ -6112,6 +6151,93 @@ function moraleCardHTML(o, r) {
       (results.length ? `<ul>${results.map(([k, p]) =>
         `<li><span>${pct(p)}</span> ${escHtml(RULES.CONSEQUENCES[k].name)} — ${escHtml(RULES.CONSEQUENCES[k].detail)}</li>`).join('')}</ul>` : '') +
     `</div></div>`;
+}
+
+
+/* ---------------- choosing the hard miles, hex by hex ----------------
+   The per-leg search above picks the roads and settles which legs march by night; what it cannot do
+   is pick *part* of a leg, and a route drawn with two pins has exactly one. So forced marching was
+   all of it or none of it, and the only way to ask for anything in between was to litter the route
+   with waypoints — which then made it worse, because checks were rounded up per leg and a march
+   split seven ways paid seven part-days instead of the three it actually marched.
+
+   Both go away by counting the way the rules do: "after five in game days [1 IRL day] of forced
+   march, check morale" is a running total over the whole march, not per order. And because
+   ceil(D) <= N is just D <= N, a budget of N checks is exactly a budget of N days spent marching
+   hard — which turns the choice into a knapsack over the steps: each step costs its own forced
+   duration out of that budget and buys back the time it saves.
+
+   Solved as a small DP over hundredths of a day rather than greedily, because the ratio is not the
+   same for every step: a step that spends half its time fording a river saves proportionally less by
+   marching hard, and greedy by ratio would spend the budget on it anyway. */
+const PACE_Q = 100;                     // budget quantised to hundredths of an IRL day
+
+// A land step's cost under a different pace, keeping whatever else it was carrying — a ford, a
+// ferry, the charge for setting out. Those are prices in time that a faster march does not change,
+// so they are measured off the step as solved and added back unchanged.
+function stepCostAtPace(st, o, was, want) {
+  const note = st.note || '';
+  if (st.ships || /sail|embark|disembark|secure ships/.test(note)) return null;   // not a march
+  const road = /^(road|trade route)/.test(note);
+  const mpiAt = m => landMilesPerIRL({ road, terrain: regionTerrain(st.h, st.ri), forced: m.forced,
+                                       night: m.night && road, liThird: o.liThird, cavOnly: o.cavOnly,
+                                       weather: o.weather, colMiles: o.colMiles });
+  const miles = st.miles ?? RULES.HEX_MILES;
+  const mWas = mpiAt(was), mWant = mpiAt(want);
+  if (!(mWas > 0) || !(mWant > 0)) return null;
+  const extra = st.irl - miles / mWas;          // fords, ferries, the setting-out charge
+  return miles / mWant + extra;
+}
+
+/* Pick which steps march hard. `budget` is the number of checks the army can still afford; `nightIrl`
+   is the marching already committed to the night, whose checks come out of the same budget. Returns
+   the chosen set, the new total, and what it costs in checks — or null when there is nothing to
+   choose between. */
+function refineForcedSteps(steps, o, budget, nightIrl) {
+  const cand = [];
+  let fixed = 0, freeForced = 0;
+  for (let i = 0; i < steps.length; i++) {
+    const st = steps[i], note = st.note || '';
+    const night = / \(night\)/.test(note);
+    const was = { forced: !!st.paceForced, night };
+    const slow = stepCostAtPace(st, o, was, { forced: false, night });
+    const fast = stepCostAtPace(st, o, was, { forced: true, night });
+    /* A step only enters the knapsack if hurrying it genuinely saves time and genuinely spends
+       budget. A zero or negative weight would let the traceback below walk back up its own table for
+       ever, and a step that saves nothing has no business competing for the budget anyway. */
+    if (slow === null || fast === null || !(slow - fast > 1e-9) || !(fast > 1e-9)) { fixed += st.irl; continue; }
+    // "You can force march on roads without risking morale" — per step, so a leg that dips off the
+    // road only pays for the steps that actually leave it.
+    const free = marchingCityCovers(o, o.colMiles, /^(road|trade route)/.test(note));
+    cand.push({ i, slow, fast, saved: slow - fast, cost: free ? 0 : fast, free });
+    fixed += slow;                                   // everything is costed slow, then bought back
+    if (free) { freeForced += fast - slow; }
+  }
+  if (!cand.length) return null;
+  // Steps the tradition covers are simply taken: they save time and cost nothing.
+  const cap = Math.max(0, Math.round(budget * PACE_Q) - Math.round(nightIrl * PACE_Q));
+  const paid = cand.filter(c => !c.free);
+  const dp = new Array(cap + 1).fill(0);            // best time saved for this many hundredths spent
+  const pick = new Array(cap + 1).fill(null);
+  for (const c of paid) {
+    const w = Math.max(1, Math.ceil(c.cost * PACE_Q));
+    if (w > cap) continue;
+    for (let v = cap; v >= w; v--) {
+      const cand2 = dp[v - w] + c.saved;
+      if (cand2 > dp[v] + 1e-12) { dp[v] = cand2; pick[v] = { c, prev: v - w }; }
+    }
+  }
+  let bestV = 0;
+  for (let v = 1; v <= cap; v++) if (dp[v] > dp[bestV] + 1e-12) bestV = v;
+  const chosen = new Set(cand.filter(c => c.free).map(c => c.i));
+  let forcedIrl = 0;
+  for (const c of cand) if (c.free) forcedIrl += 0;                  // covered: no days charged
+  for (let v = bestV, guard = 0; pick[v] && guard <= paid.length; guard++) {
+    const { c, prev } = pick[v];
+    chosen.add(c.i); forcedIrl += c.cost;
+    v = prev;
+  }
+  return { chosen, forcedIrl, total: fixed + freeForced - dp[bestV] };
 }
 
 function routeLeg(rt, o) {
@@ -6141,7 +6267,12 @@ function routeLeg(rt, o) {
         // takes its point a day from a column that is merely walking, and a leg marked by hand rolls
         // its checks like any other. Without the optimiser the mode is simply whatever this leg is.
         const eff = mode || { forced: !!lo.forced, night: !!lo.night };
-        lo = i === 0 ? lo : { ...lo, chargeDepart: false };   // only the first leg sets out
+        /* The charge belongs to the first leg that actually *leaves* the origin hex, which is not
+           always leg 0: click the start hex twice, or put a second waypoint in the same hex, and leg 0
+           goes nowhere. Marking only leg 0 then lost the crossing entirely, because every later leg
+           was told not to charge — so a duplicated start pin quietly made a route a hex shorter. */
+        const stillAtOrigin = wps.slice(0, i + 1).every(w => w.h === wps[0].h);
+        lo = stillAtOrigin ? lo : { ...lo, chargeDepart: false };
         // Roads first for a night march; daylight only where the road runs out (see landStep).
         let legs = eff.night
           ? dijkstraLeg(wps[i].h, wps[i].ri | 0, state >> 1, state & 1, wps[i + 1].h, wps[i + 1].ri | 0, { ...lo, roadsOnly: true })
@@ -6178,7 +6309,7 @@ function routeLeg(rt, o) {
      rather than the route refusing to exist over a morale figure. */
   let best = null, relaxed = false;
   for (const v of dp.values())
-    if (!opt || moraleFeasible(o, v.checks, v.det)) if (!best || v.cost < best.cost) best = v;
+    if (!opt || moraleFeasible(o, v.checks, v.det, v.cost)) if (!best || v.cost < best.cost) best = v;
   if (opt && !best) {
     relaxed = true;
     for (const v of dp.values())
@@ -6186,6 +6317,44 @@ function routeLeg(rt, o) {
           (v.checks + v.det === best.checks + best.det && v.cost < best.cost)) best = v;
   }
   if (best) { best.relaxed = relaxed; best.optimised = opt; }
+  /* Now the same choice again, hex by hex. The leg search settled the roads and the night marching;
+     this spends what is left of the morale budget on the individual steps most worth hurrying,
+     which is the granularity a two-pin route never had. Checks are re-counted over the whole march
+     rather than per leg, so where the waypoints fall stops changing what the march costs in morale. */
+  if (best && opt && o.forced) {
+    const all = [];
+    best.legs.forEach((legSteps, li) => legSteps.forEach((st, j) => {
+      /* The first node of every leg is where the column is standing, not a move it makes: for leg 0
+         the route's own start, for the rest a repeat of the leg before. It carries no note and no
+         cost, and re-pricing it as though it were a march gave the start hex a phantom half-day. */
+      if (j === 0) return;
+      st.paceForced = !!best.modes[li]?.forced;
+      all.push(st);
+    }));
+    let nightIrl = 0;
+    for (const st of all) if (/ \(night\)/.test(st.note || '')) nightIrl += st.irl || 0;
+    const drifts = moraleDrifts(best.cost);
+    const budget = Math.max(0, moraleCheckBudget(o.morale, best.det, o.moraleMin, o.moraleConf / 100,
+                                                 o.moraleMax, drifts, o.moraleRest));
+    const ref = refineForcedSteps(all, o, budget, nightIrl);
+    if (ref) {
+      let total = 0;
+      all.forEach((st, i) => {
+        const want = ref.chosen.has(i);
+        if (want !== !!st.paceForced) {
+          const night = / \(night\)/.test(st.note || '');
+          const t = stepCostAtPace(st, o, { forced: !!st.paceForced, night }, { forced: want, night });
+          if (t !== null) st.irl = t;
+        }
+        st.paceForced = want;
+        total += st.irl || 0;
+      });
+      best.cost = total;
+      best.checks = Math.ceil(ref.forcedIrl - 1e-9) + Math.ceil(nightIrl - 1e-9);
+      best.legCosts = [{ checks: best.checks, plain: best.plain, det: best.det }];
+      best.stepForced = all.map(st => !!st.paceForced);
+    }
+  }
   if (!best) return { irl: 0, hexes: 0, miles: 0, steps: [], pts: [], ends: null, fail: null };
   /* What it cost to reach the last waypoint in each state the column could be standing there in —
      the DP's final column, handed on rather than thrown away. The route itself only needs the
@@ -6501,8 +6670,11 @@ function routeTimelineSchedule(rt, r) {
     // mountain hex takes more clock time but no more line than one fast road hex. Weight the revealed
     // prefix by miles/hexes and use time only to decide how far through the current step it has got.
     const moved = si > 0 && st.h !== r.steps[si - 1].h;
-    const hexes = moved ? (st.hexes ?? (st.chain ? st.chain.length - 1 : 1)) : 0;
-    const weight = moved ? (st.miles ?? hexes * RULES.HEX_MILES) : 0;
+    // The origin hex is charged to the step that leaves it but is never *drawn* — the line starts at
+    // the origin's own marker — so its 30 miles come off the geometric weight. Left in, the reveal ran
+    // a third of a hex ahead of the column and lit waypoint rings before the line reached them.
+    const hexes = moved ? (st.hexes ?? (st.chain ? st.chain.length - 1 : 1)) - (st.dep ? 1 : 0) : 0;
+    const weight = moved ? (st.miles ?? hexes * RULES.HEX_MILES) - (st.dep ? RULES.HEX_MILES : 0) : 0;
     distance += weight;
     steps.push({ start, end, cost: st.irl, weight });
     if (st.wp) {
@@ -6688,12 +6860,17 @@ async function runOptimise(i, mode) {
   const wps = rt.wps;
   const next = res.order.map(k => wps[k]);
   const same = next.length === wps.length && next.every((w, k) => w === wps[k]);
-  if (same) return toast(`${rt.name} is already in the best order — ${res.days} d`);
+  /* `res.days` comes from the cost matrix, which is built with the setting-out charge switched off
+     (see `oAt`), while everything on the panel counts it. Reporting the matrix's own figure put two
+     different day counts for one route on screen at once. The order is still *chosen* by the matrix;
+     what gets said out loud is what the route actually costs. */
+  if (same) return toast(`${rt.name} is already in the best order — ${(before ?? res).days} d`);
   pushUndoRoutes();
   rt.wps = next;
   S.activeRoute = i;
   computeRoute();
-  toast(before ? `${rt.name}: ${before.days} d → ${res.days} d` : `${rt.name}: ${res.days} d`);
+  const after = orderedOf(rt, lastResults[i]) ?? res;   // re-solved just above, charge included
+  toast(before ? `${rt.name}: ${before.days} d → ${after.days} d` : `${rt.name}: ${after.days} d`);
 }
 // The three questions the button can be asking, kept in one place so the panel and the route menu
 // cannot offer different ones.
@@ -6852,6 +7029,8 @@ const isoHolds = (h, ri, o) => realHex(h) && (o.fleet || o.secureFleet || regWal
 function dijkstraAll(fromNode, o, maxD) {
   const dist = new Map(), best = new Map();
   const r0 = fromNode.ri | 0, [af0, sh0] = startState(fromNode.h, r0, o);
+  // Reach is the same march a route makes, so it pays for the origin hex the same way — see
+  // dijkstraField. Without this the shading came back one crossing short of the route drawn over it.
   dist.set(sk(fromNode.h, r0, af0, sh0, 0), 0);
   const heap = [[0, fromNode.h, r0, af0, sh0, 0]];
   while (heap.length) {
@@ -6861,7 +7040,8 @@ function dijkstraAll(fromNode, o, maxD) {
     if (isoHolds(h, ri, o) && d < (best.get(key) ?? Infinity)) best.set(key, d);
     if (d > maxD) continue;
     for (const mv of expand(h, ri, af, sh, g, o)) {
-      const k2 = sk(mv.toH, mv.toRi, mv.af, mv.ships, mv.g), nd = d + mv.irl;
+      const dep = h === fromNode.h && mv.toH !== fromNode.h ? departHexCost(fromNode.h, r0, af, mv.note, o) : 0;
+      const k2 = sk(mv.toH, mv.toRi, mv.af, mv.ships, mv.g), nd = d + mv.irl + dep;
       if (nd < (dist.get(k2) ?? Infinity)) { dist.set(k2, nd); hpush(heap, [nd, mv.toH, mv.toRi, mv.af, mv.ships, mv.g]); }
     }
   }
@@ -7040,7 +7220,7 @@ function reliefMarch(toH, toRi, o, maxD) {
      a column that marches in and one that lands in from the river have both relieved the place. What
      it cannot do is count a fleet sitting in the water as an arrival — that state is only seeded when
      the besieged subhex is itself navigable, which `forcedAf` decides. */
-  const dist = new Map(), depDist = new Map(), heap = [];
+  const dist = new Map(), depDist = new Map(), seeds = new Set(), heap = [];
   const rs0 = regionsOf(toH), f0 = forcedAf(rs0[toRi | 0] || rs0[0]);
   const gs0 = new Set([0]);
   for (const v of S.adj.hexRoadGroup.get(toH)?.values() || []) gs0.add(v | 0);
@@ -7049,7 +7229,7 @@ function reliefMarch(toH, toRi, o, maxD) {
     for (const g of gs0) {
       if (af && g) continue;
       const k = sk(toH, toRi | 0, af, sh, g);
-      if (!dist.has(k)) { dist.set(k, 0); hpush(heap, [0, k, toH]); }
+      if (!dist.has(k)) { dist.set(k, 0); seeds.add(k); hpush(heap, [0, k, toH]); }
     }
   }
   while (heap.length) {
@@ -7065,8 +7245,14 @@ function reliefMarch(toH, toRi, o, maxD) {
          garrison stationed there would make, departure included. Kept apart from `dist` because that
          is what propagates: charge the crossing there and every hex in between would pay it twice,
          once entering and once leaving. */
-      const withDep = d + irl + dep;
-      if (withDep < (depDist.get(from) ?? Infinity)) depDist.set(from, withDep);
+      /* Only a move that actually leaves the hex can carry the crossing. A within-hex shuffle — an
+         embark, a bridge between two banks — used to be filed with `dep` 0, and minimising over it
+         handed the garrison a march that never paid for its own hex at all. Those edges are skipped
+         here; a node that can only leave by shuffling first is priced at the read below instead. */
+      if (dep > 0) {
+        const withDep = d + irl + dep;
+        if (withDep < (depDist.get(from) ?? Infinity)) depDist.set(from, withDep);
+      }
     }
   }
   /* Read off per subhex, from the state a force *stationed* there would set out in — the same start
@@ -7084,9 +7270,24 @@ function reliefMarch(toH, toRi, o, maxD) {
       if (ri >= MAX_REGIONS || !isoHolds(h, ri, o)) return;   // no ships, no billet at sea
       const [af0, sh0] = startState(h, ri, o);
       const key = sk(h, ri, af0, sh0, 0);
-      // Departure-inclusive: a garrison marching to the relief crosses its own hex first. The bare
-      // distance is the fallback for the besieged hex itself, which sets out from nowhere.
-      const v = depDist.get(key) ?? dist.get(key);
+      /* Departure-inclusive: a garrison marching to the relief crosses its own hex first. The
+         besieged subhex itself is the exception and has to be tested for rather than assumed — it
+         *does* get a depDist, from the neighbour it could march out to and back, and reading that
+         reported the place under siege as nearly two days from its own relief, further off than the
+         hex next door. It sets out from nowhere; its answer is zero. */
+      let v;
+      if (seeds.has(key)) v = dist.get(key);
+      else {
+        // The exact answer where a cross-hex exit exists, and otherwise the bare march plus the
+        // cheapest way out of this hex — never the free departure that skipping it used to give.
+        const bare = dist.get(key);
+        const onRoad = !!S.adj.hexRoadGroup.get(h)?.size;
+        const viaShuffle = bare === undefined ? undefined
+          : bare + departHexCost(h, ri, af0, onRoad ? 'road' : '', o);
+        const exact = depDist.get(key);
+        v = exact !== undefined && viaShuffle !== undefined ? Math.min(exact, viaShuffle)
+          : exact !== undefined ? exact : viaShuffle;
+      }
       if (v !== undefined && v <= maxD) best.set(nk(h, ri), v);
     });
   }
@@ -8478,13 +8679,15 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
     // the hand-marked flags are what the route falls back on when they were not.
     const om = r.morale?.optimised ? r.morale.modes[st.leg] : null;
     const w = j > 0 ? rt.wps[st.leg] : null;
-    const forced = j > 0 && (om ? !!om.forced : !!w?.f);
+    // A step chosen hex by hex answers for itself; otherwise fall back to the leg's mode, then to
+    // whatever was marked by hand.
+    const forced = j > 0 && (st.paceForced !== undefined ? st.paceForced : om ? !!om.forced : !!w?.f);
     const night = j > 0 && (om ? !!om.night : !!w?.n) && / \(night\)/.test(st.note || '');
     const cls = `class="strow${forced ? ' forced' : ''}${night ? ' night' : ''}"`;
     const attrs = `${cls} data-step="${j}"`;
     if (j === 0)
       return `<tr ${attrs}><td>${hexLbl}</td><td class="dim">${terr}</td>` +
-             `<td class="dim">${depart ? 'start — crossing this hex' : 'start'}</td>` +
+             `<td class="dim">start</td>` +
              `<td class="dim">${depart ? RULES.HEX_MILES : ''}</td>` +
              `<td>${depart ? depart.toFixed(2) : ''}</td>` +
              `<td>${depart ? marchCum.toFixed(1) : ''}</td></tr>` + pause;
@@ -8520,7 +8723,18 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
     `<div class="big" style="color:${rt.color}">${rt.name}: ${ord ? ord.days + ' IRL days' : r.irl.toFixed(1) + ' IRL days'} ` +
     `<span style="color:#9aa4b2">(${r.irl.toFixed(1)} marched${ord?.waits ? ` + ${ord.waits} waiting` : ''} · ${game.toFixed(0)} in-game)</span></div>` +
     (() => {
-      // Which legs are forced: the optimiser's answer where it ran, the hand marks where it did not.
+      /* Counted in steps once the choice is made hex by hex, because that is the unit it is made in
+         and "3 of 5 legs" would be answering a question nobody asked any more. */
+      const byStep = r.steps.some(st => st.paceForced !== undefined);
+      if (byStep) {
+        const marched = r.steps.filter(st => st.paceForced !== undefined);
+        const hard = marched.filter(st => st.paceForced).length;
+        if (!hard) return '';
+        let runs = 0;
+        marched.forEach((st, i) => { if (st.paceForced && !marched[i - 1]?.paceForced) runs++; });
+        return `<div class="fmnote">Forced march: ${hard} of ${marched.length} steps in ` +
+               `${runs} stretch${runs === 1 ? '' : 'es'} — chosen to fit the morale allowed.</div>`;
+      }
       const om = r.morale?.optimised ? r.morale.modes : null;
       const isF = i => om ? !!om[i]?.forced : !!rt.wps[i]?.f;
       const total = Math.max(1, rt.wps.length - 1);
