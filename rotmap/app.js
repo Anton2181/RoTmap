@@ -6056,6 +6056,12 @@ function throughSharedEdges(pts) {
 // boxes off entirely at the one setting that should have let the column march hardest.
 function moraleOptimising(o) { return !!(o.forced || o.night || o.dayNight); }
 
+/* A voyage is not a march. Sailing, boarding, going ashore and the month spent securing a fleet all
+   take time, but there is no pace to force and nobody rolls for them — so they can never be marked
+   hard, never carry a check, and never wear the forced rail in the readout. */
+const NOT_A_MARCH = /sail|embark|disembark|secure ships/;
+function isMarchStep(st) { return !NOT_A_MARCH.test((st && st.note) || ''); }
+
 // The ways a single leg may be marched, given which paces are permitted. Ordinary first, so a tie
 // between marching hard and not is settled in favour of the army's spirit.
 /* Every pace the search must try, because each can change which way the column goes. Night marching
@@ -6097,7 +6103,7 @@ function legMoraleDays(o, mode, steps) {
     // A voyage is not a march, and neither is a month spent in a harbour building boats. The narrower
     // test used to let those seven days through as marching, which in a blizzard cost the army seven
     // morale for standing still. (`st.ships` was never a field on a step at all.)
-    if (/sail|embark|disembark|secure ships/.test(note)) continue;
+    if (!isMarchStep(st)) continue;
     marchIrl += st.irl || 0;
     // Ordinary land steps carry no `miles` — only trade hops and the step that pays for the origin
     // hex do — so summing the raw field left the Hot 60-mile test dividing zero by the day.
@@ -6241,7 +6247,7 @@ const PACE_Q = 100;                     // budget quantised to hundredths of an 
 // so they are measured off the step as solved and added back unchanged.
 function stepCostAtPace(st, o, was, want) {
   const note = st.note || '';
-  if (st.ships || /sail|embark|disembark|secure ships/.test(note)) return null;   // not a march
+  if (!isMarchStep(st)) return null;                                  // no pace to change
   const road = /^(road|trade route)/.test(note);
   // Night and day-and-night are read off the note unless the caller says otherwise — which it does
   // when it is the night pace itself being changed.
@@ -6544,7 +6550,7 @@ function routeLeg(rt, o) {
          the route's own start, for the rest a repeat of the leg before. It carries no note and no
          cost, and re-pricing it as though it were a march gave the start hex a phantom half-day. */
       if (j === 0) return;
-      st.paceForced = !!best.modes[li]?.forced;
+      st.paceForced = isMarchStep(st) && !!best.modes[li]?.forced;
       all.push(st);
     }));
     /* Night stretches too short to be an order go back to daylight before anything else is decided,
@@ -6556,7 +6562,7 @@ function routeLeg(rt, o) {
       const d0 = { forcedDays: 0, nightDays: 0, dayDays: 0, marchDays: 0, dayMiles: 0, forcedDay: false };
       for (const st of all) {
         const note = st.note || '';
-        if (/sail|embark|disembark|secure ships/.test(note)) continue;
+        if (!isMarchStep(st)) continue;
         const dark = / \((night|day\+night)\)/.test(note), both = / \(day\+night\)/.test(note);
         d0.marchDays += st.irl || 0; d0.dayMiles += st.miles ?? RULES.HEX_MILES;
         if (dark) d0.nightDays += st.irl || 0;
@@ -6595,7 +6601,7 @@ function routeLeg(rt, o) {
         }
         irls.push(irl); fracs.push(f); cost += irl;
         const note = st.note || '';
-        if (/sail|embark|disembark|secure ships/.test(note)) continue;
+        if (!isMarchStep(st)) continue;
         const dark = / \((night|day\+night)\)/.test(note), both = / \(day\+night\)/.test(note);
         days.marchDays += irl;
         days.dayMiles += st.miles ?? RULES.HEX_MILES;
@@ -8984,7 +8990,7 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
     const w = paceOf ? rt.wps[paceOf.leg] : null;
     // A step chosen hex by hex answers for itself; otherwise fall back to the leg's mode, then to
     // whatever was marked by hand.
-    const marked = !!paceOf && (j > 0 || !!depart) &&
+    const marked = !!paceOf && (j > 0 || !!depart) && isMarchStep(paceOf) &&
                    (paceOf.paceForced !== undefined ? paceOf.paceForced : om ? !!om.forced : !!w?.f);
     const forced = !!marked;
     const night = !!paceOf && (j > 0 || !!depart) && / \((night|day\+night)\)/.test(paceOf.note || '');
