@@ -4780,7 +4780,8 @@ function minorCross(a, b, geom) {
    Legacy routes carry no settings, so they inherit whatever was last in the boxes. */
 const ROUTE_SETTINGS = {
   li: 0, cav: 2000, inf: 8000, wag: 80, non: 2500,
-  forced: false, marines: false, embark: true, fleet: false, noTrade: false, weather: 'clear',
+  forced: false, marines: false, embark: true, fleet: false, noTrade: false, logistician: false,
+  weather: 'clear',
 };
 const SETTINGS_LS = 'rotmap_settings_v1';
 let SETTINGS = { ...ROUTE_SETTINGS };
@@ -4815,7 +4816,9 @@ function armyOpts(set) {
   // counts infantry — column length, fording, whether this is a cavalry-only army — wants the total,
   // and gets it without having to know the army was entered in two parts.
   const li = v('li');
-  const army = { inf: v('inf') + li, cav: v('cav'), wag: v('wag'), non: v('non'), li };
+  // The trait rides on the army rather than beside it: it is a fact about how long this column is,
+  // and columnMiles and fordIRLDays both want it without having to be handed a second argument.
+  const army = { inf: v('inf') + li, cav: v('cav'), wag: v('wag'), non: v('non'), li, logistician: c('logistician') };
   return {
     army,
     // Light infantry set the pace once they are a third of the fighting strength — not, as this used
@@ -4840,7 +4843,7 @@ function armyOpts(set) {
 /* The panel is a view of one settings object. Writing a box writes through to whichever object is
    active and recomputes; changing the active route rereads the boxes from it. */
 const SETTING_NUMS = ['li', 'cav', 'inf', 'wag', 'non'];
-const SETTING_CHKS = ['forced', 'marines', 'embark', 'fleet', 'noTrade', 'stops'];
+const SETTING_CHKS = ['forced', 'marines', 'embark', 'fleet', 'noTrade', 'logistician', 'stops'];
 /* Boxes that are on unless something says otherwise. Every route saved before a box existed has no
    opinion about it, and reading a missing key as "off" would silently change what those routes mean —
    `stops` in particular, where off would stop billing halts on marches that were planned with them. */
@@ -8203,7 +8206,8 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
              `${legs} of ${Math.max(1, rt.wps.length - 1)} legs — right-click a step to change where.</div>`;
     })() +
     `<table>${wasteRow}<tr><td>Distance</td><td>${r.hexes} hexes ≈ ${Math.round(r.miles ?? r.hexes * RULES.HEX_MILES)} mi</td></tr>` +
-    `<tr><td>Column</td><td>${o.colMiles.toFixed(1)} mi${o.colMiles > RULES.LONG_COLUMN.limit ? ' <span class="warn">(over 6 mi — slowed)</span>' : ''}</td></tr>${paceRow}</table>` +
+    `<tr><td>Column</td><td>${o.colMiles.toFixed(1)} mi${o.army.logistician ? ' <span class="dim">(Logistician — half length)</span>' : ''}` +
+    `${o.colMiles > RULES.LONG_COLUMN.limit ? ' <span class="warn">(over 6 mi — road pace halved, off-road with it)</span>' : ''}</td></tr>${paceRow}</table>` +
     `<div class="steps"><table class="stepstbl" id="stepsTbl">` +
     `<colgroup><col class="c-hex"><col class="c-terr"><col class="c-via">` +
     `<col class="c-num"><col class="c-num"><col class="c-num"></colgroup>` +
@@ -10176,7 +10180,7 @@ function removeLastWaypoint() {
 }
 document.getElementById('undoWp').onclick = removeLastWaypoint;
 document.getElementById('undoWpFloat').onclick = removeLastWaypoint;
-for (const id of ['inf', 'cav', 'wag', 'non', 'li', 'forced', 'marines', 'fleet', 'embark', 'noTrade', 'stops', 'weather'])
+for (const id of ['inf', 'cav', 'wag', 'non', 'li', 'forced', 'marines', 'fleet', 'embark', 'noTrade', 'logistician', 'stops', 'weather'])
   document.getElementById(id).addEventListener('change', () => readRouteForm(id));
 
 document.getElementById('refetchBtn').onclick = async () => {

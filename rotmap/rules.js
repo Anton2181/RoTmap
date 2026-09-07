@@ -14,15 +14,19 @@ const RULES = {
     rumour:  90,   // word of mouth: 90 mi per IRL day (3 hexes/day)
   },
 
-  // Base miles per in-game marching day.
+  // Base miles per in-game marching day. These are the ROAD figures; everything else in the rules
+  // modifies them.
   MARCH: {
     road: 12,        // "On roads, armies move 12 miles per day" (x4/5 days -> 48 mi/IRL day)
-    offroad: 6,      // "Offroad, reduce the speeds by half" (-> 24 mi/IRL day)
     forcedRoad: 18,  // "A forced march increases this to 18 miles per day" (x5/5 -> 90 mi/IRL day)
-    forcedOffroad: 9,
     daysNormal: 4,   // marching days per 5-day (1 IRL day) block
     daysForced: 5,
   },
+
+  // "Offroad, reduce the speeds by half." A multiplier on whatever pace the column has, not a
+  // separate pair of speeds: for an ordinary army it gives the familiar 6 and 9 mi/day, and for a
+  // column over the length limit it halves the limit instead. See landMilesPerIRL.
+  OFFROAD_MULT: 0.5,
 
   MOUNTAIN_MULT: 0.5,       // "Mountains ... Movement speed halved."
   CAV_FORCED_MULT: 2,       // "Armies of exclusively cavalry double their forced march pace."
@@ -35,7 +39,16 @@ const RULES = {
 
   // Column: 1 mile of road per 5,000 infantry+noncombatants, 2,000 cavalry, or 50 wagons.
   COLUMN: { infPer: 5000, cavPer: 2000, wagPer: 50 },
-  // Columns > 6 miles: 6 mi/day (24 mi/IRL), forced 12 mi/day (60 mi/IRL).
+  // Logistician (a commander trait): "Your army stretches half as long on the road." A shorter column
+  // is shorter for every purpose the length is used for — the 6-mile limit and the ford, both of which
+  // are charged by the mile — so it is applied to the length itself rather than to either consequence.
+  LOGISTICIAN_MULT: 0.5,
+  // "Armies (or groups of armies marching in a single column) stretching longer than 6 miles travel
+  // only 6 miles per day, for a total of 24 miles per IRL day, or 12 miles per day at a forced march
+  // (for a total of 60 miles per IRL day)."
+  // Like the 12 and 18 above these are ROAD paces — the rules measure the column in miles "of road",
+  // and 24 mi/IRL is 6 x 4 marching days, the road cadence. So this replaces the base pace and the
+  // off-road, mountain and weather multipliers still apply on top of it.
   LONG_COLUMN: { limit: 6, day: 6, forcedDay: 12 },
 
   // Rivers: minor (1px) rivers are fordable; major (3px) rivers can ONLY be crossed by bridge or ferry.
@@ -76,28 +89,41 @@ const RULES = {
 function landMilesPerIRL(o) {
   const W = RULES.WEATHER[o.weather] || RULES.WEATHER.clear;
   const forced = o.forced && W.forced;
-  let day;
-  if (o.road) day = forced ? RULES.MARCH.forcedRoad : RULES.MARCH.road;
-  else if (o.liThird) day = forced ? RULES.MARCH.forcedRoad : RULES.MARCH.road; // light infantry keep road pace off-road
-  else day = forced ? RULES.MARCH.forcedOffroad : RULES.MARCH.offroad;
-  if (o.terrain === 'Mountains' && !o.liThird) day *= RULES.MOUNTAIN_MULT;
+  // Start from the road pace, then let the long column cut it. Both are paces on a road, so this
+  // settles what the column makes in a day before anything about the ground it is crossing.
+  let day = forced ? RULES.MARCH.forcedRoad : RULES.MARCH.road;
+  // Cavalry double their forced pace, and the column limit is a ceiling over that rather than
+  // something to double past: the doubling clause speaks of a forced march pace in general, the
+  // column clause of what a long column may do at a forced march, and the narrower one wins. Twelve
+  // thousand horse is where this starts to matter.
   if (forced && o.cavOnly) day *= RULES.CAV_FORCED_MULT;
-  day *= o.road ? W.road : W.off;
   if (o.colMiles > RULES.LONG_COLUMN.limit)
     day = Math.min(day, forced ? RULES.LONG_COLUMN.forcedDay : RULES.LONG_COLUMN.day);
+  // Now the ground. Off-road halves the pace the column actually has — light infantry excepted, who
+  // keep their road pace off it. This ordering is the whole of the long-column fix: taking the
+  // ceiling *after* the halving clamped road and off-road to the same 6 mi/day, which left a road
+  // worth nothing to any army over the limit and sent big columns cross-country in a straight line.
+  // Taken before it, a road is worth double at every size, as it is for everyone else.
+  if (!o.road && !o.liThird) day *= RULES.OFFROAD_MULT;
+  if (o.terrain === 'Mountains' && !o.liThird) day *= RULES.MOUNTAIN_MULT;
+  day *= o.road ? W.road : W.off;
   const marchDays = forced ? RULES.MARCH.daysForced : RULES.MARCH.daysNormal;
   return day * marchDays; // miles per IRL day (5 in-game days)
 }
 
 function columnMiles(a) {
-  return (a.inf + a.non) / RULES.COLUMN.infPer + a.cav / RULES.COLUMN.cavPer + a.wag / RULES.COLUMN.wagPer;
+  const mi = (a.inf + a.non) / RULES.COLUMN.infPer + a.cav / RULES.COLUMN.cavPer + a.wag / RULES.COLUMN.wagPer;
+  return a.logistician ? mi * RULES.LOGISTICIAN_MULT : mi;
 }
 
 // Ford delay in IRL days (minor rivers only; cavalry ford at regular speed and are excluded).
 function fordIRLDays(a, weather) {
   const W = RULES.WEATHER[weather] || RULES.WEATHER.clear;
   if (!W.ford) return null; // fording impossible in this weather
-  const colMiles = (a.inf + a.non) / RULES.COLUMN.infPer + a.wag / RULES.COLUMN.wagPer;
+  // Cavalry are excluded (they ford at their regular speed), so this is not columnMiles — but the
+  // trait shortens what remains just the same.
+  let colMiles = (a.inf + a.non) / RULES.COLUMN.infPer + a.wag / RULES.COLUMN.wagPer;
+  if (a.logistician) colMiles *= RULES.LOGISTICIAN_MULT;
   if (colMiles <= 0) return 0;
   return RULES.FORD.dayPerColMile * colMiles / RULES.GAME_DAYS_PER_IRL;
 }

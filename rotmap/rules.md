@@ -18,11 +18,24 @@ Scale: 1 hex = 30 miles. 1 IRL day = 5 in-game days. Normal march = 4 marching d
 - **Marines** (tradition): the army can be put ashore anywhere, not only at a port. Taking ship still requires a coastal/large-river stronghold.
 
 | Mountains | ×0.5 | — |
-| Column > 6 mi, normal | capped 6 | 24 |
-| Column > 6 mi, forced | capped 12 | 60 |
+| Column > 6 mi, normal | 6 on road, 3 off | 24 / 12 |
+| Column > 6 mi, forced | 12 on road, 6 off | 60 / 30 |
 | Night march | 6 (12 forced), roads only | — |
 
-Column length: 1 mi per 5,000 infantry+noncombatants, 2,000 cavalry, or 50 wagons (Logistician trait: halved).
+Column length: 1 mi per 5,000 infantry+noncombatants, 2,000 cavalry, or 50 wagons. The **Logistician**
+trait ("your army stretches half as long on the road") halves it, and halves it for fording too, since
+both are charged by the mile of column. At the sample army's cavalry and wagons that moves the 6-mile
+limit from 14,500 infantry to 44,500.
+
+The long-column figures are **road** paces, and the off-road halving applies on top of them, as do
+mountains and weather. The rules give the column in miles *of road* ("marching armies stretch 1 mile
+of road per 5,000 infantry…") and its speed as "only 6 miles per day, for a total of 24 miles per IRL
+day" — 6 × 4 marching days, which is the road cadence; "offroad, reduce the speeds by half" then
+applies to whatever pace the column has. So the limit replaces the base 12/18 rather than capping the
+finished number, and **a road is worth double at every army size**. Reading it the other way — a flat
+ceiling both surfaces are clamped to — makes road and off-road identical at 6 mi/day for any column
+over the limit, which leaves a road worth nothing to a large army and has the pathfinder send it
+straight across country. That is what this calculator used to do.
 Forced march: morale check per day (doubles → −1 morale). Night march: same check; 2-in-6 wrong turn at forks.
 Light infantry detachments move at normal (road) speed off-road and ignore the mountain penalty; an army with ≥⅓ light infantry ignores the *battle* rough-terrain penalty only.
 
