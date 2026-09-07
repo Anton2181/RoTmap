@@ -584,7 +584,27 @@
   </form>
 </dialog>
 
-<script src="rules.js"></script>
-<script src="app.js"></script>
+<!-- The two scripts are one program split across two files, and a browser that caches them
+     independently can hold a new app.js against yesterday's rules.js — which fails as a bare
+     ReferenceError for a function the file it is calling does not have yet, nowhere near the edit
+     that caused it. A plain static server sends no Cache-Control, so browsers guess a freshness
+     lifetime from each file's age: the file edited an hour ago is re-fetched, the one untouched
+     for a week is not. Off a local server, where the files are being edited and the download costs
+     nothing, both are asked for by a URL no cache has seen. The deployed site keeps ordinary
+     caching. Inserted rather than written out because a `src` cannot be computed in markup;
+     `async = false` is what preserves rules-then-app order for scripts added this way. -->
+<script>
+(function () {
+  const dev = ['localhost', '127.0.0.1', '[::1]', '0.0.0.0', ''].includes(location.hostname)
+    || /^(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(location.hostname);
+  const v = dev ? '?t=' + Date.now() : '';
+  for (const src of ['rules.js', 'app.js']) {
+    const el = document.createElement('script');
+    el.src = src + v;
+    el.async = false;
+    document.head.appendChild(el);
+  }
+})();
+</script>
 </body>
 </html>
