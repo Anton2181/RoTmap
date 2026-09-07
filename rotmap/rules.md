@@ -87,8 +87,9 @@ which is what lets the optimiser rearrange legs freely and still be exact. The *
 depend on order — an army worn down by the first half of a march fails more often in the second — so
 it is walked check by check over the running distribution of morale rather than averaged. Traits:
 **Marching City** (over 6 miles long, ≥1 wagon per 30 infantry) drops the forced-march checks on
-road; **Poet** shifts a failed roll two rows up the consequences table without changing how often it
-fails; **Stubborn** applies only to battle and so does nothing to a march.
+road; and **Poet** shifts a failed roll two rows up the consequences table without changing how often it
+fails. (**Stubborn** — no morale loss on defeat — touches only battle, which this calculator does not
+model, so it is not offered.)
 
 With **Forced march** or **Night march** ticked the box stops meaning "the whole route" and starts
 meaning "where it pays": the legs to march hard are chosen as the fastest set that still leaves the

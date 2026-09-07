@@ -4787,7 +4787,7 @@ const ROUTE_SETTINGS = {
   // are what the optimiser solves against: they turn "march hard" into "march as hard as this army
   // can stand". `moraleMax` is 12 by default and 9 for a peasant-majority army.
   morale: 9, moraleMin: 6, moraleConf: 50, moraleMax: 12,
-  marchingCity: false, poet: false, stubborn: false,
+  marchingCity: false, poet: false,
 };
 const SETTINGS_LS = 'rotmap_settings_v1';
 let SETTINGS = { ...ROUTE_SETTINGS };
@@ -4839,7 +4839,7 @@ function armyOpts(set) {
     forced: c('forced'), night: c('night'), fleet: c('fleet'),
     morale: v('morale'), moraleMin: v('moraleMin'), moraleConf: v('moraleConf'),
     moraleMax: v('moraleMax') || RULES.MORALE.MAX,
-    marchingCity: c('marchingCity'), poet: c('poet'), stubborn: c('stubborn'),
+    marchingCity: c('marchingCity'), poet: c('poet'),
     // Two independent permissions, not one. `secureFleet` licenses only the month spent getting
     // ships you don't have; boarding ships you *do* have is licensed by having them, which is what
     // `fleet` says. The saved key stays `embark` — every column in every saved route and every
@@ -4869,7 +4869,7 @@ function legOpts(o, w) {
    active and recomputes; changing the active route rereads the boxes from it. */
 const SETTING_NUMS = ['li', 'cav', 'inf', 'wag', 'non', 'morale', 'moraleMin', 'moraleConf', 'moraleMax'];
 const SETTING_CHKS = ['forced', 'night', 'marines', 'embark', 'fleet', 'noTrade', 'logistician',
-                      'marchingCity', 'poet', 'stubborn', 'stops'];
+                      'marchingCity', 'poet', 'stops'];
 /* Boxes that are on unless something says otherwise. Every route saved before a box existed has no
    opinion about it, and reading a missing key as "off" would silently change what those routes mean —
    `stops` in particular, where off would stop billing halts on marches that were planned with them. */
@@ -5791,7 +5791,9 @@ function dijkstraField(fromH, fromRi, af0, sh0, o) {
       if (nd < (dist.get(k2) ?? Infinity)) {
         dist.set(k2, nd);
         prev.set(k2, { k: k1, irl: stepIrl, chain: mv.chain, geom: mv.geom, geomKind: mv.geomKind,
-                       note: dep ? (mv.note || '') + ', +1 hex setting out' : mv.note,
+                       // Kept apart from `irl` so the readout can bill it on the origin's own row,
+                       // which is the hex it actually pays for.
+                       dep: dep || undefined, note: mv.note,
                        // The origin hex counts towards the distance as well as the time.
                        hexes: dep ? (mv.hexes ?? 1) + 1 : mv.hexes,
                        miles: dep ? (mv.miles ?? RULES.HEX_MILES) + RULES.HEX_MILES : mv.miles });
@@ -5809,7 +5811,7 @@ function dijkstraField(fromH, fromRi, af0, sh0, o) {
     return path.map(k => { const d = dec(k); return { h: d.h, ri: d.ri, sea: !!d.af,
       note: prev.get(k)?.note, irl: prev.get(k)?.irl || 0, chain: prev.get(k)?.chain,
       geom: prev.get(k)?.geom, geomKind: prev.get(k)?.geomKind,
-      hexes: prev.get(k)?.hexes, miles: prev.get(k)?.miles }; });
+      dep: prev.get(k)?.dep, hexes: prev.get(k)?.hexes, miles: prev.get(k)?.miles }; });
   };
   return { dist, sk, reconstruct };
 }
@@ -8442,8 +8444,17 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
   const game = (r.irl + (ord?.waits || 0)) * RULES.GAME_DAYS_PER_IRL;
   let cum = 0;
   let prevH = null;
+  /* The hex the column sets out from is paid for by the step that leaves it — that is how the search
+     has to charge it, since the price depends on the way out. But the *reader* is looking at a table
+     of hexes, and the charge belongs on the line of the hex it buys. So it is moved back one row
+     here: the start row shows its own crossing, and the step below shows only what entering its own
+     hex cost. Same total, billed where it makes sense. */
+  // Not always the second row: a column that boards a ship first shuffles about inside its own hex
+  // before anything leaves it, and the charge rides on whichever step finally does.
+  const depart = r.steps.find(st => st.dep)?.dep || 0;
   const rows = r.steps.map((st, j) => {
-    cum += st.irl;
+    const own = (j === 0 ? depart : (st.irl || 0) - (st.dep || 0));
+    cum += own;
     const marchCum = cum;
     const name = placeName(st.h, st.ri);
     const hexLbl = (name ? name + ' ' : '') + st.h;
@@ -8471,16 +8482,22 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
     const night = j > 0 && (om ? !!om.night : !!w?.n) && / \(night\)/.test(st.note || '');
     const cls = `class="strow${forced ? ' forced' : ''}${night ? ' night' : ''}"`;
     const attrs = `${cls} data-step="${j}"`;
-    if (j === 0) return `<tr ${attrs}><td>${hexLbl}</td><td class="dim">${terr}</td><td class="dim">start</td><td></td><td></td><td></td></tr>` + pause;
+    if (j === 0)
+      return `<tr ${attrs}><td>${hexLbl}</td><td class="dim">${terr}</td>` +
+             `<td class="dim">${depart ? 'start — crossing this hex' : 'start'}</td>` +
+             `<td class="dim">${depart ? RULES.HEX_MILES : ''}</td>` +
+             `<td>${depart ? depart.toFixed(2) : ''}</td>` +
+             `<td>${depart ? marchCum.toFixed(1) : ''}</td></tr>` + pause;
     // Miles for this step: a trade hop covers several hexes in one go and knows its own length.
-    const nh = sameHex ? 0 : (st.hexes ?? (st.chain ? st.chain.length - 1 : 1));
-    const mi = sameHex ? 0 : Math.round(st.miles ?? nh * RULES.HEX_MILES);
+    // The origin hex's own 30 miles were counted on its row above, so they come off here.
+    const nh = sameHex ? 0 : (st.hexes ?? (st.chain ? st.chain.length - 1 : 1)) - (st.dep ? 1 : 0);
+    const mi = sameHex ? 0 : Math.round((st.miles ?? nh * RULES.HEX_MILES) - (st.dep ? RULES.HEX_MILES : 0));
     const note = st.note || '';
     const via = note + (forced ? ' <span class="fm">forced</span>' : '') +
                 (night ? ' <span class="nm">night</span>' : '');
     return `<tr ${attrs}><td title="${escHtml(hexLbl)}">${sameHex ? '' : hexLbl}</td>` +
            `<td class="dim" title="${escHtml(terr)}">${terr}</td><td title="${escHtml(note)}">${via}</td>` +
-           `<td class="dim">${mi || ''}</td><td>${st.irl.toFixed(2)}</td><td>${marchCum.toFixed(1)}</td></tr>` + pause;
+           `<td class="dim">${mi || ''}</td><td>${own.toFixed(2)}</td><td>${marchCum.toFixed(1)}</td></tr>` + pause;
   }).join('');
   // Cavalry-only forced-march ×2: show whether it's active, or why not (baggage present).
   const wForced = (RULES.WEATHER[o.weather] || RULES.WEATHER.clear).forced;

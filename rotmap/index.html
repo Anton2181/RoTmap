@@ -469,14 +469,6 @@
           <label class="field"><span>Wagons</span><input type="number" id="wag" value="80" step="10"></label>
           <label class="field"><span>Noncombatants</span><input type="number" id="non" value="2500" step="100"></label>
         </div>
-        <!-- Morale is as much a fact about this army as its wagons are, so it is entered with them.
-             What the march then does to it is shown under March, where the pace is chosen. -->
-        <div class="fields">
-          <label class="field" title="What the army has now. 9 is the usual resting morale; 12 the maximum."><span>Morale now</span><input type="number" id="morale" value="9" min="0" max="12" step="1"></label>
-          <label class="field" title="The lowest morale the army may be allowed to reach by the end of the route."><span>Allowed floor</span><input type="number" id="moraleMin" value="6" min="0" max="12" step="1"></label>
-          <label class="field" title="How sure of staying at or above the floor the commander wants to be. The pace is pushed up to this bar and no further."><span>Certainty %</span><input type="number" id="moraleConf" value="50" min="1" max="99" step="5"></label>
-          <label class="field" title="12 by default. A majority-peasant army has a maximum of 9 and a resting morale of 6."><span>Max morale</span><input type="number" id="moraleMax" value="12" min="1" max="12" step="1"></label>
-        </div>
         <div class="btnrow">
           <button class="btn" type="button" id="copyArmy" title="Copy this column and its conditions as text.">Copy column</button>
           <button class="btn" type="button" id="pasteArmy" title="Paste column settings. Unspecified values return to their defaults.">Paste column</button>
@@ -514,6 +506,18 @@
            that shape it. The numbers it reads are entered with the column above. -->
       <div class="group" id="moraleGroup">
         <h2>Morale <span class="forwhom" id="moraleFor"></span></h2>
+        <!-- What the army has, what it may spend down to, and how sure of that it wants to be. They
+             sit above the distribution they shape, so a change and its consequence are read together. -->
+        <div class="fields">
+          <label class="field" title="What the army has now. 9 is the usual resting morale; 12 the maximum."><span>Morale now</span><input type="number" id="morale" value="9" min="0" max="12" step="1"></label>
+          <label class="field" title="The lowest morale the army may be allowed to reach by the end of the route."><span>Allowed floor</span><input type="number" id="moraleMin" value="6" min="0" max="12" step="1"></label>
+          <label class="field" title="How sure of staying at or above the floor the commander wants to be. The pace is pushed up to this bar and no further."><span>Certainty %</span><input type="number" id="moraleConf" value="50" min="1" max="99" step="5"></label>
+        </div>
+        <!-- Maximum morale is not a commander's choice: 12, or 9 for a majority-peasant army, and the
+             column boxes cannot tell peasant infantry from the rest to decide it. So it is kept rather
+             than shown — every route still carries it, it still round-trips through the column line
+             (paste `moraleMax=9` for a peasant army), and the histogram still caps where it should. -->
+        <input type="hidden" id="moraleMax" value="12">
         <div id="moralePanel"></div>
         <details class="hint">
           <summary>How morale is spent</summary>
@@ -545,7 +549,6 @@
         <label class="chk" title="Commander trait: the army stretches half as long on the road. Halves the column for the 6-mile limit and for fording."><input type="checkbox" id="logistician"> Logistician — half column length</label>
         <label class="chk" title="Tradition: a column over 6 miles long with at least 1 wagon per 30 infantry may force march on roads without risking morale."><input type="checkbox" id="marchingCity"> Marching City — free forced march on roads</label>
         <label class="chk" title="Commander trait: morale rolls count 2 higher when reading the consequences of a failed check. Does not change how often a check fails."><input type="checkbox" id="poet"> Poet — gentler failures</label>
-        <label class="chk" title="Commander trait: no morale loss on defeat in battle. Recorded on the column, but battles are not modelled here, so it does not change a march."><input type="checkbox" id="stubborn"> Stubborn — no morale loss on defeat</label>
         <label class="field"><span>Weather</span><select id="weather">
           <option value="clear">Clear / light rain</option>
           <option value="hot">Hot</option>
