@@ -5830,7 +5830,8 @@ function dijkstraField(fromH, fromRi, af0, sh0, o) {
         prev.set(k2, { k: k1, irl: stepIrl, chain: mv.chain, geom: mv.geom, geomKind: mv.geomKind,
                        // Kept apart from `irl` so the readout can bill it on the origin's own row,
                        // which is the hex it actually pays for.
-                       dep: dep || undefined, note: mv.note,
+                       dep: dep || undefined, depTerrain: dep ? regionTerrain(fromH, fromRi) : undefined,
+                       note: mv.note,
                        // The origin hex counts towards the distance as well as the time.
                        hexes: dep ? (mv.hexes ?? 1) + 1 : mv.hexes,
                        miles: dep ? (mv.miles ?? RULES.HEX_MILES) + RULES.HEX_MILES : mv.miles });
@@ -5848,7 +5849,8 @@ function dijkstraField(fromH, fromRi, af0, sh0, o) {
     return path.map(k => { const d = dec(k); return { h: d.h, ri: d.ri, sea: !!d.af,
       note: prev.get(k)?.note, irl: prev.get(k)?.irl || 0, chain: prev.get(k)?.chain,
       geom: prev.get(k)?.geom, geomKind: prev.get(k)?.geomKind,
-      dep: prev.get(k)?.dep, hexes: prev.get(k)?.hexes, miles: prev.get(k)?.miles }; });
+      dep: prev.get(k)?.dep, depTerrain: prev.get(k)?.depTerrain,
+      hexes: prev.get(k)?.hexes, miles: prev.get(k)?.miles }; });
   };
   return { dist, sk, reconstruct };
 }
@@ -6030,10 +6032,19 @@ function throughSharedEdges(pts) {
    fastest set of legs that still leaves the army at or above its allowed morale, with the certainty
    asked for. That is why the boxes override any legs marked by hand — two answers to the same
    question, and only one of them knows what the morale will be at the end. */
-function moraleOptimising(o) { return !!(o.forced || o.night || o.dayNight) && o.moraleConf > 0; }
+// Zero certainty is not "no opinion", it is "I will take any chance at all" — so the paces still get
+// chosen, and every arrangement clears a bar set at nothing. Requiring more than zero here turned the
+// boxes off entirely at the one setting that should have let the column march hardest.
+function moraleOptimising(o) { return !!(o.forced || o.night || o.dayNight); }
 
 // The ways a single leg may be marched, given which paces are permitted. Ordinary first, so a tie
 // between marching hard and not is settled in favour of the army's spirit.
+/* Every pace the search must try, because each can change which way the column goes. Night marching
+   keeps to roads, and that can be a different road. Forced marching looks as though it cannot — it
+   multiplies the land paces by the same amount — but a **ford does not scale**: half a day at the
+   river costs half a day however fast the column marches, so the faster it is going the more a ford
+   is worth going round. Leaving forced out of the search let a column pick the slow army's route,
+   wade two rivers on it, and come out behind a route it would have chosen for itself. */
 function legModes(o) {
   const paces = [{}];
   if (o.night) paces.push({ night: true });
@@ -6053,34 +6064,55 @@ function legModes(o) {
        threaten the army without wearing it down;
      `det` is morale lost outright, no dice — heatwave by day, blizzard at any hour.
    Part-days round up, per leg, so a leg that marches hard at all pays for the day it does it in. */
-function legMoraleCost(o, mode, steps, irl) {
-  const W = RULES.WEATHER_MORALE[o.weather] || {};
-  const up = d => (d > 1e-9 ? Math.ceil(d - 1e-9) : 0);
+/* Returns **days, not checks**. Rounding up here — once per leg — was the whole trouble: a march
+   split across seven waypoints paid seven part-days where the same march drawn with two paid three,
+   and the deterministic weather losses inflated the same way, so where the pins fell changed what
+   the ground cost the army. Days add; only the route total is rounded, at selection time. */
+function legMoraleDays(o, mode, steps) {
   /* Two tallies that overlap rather than partition, because a day-and-night march is both: the dark
      half calls for the night check and the daylight half still answers to the heat. Only a pure night
      march escapes the sun, which is the whole reason to give up the daylight. */
   let afterDark = 0, inDaylight = 0, offRoad = false, marchIrl = 0, miles = 0;
   for (const st of steps) {
     const note = st.note || '';
-    if (st.ships || /sail/.test(note)) continue;      // a voyage is not a march; nobody checks morale
-    marchIrl += st.irl || 0; miles += st.miles || 0;
+    // A voyage is not a march, and neither is a month spent in a harbour building boats. The narrower
+    // test used to let those seven days through as marching, which in a blizzard cost the army seven
+    // morale for standing still. (`st.ships` was never a field on a step at all.)
+    if (/sail|embark|disembark|secure ships/.test(note)) continue;
+    marchIrl += st.irl || 0;
+    // Ordinary land steps carry no `miles` — only trade hops and the step that pays for the origin
+    // hex do — so summing the raw field left the Hot 60-mile test dividing zero by the day.
+    miles += st.miles ?? RULES.HEX_MILES;
     if (/ \(night\)/.test(note)) afterDark += st.irl || 0;
     else if (/ \(day\+night\)/.test(note)) { afterDark += st.irl || 0; inDaylight += st.irl || 0; }
     else inDaylight += st.irl || 0;
     if (/off-road/.test(note)) offRoad = true;
   }
-  const dayIrl = inDaylight;
-  let checks = 0, plain = 0, det = 0;
   // "You can force march on roads without risking morale" — the whole leg has to stay on the road.
-  if (mode.forced && !marchingCityCovers(o, o.colMiles, !offRoad)) checks += up(marchIrl);
-  checks += up(afterDark);                           // one check per IRL day with a night in it
-  if (W.dayLoss) det += W.dayLoss * up(dayIrl);      // heatwave: only daylight marching costs
-  if (W.anyLoss) det += W.anyLoss * up(marchIrl);     // blizzard: any hour costs
+  const covered = marchingCityCovers(o, o.colMiles, !offRoad);
+  return {
+    forcedDays: mode.forced && !covered ? marchIrl : 0,
+    nightDays: afterDark,
+    dayDays: inDaylight,
+    marchDays: marchIrl,
+    dayMiles: miles - (afterDark > 0 && inDaylight === 0 ? miles : 0),
+    forcedDay: !!mode.forced,
+  };
+}
+
+// Days -> whole checks and whole points of morale, rounded once, for a whole march.
+function moraleCostOfDays(o, d) {
+  const W = RULES.WEATHER_MORALE[o.weather] || {};
+  const up = x => (x > 1e-9 ? Math.ceil(x - 1e-9) : 0);
+  let det = 0, plain = 0;
+  if (W.dayLoss) det += W.dayLoss * up(d.dayDays);    // heatwave: only daylight marching costs
+  if (W.anyLoss) det += W.anyLoss * up(d.marchDays);  // blizzard: any hour costs
   // Hot: "day marching more than 60 miles requires a morale check. Day forced marching requires a
   // morale check. Night marching is fine."
-  if (dayIrl > 0 && (W.dayForcedCheck && mode.forced || W.dayMilesCheck && miles / Math.max(dayIrl, 1e-9) > W.dayMilesCheck))
-    plain += up(dayIrl);
-  return { checks, plain, det };
+  const rate = d.dayDays > 1e-9 ? d.dayMiles / d.dayDays : 0;
+  if (d.dayDays > 0 && (W.dayForcedCheck && d.forcedDay || W.dayMilesCheck && rate > W.dayMilesCheck))
+    plain += up(d.dayDays);
+  return { checks: up(d.forcedDays) + up(d.nightDays), plain, det };
 }
 
 // Does this route, spending this many checks and losing this much outright, still clear the bar?
@@ -6193,14 +6225,49 @@ function stepCostAtPace(st, o, was, want) {
   if (st.ships || /sail|embark|disembark|secure ships/.test(note)) return null;   // not a march
   const road = /^(road|trade route)/.test(note);
   const night = / \(night\)/.test(note), dayNight = / \(day\+night\)/.test(note);
-  const mpiAt = m => landMilesPerIRL({ road, terrain: regionTerrain(st.h, st.ri), forced: m.forced,
-                                       night, dayNight, liThird: o.liThird, cavOnly: o.cavOnly,
-                                       weather: o.weather, colMiles: o.colMiles });
-  const miles = st.miles ?? RULES.HEX_MILES;
-  const mWas = mpiAt(was), mWant = mpiAt(want);
-  if (!(mWas > 0) || !(mWant > 0)) return null;
-  const extra = st.irl - miles / mWas;          // fords, ferries, the setting-out charge
-  return miles / mWant + extra;
+  /* Re-priced on exactly the ground the search priced it on, or the two disagree and `extra` silently
+     swallows the difference as though it were a ford. Two places where the obvious answer is wrong:
+     a trade route is costed at a flat Flatlands whatever the terminals stand on (see `expand`), and
+     the step that pays for the origin hex carries thirty miles of *that* hex's ground, which is not
+     the ground it is marching onto. */
+  const trade = /^trade route/.test(note);
+  const terr = trade ? 'Flatlands' : regionTerrain(st.h, st.ri);
+  const at = (m, terrain) => landMilesPerIRL({ road, terrain, forced: m.forced, night, dayNight,
+                                               liThird: o.liThird, cavOnly: o.cavOnly,
+                                               weather: o.weather, colMiles: o.colMiles });
+  const dep = st.dep ? RULES.HEX_MILES : 0;
+  const body = (st.miles ?? RULES.HEX_MILES) - dep;
+  const priced = m => {
+    const mb = at(m, terr);
+    if (!(mb > 0)) return null;
+    let t = body / mb;
+    if (dep) {
+      const md = at(m, st.depTerrain || terr);
+      if (!(md > 0)) return null;
+      t += dep / md;
+    }
+    return t;
+  };
+  const pWas = priced(was), pWant = priced(want);
+  if (pWas === null || pWant === null) return null;
+  const extra = st.irl - pWas;                  // fords and ferries: prices in time that pace cannot change
+  return pWant + extra;
+}
+
+/* What the origin-hex crossing folded into this step costs at a different pace. The charge is as
+   pace-dependent as the rest of the march, and leaving it at the pace the *search* used while the
+   refinement re-priced everything around it drove the readout's arithmetic negative: the start row
+   was billed a slow column's crossing and the step below had it subtracted at a fast column's total,
+   which showed as a step costing −0.02 days. */
+function stepDepAtPace(st, o, m) {
+  if (!st.dep) return 0;
+  const note = st.note || '';
+  const road = /^(road|trade route)/.test(note);
+  const mpi = landMilesPerIRL({ road, terrain: st.depTerrain || regionTerrain(st.h, st.ri),
+                               forced: m.forced, night: / \(night\)/.test(note),
+                               dayNight: / \(day\+night\)/.test(note), liThird: o.liThird,
+                               cavOnly: o.cavOnly, weather: o.weather, colMiles: o.colMiles });
+  return mpi > 0 ? RULES.HEX_MILES / mpi : st.dep;
 }
 
 /* Pick which steps march hard. `budget` is the number of checks the army can still afford; `nightIrl`
@@ -6275,19 +6342,39 @@ function routeLeg(rt, o) {
      one of them has worn the army down further. `checks` and `det` join the key for that reason; with
      no pace box ticked they stay at zero and the key is exactly the ship state it always was. */
   const opt = moraleOptimising(o), modes = opt ? legModes(o) : [null];
-  const key = (state, ck, dt, pl) => opt ? `${state}|${ck}|${dt}|${pl}` : String(state);
-  const seed = { cost: 0, legs: [], modes: [], legCosts: [], checks: 0, det: 0, plain: 0, state: af0 * 2 + sh0 };
-  let dp = new Map([[key(seed.state, 0, 0, 0), seed]]);
+  /* Keyed on the *days* spent, quantised, not on the whole checks they round up to: two arrangements
+     that have both spent "one check so far" are not interchangeable if one has 0.1 of a day left in
+     it and the other 0.9, and merging them threw away the headroom the next leg needed. */
+  const q = x => Math.round(x * 4);          // quarter-days: fine enough to tell headroom apart,
+  const key = (state, d) => opt              // coarse enough that arrangements still merge
+    ? `${state}|${q(d.forcedDays)}|${q(d.nightDays)}|${q(d.dayDays)}` : String(state);
+  const zeroDays = { forcedDays: 0, nightDays: 0, dayDays: 0, marchDays: 0, dayMiles: 0, forcedDay: false };
+  const seed = { cost: 0, legs: [], modes: [], legCosts: [], days: zeroDays,
+                 checks: 0, det: 0, plain: 0, state: af0 * 2 + sh0 };
+  let dp = new Map([[key(seed.state, zeroDays), seed]]);
   let fail = null;
   // Beyond these no arrangement can come back: more checks than the army could survive at any level
   // of certain loss, or more certain loss than it has morale to give.
-  const ckCap = opt ? Math.max(0, moraleCheckBudget(o.morale, 0, o.moraleMin, o.moraleConf / 100, o.moraleMax)) : 0;
+  /* The most generous cap there could be: drift can only ever carry morale as far as resting, so
+     allowing that much of it bounds the budget from above without needing to know how long the march
+     will turn out to be. Computed without drift, the cap threw away arrangements that a long march
+     could genuinely afford. */
+  const ckCap = opt ? Math.max(0, moraleCheckBudget(o.morale, 0, o.moraleMin, o.moraleConf / 100,
+                                                    o.moraleMax, Math.abs(o.morale - (o.moraleRest ?? RULES.MORALE.REST)),
+                                                    o.moraleRest)) : 0;
   const dtCap = opt ? Math.max(0, o.morale - o.moraleMin) : 0;
   for (let i = 0; i + 1 < wps.length; i++) {
     const next = new Map();
+    /* Solving a leg depends on where the column is standing and how it means to march — never on the
+       morale it has spent getting here. Once the DP started keeping states apart by the fraction of a
+       check they had used, the same leg was being re-solved for dozens of arrangements that would all
+       have walked it identically, and a six-leg route took the better part of five seconds. Solved
+       once per (ship state, pace) and handed to every arrangement that asks. */
+    const solved = new Map();
     for (const cur of dp.values()) {
       const state = cur.state;
-      for (const mode of modes) {
+      for (let mi = 0; mi < modes.length; mi++) {
+        const mode = modes[mi];
         // Every field of the mode, or the alternatives are not alternatives: leaving `dayNight` on the
         // ambient options made the "ordinary march" branch solve as a day-and-night one too, so the
         // search compared a pace against itself and the optimiser spent morale it had not been given.
@@ -6303,15 +6390,27 @@ function routeLeg(rt, o) {
            was told not to charge — so a duplicated start pin quietly made a route a hex shorter. */
         const stillAtOrigin = wps.slice(0, i + 1).every(w => w.h === wps[0].h);
         lo = stillAtOrigin ? lo : { ...lo, chargeDepart: false };
-        // Roads first for a night march; daylight only where the road runs out (see landStep).
-        let legs = eff.night
-          ? dijkstraLeg(wps[i].h, wps[i].ri | 0, state >> 1, state & 1, wps[i + 1].h, wps[i + 1].ri | 0, { ...lo, roadsOnly: true })
-          : null;
-        if (!legs || !legs.size)
-          legs = dijkstraLeg(wps[i].h, wps[i].ri | 0, state >> 1, state & 1, wps[i + 1].h, wps[i + 1].ri | 0, lo);
+        const memo = `${state}|${mi}`;
+        let legs = solved.get(memo);
+        if (legs === undefined) {
+          // Roads first for a night march; daylight only where the road runs out (see landStep).
+          legs = eff.night
+            ? dijkstraLeg(wps[i].h, wps[i].ri | 0, state >> 1, state & 1, wps[i + 1].h, wps[i + 1].ri | 0, { ...lo, roadsOnly: true })
+            : null;
+          if (!legs || !legs.size)
+            legs = dijkstraLeg(wps[i].h, wps[i].ri | 0, state >> 1, state & 1, wps[i + 1].h, wps[i + 1].ri | 0, lo);
+          solved.set(memo, legs);
+        }
         for (const [stEnd, r] of legs) {
-          const mc = legMoraleCost(o, eff, r.steps, r.irl);
-          const ck = cur.checks + mc.checks, dt = cur.det + mc.det, pl = cur.plain + mc.plain;
+          const md = legMoraleDays(o, eff, r.steps);
+          const days = { forcedDays: cur.days.forcedDays + md.forcedDays,
+                         nightDays: cur.days.nightDays + md.nightDays,
+                         dayDays: cur.days.dayDays + md.dayDays,
+                         marchDays: cur.days.marchDays + md.marchDays,
+                         dayMiles: cur.days.dayMiles + md.dayMiles,
+                         forcedDay: cur.days.forcedDay || md.forcedDay };
+          const tot = moraleCostOfDays(o, days);
+          const ck = tot.checks, dt = tot.det, pl = tot.plain;
           /* Arrangements that have already spent more than the army has are kept, but only one of
              them per ship state and only as a last resort: pruning them outright emptied the frontier
              whenever *every* way through cost more than was allowed — a heatwave crossing, where each
@@ -6319,14 +6418,14 @@ function routeLeg(rt, o) {
              unaffordable march is still a march. Feasibility is judged at the end, where the fallback
              can see them. */
           const over = opt && (ck > ckCap || dt > dtCap);
-          const k = over ? `over|${stEnd}` : key(stEnd, ck, dt, pl);
+          const k = over ? `over|${stEnd}` : key(stEnd, days);
           const nc = cur.cost + r.irl, ex = next.get(k);
           const better = !ex || (over ? (ck + dt < ex.checks + ex.det ||
                                          (ck + dt === ex.checks + ex.det && nc < ex.cost))
                                      : nc < ex.cost);
           if (better)
             next.set(k, { cost: nc, legs: [...cur.legs, r.steps], modes: [...cur.modes, mode],
-                          legCosts: [...cur.legCosts, mc], checks: ck, det: dt, plain: pl, state: stEnd });
+                          legCosts: [...cur.legCosts, md], days, checks: ck, det: dt, plain: pl, state: stEnd });
         }
       }
     }
@@ -6369,20 +6468,49 @@ function routeLeg(rt, o) {
                                                  o.moraleMax, drifts, o.moraleRest));
     const ref = refineForcedSteps(all, o, budget, nightIrl);
     if (ref) {
+      // Everything the refinement disturbs is recomputed from the steps it leaves behind, not carried
+      // over from the leg search — the pace of half these steps has just changed under it.
+      const before = { cost: best.cost, checks: best.checks, plain: best.plain,
+                       forced: all.map(st => !!st.paceForced), irl: all.map(st => st.irl) };
       let total = 0;
       all.forEach((st, i) => {
         const want = ref.chosen.has(i);
         if (want !== !!st.paceForced) {
           const t = stepCostAtPace(st, o, { forced: !!st.paceForced }, { forced: want });
-          if (t !== null) st.irl = t;
+          if (t !== null) { st.irl = t; if (st.dep) st.dep = stepDepAtPace(st, o, { forced: want }); }
         }
         st.paceForced = want;
         total += st.irl || 0;
       });
-      best.cost = total;
-      best.checks = Math.ceil(ref.forcedIrl - 1e-9) + Math.ceil(nightIrl - 1e-9);
-      best.legCosts = [{ checks: best.checks, plain: best.plain, det: best.det }];
+      // Re-measured after the fact: forcing a night step shortens it, so the nights committed before
+      // the refinement are no longer the nights the column actually marches.
+      const days = { forcedDays: 0, nightDays: 0, dayDays: 0, marchDays: 0, dayMiles: 0, forcedDay: false };
+      for (const st of all) {
+        const note = st.note || '';
+        if (/sail|embark|disembark|secure ships/.test(note)) continue;
+        const dark = / \((night|day\+night)\)/.test(note), both = / \(day\+night\)/.test(note);
+        days.marchDays += st.irl || 0;
+        days.dayMiles += st.miles ?? RULES.HEX_MILES;
+        if (dark) days.nightDays += st.irl || 0;
+        if (!dark || both) days.dayDays += st.irl || 0;
+        if (st.paceForced) {
+          days.forcedDay = true;
+          if (!marchingCityCovers(o, o.colMiles, /^(road|trade route)/.test(note))) days.forcedDays += st.irl || 0;
+        }
+      }
+      const tot = moraleCostOfDays(o, days);
+      best.cost = total; best.checks = tot.checks; best.plain = tot.plain; best.det = tot.det;
+      best.legCosts = [{ checks: tot.checks, plain: tot.plain, det: tot.det }];
       best.stepForced = all.map(st => !!st.paceForced);
+      /* A shorter march earns fewer rest-drift ticks, and an army below its resting morale was being
+         helped by those. So the promise has to be re-tested against the march the refinement actually
+         produced; where it no longer holds, the leg search's answer stands. */
+      if (!best.relaxed && !moraleFeasible(o, best.checks, best.det, best.cost)) {
+        all.forEach((st, i) => { st.paceForced = before.forced[i]; st.irl = before.irl[i]; });
+        best.cost = before.cost; best.checks = before.checks; best.plain = before.plain;
+        delete best.stepForced;
+        best.legCosts = [{ checks: before.checks, plain: before.plain, det: best.det }];
+      }
     }
   }
   if (!best) return { irl: 0, hexes: 0, miles: 0, steps: [], pts: [], ends: null, fail: null };

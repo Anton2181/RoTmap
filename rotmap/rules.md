@@ -86,8 +86,8 @@ So one marching day's roll is read twice, and the calculator keeps the two apart
 | Blizzard | each IRL day of any marching | −1 morale, certain |
 | Hot | day forced marching, or day marching over 60 mi | a check, no morale cost |
 
-A day that is both forced **and** by night rolls both checks. Sailing is not marching and calls for
-nothing. Checks are counted over the **whole march** and rounded up once — "after five in game days
+A day that is both forced **and** by night rolls both checks. Neither sailing nor the month spent
+securing a fleet is marching, and neither calls for anything. Checks are counted over the **whole march** and rounded up once — "after five in game days
 of forced march, check morale" is a running total, not something each order restarts — so where the
 waypoints fall no longer changes what a march costs in morale.
 

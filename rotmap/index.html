@@ -511,7 +511,7 @@
         <div class="fields">
           <label class="field" title="What the army has now. 9 is the usual resting morale; 12 the maximum."><span>Morale now</span><input type="number" id="morale" value="9" min="0" max="12" step="1"></label>
           <label class="field" title="The lowest morale the army may be allowed to reach by the end of the route."><span>Allowed floor</span><input type="number" id="moraleMin" value="8" min="0" max="12" step="1"></label>
-          <label class="field" title="How sure of staying at or above the floor the commander wants to be. The pace is pushed up to this bar and no further."><span>Certainty %</span><input type="number" id="moraleConf" value="50" min="1" max="99" step="5"></label>
+          <label class="field" title="How sure of staying at or above the floor the commander wants to be. The pace is pushed up to this bar and no further."><span>Certainty %</span><input type="number" id="moraleConf" value="50" min="0" max="100" step="5"></label>
         </div>
         <!-- Maximum morale is not a commander's choice: 12, or 9 for a majority-peasant army, and the
              column boxes cannot tell peasant infantry from the rest to decide it. So it is kept rather

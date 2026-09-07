@@ -651,11 +651,13 @@ body.colsizing { cursor: col-resize; user-select: none; }
 .stepstbl tr.strow:hover td { background: var(--bg-raise); color: var(--ink); }
 /* A leg being pushed is banded down the left edge rather than shaded — the row still has to be
    readable, and the band survives the hover highlight. */
+/* Both rails run down the left edge, and a step that is both forced and marched after dark shows
+   two: the forced rail on the outside, the night rail stacked just inside it. Drawn as two inset
+   shadows rather than borders so neither shifts the row's text. */
 .stepstbl tr.forced td:first-child { box-shadow: inset 2px 0 0 var(--warn); }
+.stepstbl tr.night td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
+.stepstbl tr.forced.night td:first-child { box-shadow: inset 2px 0 0 var(--warn), inset 4px 0 0 var(--accent); }
 .stepstbl .fm { color: var(--warn); font-size: 9.5px; text-transform: uppercase; letter-spacing: .05em; }
-/* Night marching gets its own rail and tag, on the other side of the row so a leg that is both
-   forced and marched by night shows both at once rather than one hiding the other. */
-.stepstbl tr.night td:last-child { box-shadow: inset -2px 0 0 var(--accent); }
 .stepstbl .nm { color: var(--accent); font-size: 9.5px; text-transform: uppercase; letter-spacing: .05em; }
 .routeout .nmnote { margin-top: var(--s1); color: var(--ink-2); font-size: var(--f2); }
 
