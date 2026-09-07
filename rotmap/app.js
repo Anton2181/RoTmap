@@ -4781,7 +4781,7 @@ function minorCross(a, b, geom) {
 const ROUTE_SETTINGS = {
   li: 0, cav: 2000, inf: 8000, wag: 80, non: 2500,
   forced: false, marines: false, embark: true, fleet: false, noTrade: false, logistician: false,
-  night: false, dayNight: false, weather: 'clear',
+  night: false, dayNight: false, stops: true, weather: 'clear',
   // Morale. `morale` is what the army has now, `moraleMin` the lowest it may be allowed to reach, and
   // `moraleConf` how sure of that the commander wants to be. With the pace boxes ticked these three
   // are what the optimiser solves against: they turn "march hard" into "march as hard as this army
@@ -4807,7 +4807,7 @@ function activeSettings() {
     const og = activeIsoOrigin();
     if (!og) return SETTINGS;
     if (!og.set) og.set = { ...SETTINGS };
-    return og.set;
+    return withSettingDefaults(og.set);   // an origin saved before morale existed reads 0 otherwise
   }
   const rt = S.routes[S.activeRoute];
   if (!rt) return SETTINGS;
@@ -4887,7 +4887,9 @@ const SETTING_CHKS = ['forced', 'night', 'dayNight', 'marines', 'embark', 'fleet
 /* Boxes that are on unless something says otherwise. Every route saved before a box existed has no
    opinion about it, and reading a missing key as "off" would silently change what those routes mean —
    `stops` in particular, where off would stop billing halts on marches that were planned with them. */
-const SETTING_CHK_ON = { stops: true };
+// Kept in step with ROUTE_SETTINGS: a box that is on by default has to say so in both places, or
+// `armyToText` compares against the wrong answer and a column line quietly drops the setting.
+const SETTING_CHK_ON = { stops: !!ROUTE_SETTINGS.stops };
 let syncingForm = false;
 function syncRouteForm() {
   const st = activeSettings();
@@ -4900,8 +4902,13 @@ function syncRouteForm() {
   // route's army, the Isochrone panel the selected origin's. Saying so in both headings is the only
   // thing stopping one set of boxes from looking like it means two different things at once.
   const setFor = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
-  setFor('settingsFor', rt ? rt.name : 'no route — defaults');
-  setFor('moraleFor', rt ? rt.name : og ? og.name : '');
+  /* Whose column the boxes are showing is decided by the open panel, exactly as `activeSettings`
+     decides it — naming the route while editing an origin is how a corrected cavalry count lands on
+     the wrong army. */
+  const owner = UI.pane === 'iso' ? og : rt;
+  const ownerName = owner ? owner.name : (UI.pane === 'iso' ? 'no origin — defaults' : 'no route — defaults');
+  setFor('settingsFor', ownerName);
+  setFor('moraleFor', ownerName);
   setFor('isoFor', og ? og.name : 'no origin — defaults');
   syncingForm = false;
   syncIsoForm();
@@ -4917,9 +4924,8 @@ function readRouteForm(changedId) {
   // A morale of 0 is a real number of soldiers' worth of nothing, but an *empty* morale box is not a
   // claim that the army has none — it is a box the user is halfway through typing in. These three
   // keep their defaults rather than reading back as zero and declaring every route impossible.
-  for (const [id, dflt] of [['morale', ROUTE_SETTINGS.morale], ['moraleMax', ROUTE_SETTINGS.moraleMax],
-                            ['moraleRest', ROUTE_SETTINGS.moraleRest], ['moraleConf', ROUTE_SETTINGS.moraleConf]])
-    if (document.getElementById(id).value === '') st[id] = dflt;
+  for (const id of ['morale', 'moraleMin', 'moraleMax', 'moraleRest', 'moraleConf'])
+    if (document.getElementById(id).value === '') st[id] = ROUTE_SETTINGS[id];
   for (const id of SETTING_CHKS) st[id] = document.getElementById(id).checked;
   st.weather = document.getElementById('weather').value;
   // The loose defaults are the only settings with nowhere else to live, so they are the only ones that
@@ -5007,12 +5013,18 @@ function armyFromText(txt) {
 function applyArmyText(txt) {
   const got = armyFromText(txt);
   if (!got) { toast('No column found in that text', true); return; }
-  pushUndoRoutes();
-  Object.assign(activeSettings(), got);
-  const rt = S.routes[S.activeRoute];
-  if (!rt) { try { localStorage.setItem(SETTINGS_LS, JSON.stringify(SETTINGS)); } catch {} }
+  /* Where the paste lands is whichever object `activeSettings` hands back — the open panel's, not
+     necessarily a route's — so what gets said and what gets remembered both have to follow it.
+     Naming the active route while writing an origin's column said the wrong thing; pushing an undo
+     step for a write to the loose defaults promised one the snapshot cannot keep, since it holds the
+     routes and the origins and not those. */
+  const st = activeSettings();
+  if (st !== SETTINGS) pushUndoRoutes();
+  Object.assign(st, got);
+  const owner = UI.pane === 'iso' ? activeIsoOrigin() : S.routes[S.activeRoute];
+  if (st === SETTINGS) { try { localStorage.setItem(SETTINGS_LS, JSON.stringify(SETTINGS)); } catch {} }
   computeRoute();          // rereads the boxes from the object it just wrote
-  toast('Column pasted' + (rt ? ' into ' + rt.name : ''));
+  toast('Column pasted' + (owner ? ' into ' + owner.name : ''));
 }
 /* Does a stronghold stand here? With no `ri` the question is about the whole hex — which is what the
    hover readout, the search list and the step table want, since they name a place rather than a bank.
@@ -8995,7 +9007,12 @@ function ordinal(n) {
 
    `lastResults` is what the readout was last drawn from, so a click can look up the step it names. */
 let lastResults = [];
-const spanPending = {};   // mark key -> {ri, wi}: a stretch started but not yet ended
+/* mark key -> {rt, wi}: a stretch started but not yet ended. It remembers the route *object*, never
+   its index. An index is not a name: delete a route above this one and every index below it shifts,
+   so a stretch begun on one route offered to end itself on another and marked that one's waypoints
+   instead. Undo has the same shape — it rebuilds the routes from a snapshot, so the objects are new
+   ones and identity correctly stops recognising them. */
+const spanPending = {};
 
 // The waypoint index this step sits at, planting one if the step is merely passed through.
 function waypointAtStep(ri, j) {
@@ -9033,7 +9050,7 @@ function startMarkAt(ri, key, j) {
   pushUndoRoutes();
   const wi = waypointAtStep(ri, j);
   if (wi < 0) return;
-  spanPending[key] = { ri, wi };
+  spanPending[key] = { rt: S.routes[ri], wi };
   // Until an end is named, the stretch runs to the finish — the common case, and one click is enough
   // when the army simply keeps going. Marked provisionally so ending it can trim the tail back
   // without touching a section marked earlier in the route.
@@ -9047,7 +9064,7 @@ function endMarkAt(ri, key, j) {
   const wps = S.routes[ri].wps;
   // Which stretch is being ended: the one just started, or failing that the last begun before here.
   const pend = spanPending[key];
-  let from = (pend && pend.ri === ri) ? pend.wi : -1;
+  let from = (pend && pend.rt === S.routes[ri]) ? pend.wi : -1;
   if (from < 0) for (let i = wi - 1; i >= 0; i--) { if (!wps[i][key]) break; from = i; }
   // Only the provisional tail is given up. Sections settled earlier keep their marks.
   wps.forEach(w => { if (w[key] === 2) delete w[key]; });
@@ -9304,7 +9321,7 @@ function clearRouteWaypoints(i) {
   const n = rt.wps.length;
   rt.wps = [];
   for (const m of LEG_MARKS)                              // its waypoint is gone with the rest
-    if (spanPending[m.key]?.ri === i) spanPending[m.key] = null;
+    if (spanPending[m.key]?.rt === S.routes[i]) spanPending[m.key] = null;
   S.activeRoute = i;
   computeRoute();
   toast(`Cleared ${n} waypoint${n > 1 ? 's' : ''} from ${rt.name} — Ctrl+Z to undo`);
@@ -11780,9 +11797,16 @@ function stepMenu(ri, j) {
   return box => {
     const name = placeName(st.h, st.ri);
     ctxHead(box, (name ? `<b>${escHtml(name)}</b> — ` : '') + `hex ${st.h} · step ${j}`);
+    /* With a pace permitted, the paces are solved for and these marks are read straight past — the
+       menu used to offer them anyway and the click appeared to do something, because inserting the
+       waypoint changed the halts. Say so rather than letting the user mark a stretch that cannot
+       take effect. */
+    if (moraleOptimising(armyOpts(rt.set)))
+      ctxHead(box, `<span class="warn">Paces are being chosen to fit the morale allowed — ` +
+                   `marks here are overridden. Untick the pace boxes to mark legs by hand.</span>`);
     for (const m of LEG_MARKS) {
       const any = rt.wps.some(w => w[m.key]);
-      const pending = spanPending[m.key]?.ri === ri;
+      const pending = spanPending[m.key]?.rt === rt;
       ctxItem(box, `${m.label} from here${any ? ' too' : ''}`,
               () => { closeCtx(); startMarkAt(ri, m.key, j); });
       if (pending || any)
@@ -12718,6 +12742,11 @@ function updateIsoSettingsShown() {
   // than being left behind on the Routes panel, and hides itself where it has no question to answer.
   const march = document.getElementById('marchGroup');
   if (march) march.hidden = iso;
+  /* And morale with it. The card underneath those boxes is always the active *route's* distribution,
+     so on the Isochrone panel the inputs edited the origin while the histogram answered for something
+     else entirely — a floor changed there redrew nothing. */
+  const mor = document.getElementById('moraleGroup');
+  if (mor) mor.hidden = iso;
   if (note) note.hidden = !(iso && !column);
   const rNote = document.getElementById('isoReliefNote');
   if (rNote) rNote.hidden = !(iso && relief);

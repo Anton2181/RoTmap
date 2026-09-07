@@ -122,7 +122,8 @@
           <p>Click a route to select it, click its swatch to recolour it, and double-click its row to open
           the step table. The <b>⋯</b> menu renames, duplicates, clears, copies, or pastes a route. A route
           starting under a token uses that token's colour.</p>
-          <p>In the step table, right-click a step to start or end a forced march, or to split the route
+          <p>In the step table, right-click a step to start or end a forced, night or day-and-night
+          march — where none of the pace boxes are ticked — or to split the route
           there.</p>
         </details>
       </div>
@@ -522,8 +523,8 @@
              Kept rather than shown for the same reason as the maximum. -->
         <input type="hidden" id="moraleRest" value="9">
         <label class="chk" title="Permit the forced pace. Which legs use it is chosen to fit the morale allowed, and overrides legs marked by hand."><input type="checkbox" id="forced"> Forced march</label>
-        <label class="chk" title="Permit marching by night: 6 mi/night on roads, 12 forced. Slower than daylight, but the heat rules leave it alone. Roads only — a leg with no road path is marched by day. Which legs use it is chosen to fit the morale allowed."><input type="checkbox" id="night"> Night march</label>
-        <label class="chk" title="Permit marching day and night: the column's road miles by daylight and another 6 after dark, 18 a day or 30 forced. Roads only for the dark half, so off-road it is an ordinary day march. In a heatwave it pays both ways — the daylight still costs a point a day and the dark half still calls for its check."><input type="checkbox" id="dayNight"> Day and night march</label>
+        <label class="chk" title="Permit marching by night: 6 mi/night on roads, 12 forced. Slower than daylight, but the heat rules leave it alone. Roads only — a leg with no road path is marched by day. Which legs use it is chosen to fit the morale allowed, and that overrides legs marked by hand."><input type="checkbox" id="night"> Night march</label>
+        <label class="chk" title="Permit marching day and night: the column's road miles by daylight and another 6 after dark, 18 a day or 30 forced. Roads only for the dark half, so off-road it is an ordinary day march. In a heatwave it pays both ways — the daylight still costs a point a day and the dark half still calls for its check. Which legs use it is chosen to fit the morale allowed, and that overrides legs marked by hand."><input type="checkbox" id="dayNight"> Day and night march</label>
         <label class="chk" title="Tradition: a column over 6 miles long with at least 1 wagon per 30 infantry may force march on roads without risking morale."><input type="checkbox" id="marchingCity"> Marching City</label>
         <label class="chk" title="Commander trait: morale rolls count 2 higher when reading the consequences of a failed check. Does not change how often a check fails."><input type="checkbox" id="poet"> Poet</label>
         <div id="moralePanel"></div>
@@ -539,7 +540,7 @@
           <p>Ticking <b>Forced march</b> or <b>Night march</b> does not apply that pace to the whole
           route. It permits it, and the legs to march hard are then chosen for you — the fastest set
           that still keeps the army at or above the floor with the certainty asked for. Those choices
-          replace any legs you marked by hand; untick both to mark legs yourself again.</p>
+          replace any legs you marked by hand; untick all three to mark legs yourself again.</p>
           <p>Not modelled: recovery towards resting morale (1 per 20 IRL days), rest, supply, pay and
           battle. The army that sets out is the army that arrives, minus what the table takes.</p>
         </details>
