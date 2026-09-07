@@ -6482,54 +6482,61 @@ function routeLeg(rt, o) {
     // Whatever is already committed to the dark, whether the column gave up its daylight for it or not.
     let nightIrl = 0;
     for (const st of all) if (/ \((night|day\+night)\)/.test(st.note || '')) nightIrl += st.irl || 0;
-    const drifts = moraleDrifts(best.cost);
-    const budget = Math.max(0, moraleCheckBudget(o.morale, best.det, o.moraleMin, o.moraleConf / 100,
-                                                 o.moraleMax, drifts, o.moraleRest));
-    const ref = refineForcedSteps(all, o, budget, nightIrl);
-    if (ref) {
-      // Everything the refinement disturbs is recomputed from the steps it leaves behind, not carried
-      // over from the leg search — the pace of half these steps has just changed under it.
-      const before = { cost: best.cost, checks: best.checks, plain: best.plain,
-                       forced: all.map(st => !!st.paceForced), irl: all.map(st => st.irl) };
-      let total = 0;
-      all.forEach((st, i) => {
-        const want = ref.chosen.has(i);
+    /* What a set of forced steps would cost, without committing to it. Needed because the budget and
+       the answer chase each other: a faster march earns fewer rest-drift ticks, and an army being
+       helped by one loses that help by hurrying — so a spend that looked affordable against the slow
+       march is not affordable against the fast one it produces. */
+    const priceChoice = chosen => {
+      const days = { forcedDays: 0, nightDays: 0, dayDays: 0, marchDays: 0, dayMiles: 0, forcedDay: false };
+      const irls = []; let cost = 0;
+      for (let i = 0; i < all.length; i++) {
+        const st = all[i], want = chosen ? chosen.has(i) : !!st.paceForced;
+        let irl = st.irl || 0;
         if (want !== !!st.paceForced) {
           const t = stepCostAtPace(st, o, { forced: !!st.paceForced }, { forced: want });
-          if (t !== null) { st.irl = t; if (st.dep) st.dep = stepDepAtPace(st, o, { forced: want }); }
+          if (t !== null) irl = t;
         }
-        st.paceForced = want;
-        total += st.irl || 0;
-      });
-      // Re-measured after the fact: forcing a night step shortens it, so the nights committed before
-      // the refinement are no longer the nights the column actually marches.
-      const days = { forcedDays: 0, nightDays: 0, dayDays: 0, marchDays: 0, dayMiles: 0, forcedDay: false };
-      for (const st of all) {
+        irls.push(irl); cost += irl;
         const note = st.note || '';
         if (/sail|embark|disembark|secure ships/.test(note)) continue;
         const dark = / \((night|day\+night)\)/.test(note), both = / \(day\+night\)/.test(note);
-        days.marchDays += st.irl || 0;
+        days.marchDays += irl;
         days.dayMiles += st.miles ?? RULES.HEX_MILES;
-        if (dark) days.nightDays += st.irl || 0;
-        if (!dark || both) days.dayDays += st.irl || 0;
-        if (st.paceForced) {
+        if (dark) days.nightDays += irl;
+        if (!dark || both) days.dayDays += irl;
+        if (want) {
           days.forcedDay = true;
-          if (!marchingCityCovers(o, o.colMiles, /^(road|trade route)/.test(note))) days.forcedDays += st.irl || 0;
+          if (!marchingCityCovers(o, o.colMiles, /^(road|trade route)/.test(note))) days.forcedDays += irl;
         }
       }
-      const tot = moraleCostOfDays(o, days);
-      best.cost = total; best.checks = tot.checks; best.plain = tot.plain; best.det = tot.det;
-      best.legCosts = [{ checks: tot.checks, plain: tot.plain, det: tot.det }];
+      return { cost, irls, tot: moraleCostOfDays(o, days) };
+    };
+
+    /* Spend as much as the army can stand, then step back a check at a time until the march that
+       comes out of it actually keeps the promise. Abandoning the whole refinement on the first miss —
+       which is what this used to do — was why a route drawn with two pins came back with nothing
+       forced at all while the same march with a waypoint in it afforded a dozen checks: on a march
+       long enough to earn a rest-drift, the first, most generous spend always overshoots. */
+    let ref = null, priced = null;
+    let budget = Math.max(0, moraleCheckBudget(o.morale, best.det, o.moraleMin, o.moraleConf / 100,
+                                               o.moraleMax, moraleDrifts(best.cost), o.moraleRest));
+    for (let tries = 0; tries <= 24 && budget >= 0; tries++, budget--) {
+      const cand = refineForcedSteps(all, o, budget, nightIrl);
+      if (!cand) break;
+      const pr = priceChoice(cand.chosen);
+      if (best.relaxed || moraleFeasible(o, pr.tot.checks, pr.tot.det, pr.cost)) { ref = cand; priced = pr; break; }
+    }
+    if (ref && priced && priced.cost < best.cost - 1e-9) {
+      all.forEach((st, i) => {
+        const want = ref.chosen.has(i);
+        if (want !== !!st.paceForced && st.dep) st.dep = stepDepAtPace(st, o, { forced: want });
+        st.paceForced = want;
+        st.irl = priced.irls[i];
+      });
+      best.cost = priced.cost;
+      best.checks = priced.tot.checks; best.plain = priced.tot.plain; best.det = priced.tot.det;
+      best.legCosts = [{ checks: best.checks, plain: best.plain, det: best.det }];
       best.stepForced = all.map(st => !!st.paceForced);
-      /* A shorter march earns fewer rest-drift ticks, and an army below its resting morale was being
-         helped by those. So the promise has to be re-tested against the march the refinement actually
-         produced; where it no longer holds, the leg search's answer stands. */
-      if (!best.relaxed && !moraleFeasible(o, best.checks, best.det, best.cost)) {
-        all.forEach((st, i) => { st.paceForced = before.forced[i]; st.irl = before.irl[i]; });
-        best.cost = before.cost; best.checks = before.checks; best.plain = before.plain;
-        delete best.stepForced;
-        best.legCosts = [{ checks: before.checks, plain: before.plain, det: best.det }];
-      }
     }
   }
   if (!best) return { irl: 0, hexes: 0, miles: 0, steps: [], pts: [], ends: null, fail: null };
@@ -9055,7 +9062,12 @@ function clearMark(ri, key) {
 }
 function startMarkAt(ri, key, j) {
   pushUndoRoutes();
-  const wi = waypointAtStep(ri, j);
+  /* Split at the step *before* the one clicked, so the row clicked is the first one marched hard
+     rather than the last one taken at the old pace. A waypoint marks where a leg sets out from, and
+     the row you are pointing at is the step that arrives at it — starting there began the stretch on
+     the row below, which is not where anyone means to point. Ending a stretch already reads as
+     inclusive, since the leg that arrives at a waypoint is the last one inside the span. */
+  const wi = waypointAtStep(ri, Math.max(0, j - 1));
   if (wi < 0) return;
   spanPending[key] = { rt: S.routes[ri], wi };
   // Until an end is named, the stretch runs to the finish — the common case, and one click is enough
