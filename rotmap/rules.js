@@ -37,6 +37,12 @@ const RULES = {
   // the point — night marching is what you do to get out of the heat, not to arrive sooner.
   // The 6-mile column limit is exactly these two numbers, so it never binds a night march.
   NIGHT: { day: 6, forcedDay: 12 },
+  /* Marching by day *and* by night is the third thing the sheet distinguishes, and it is the sum
+     rather than a replacement: the column makes its 12 road miles in daylight and another 6 after
+     dark, 18 a day, or 30 at a forced march. Roads only for the dark half, so off-road a day-and-
+     night march is just an ordinary day march — the night buys nothing where there is no road to
+     follow. It pays for that speed twice over in a heatwave, where the daylight half still costs its
+     point a day and the dark half still calls for its check. */
 
   MOUNTAIN_MULT: 0.5,       // "Mountains ... Movement speed halved."
   CAV_FORCED_MULT: 2,       // "Armies of exclusively cavalry double their forced march pace."
@@ -110,6 +116,7 @@ function landMilesPerIRL(o) {
   // no special case here — leaving `day` at the day pace is what "marched this stretch by daylight"
   // means. Callers that must say so in words ask nightStep().
   if (o.night && o.road) day = forced ? RULES.NIGHT.forcedDay : RULES.NIGHT.day;
+  else if (o.dayNight && o.road) day += forced ? RULES.NIGHT.forcedDay : RULES.NIGHT.day;
   // Cavalry double their forced pace, and the column limit is a ceiling over that rather than
   // something to double past: the doubling clause speaks of a forced march pace in general, the
   // column clause of what a long column may do at a forced march, and the narrower one wins. Twelve
@@ -149,6 +156,12 @@ function fordIRLDays(a, weather) {
 // Whether a step under these conditions is actually marched by night. Night marching is roads only,
 // so a night-marching column still crosses roadless ground by day; the readout says which is which.
 function nightStep(o, road) { return !!o.night && !!road; }
+// A day-and-night step is one where the dark half actually buys something, which is to say a road.
+function dayNightStep(o, road) { return !!o.dayNight && !!road; }
+// Whether any part of this step is marched after dark — what the night morale check asks about.
+function marchesAtNight(o, road) { return !!road && (!!o.night || !!o.dayNight); }
+// Whether any part of it is marched in daylight — what the heat rules ask about.
+function marchesByDay(o, road) { return !o.night || !road; }
 
 /* ---------------- morale ---------------- */
 /* "Certain events call for a morale check: roll 2d6 equal to or under the army's morale. On a success,

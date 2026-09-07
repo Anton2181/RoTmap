@@ -30,6 +30,7 @@ the leg that arrived at it, so adding waypoints to a route never changes what it
 | Column > 6 mi, normal | 6 on road, 3 off | 24 / 12 |
 | Column > 6 mi, forced | 12 on road, 6 off | 60 / 30 |
 | Night march | 6 on road (12 forced), roads only | 24 / 60 |
+| Day and night march | 18 on road (30 forced) | 72 / 150 |
 
 Column length: 1 mi per 5,000 infantry+noncombatants, 2,000 cavalry, or 50 wagons. The **Logistician**
 trait ("your army stretches half as long on the road") halves it, and halves it for fording too, since
@@ -49,7 +50,13 @@ Forced march: morale check per day (doubles → −1 morale). Night march: same 
 2-in-6 wrong turn at forks. Neither is costed — morale is not tracked, and a wrong turn makes a
 different route rather than a slower one — so the readout states them instead.
 
-Night marching is an **alternative** to marching by day, not an addition to it: the weather table sets
+**Day and night marching** is the third pace: the road miles by daylight *and* another 6 after dark,
+18 a day or 30 forced. The dark half needs a road, so off-road it is an ordinary day march and buys
+nothing. It calls for the night check like any march after dark, and unlike a pure night march it is
+still day marching — so in a heatwave it pays both ways, a point a day for the sun and a check for
+the dark.
+
+Night marching proper is an **alternative** to marching by day, not an addition to it: the weather table sets
 the two against each other ("Heatwave — day marching gives −1 Morale per IRL day. Night marching is
 fine"), and under Hot it is night marching that escapes the morale check. So it replaces the 12/18
 road pace over the same cadences — 24 mi/IRL, 60 forced — and is always slower than the same march

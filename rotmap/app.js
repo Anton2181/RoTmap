@@ -4781,7 +4781,7 @@ function minorCross(a, b, geom) {
 const ROUTE_SETTINGS = {
   li: 0, cav: 2000, inf: 8000, wag: 80, non: 2500,
   forced: false, marines: false, embark: true, fleet: false, noTrade: false, logistician: false,
-  night: false, weather: 'clear',
+  night: false, dayNight: false, weather: 'clear',
   // Morale. `morale` is what the army has now, `moraleMin` the lowest it may be allowed to reach, and
   // `moraleConf` how sure of that the commander wants to be. With the pace boxes ticked these three
   // are what the optimiser solves against: they turn "march hard" into "march as hard as this army
@@ -4846,7 +4846,7 @@ function armyOpts(set) {
     // are not what holds the column to a walking pace. They still lengthen the column for fords.
     cavOnly: army.cav > 0 && army.inf === 0 && army.wag === 0,
     colMiles: columnMiles(army),
-    forced: c('forced'), night: c('night'), fleet: c('fleet'),
+    forced: c('forced'), night: c('night'), dayNight: c('dayNight'), fleet: c('fleet'),
     morale: v('morale'), moraleMin: v('moraleMin'), moraleConf: v('moraleConf'),
     moraleMax: v('moraleMax') || RULES.MORALE.MAX, moraleRest: v('moraleRest') || RULES.MORALE.REST,
     marchingCity: c('marchingCity'), poet: c('poet'),
@@ -4866,6 +4866,9 @@ function armyOpts(set) {
 const LEG_MARKS = [
   { key: 'f', opt: 'forced', word: 'forced', label: 'Force the march' },
   { key: 'n', opt: 'night',  word: 'night',  label: 'March by night' },
+  // `word` is what the clipboard line carries and is matched as a whole word, so it stays plain:
+  // a '+' in it would be read as a regular expression when a pasted column is parsed back.
+  { key: 'd', opt: 'dayNight', word: 'daynight', label: 'March day and night' },
 ];
 // The conditions a leg setting out from this waypoint is solved under. Re-solved rather than
 // rescaled afterwards: a different pace can be worth a different road, and only searching finds it.
@@ -4879,7 +4882,7 @@ function legOpts(o, w) {
    active and recomputes; changing the active route rereads the boxes from it. */
 const SETTING_NUMS = ['li', 'cav', 'inf', 'wag', 'non', 'morale', 'moraleMin', 'moraleConf',
                       'moraleMax', 'moraleRest'];
-const SETTING_CHKS = ['forced', 'night', 'marines', 'embark', 'fleet', 'noTrade', 'logistician',
+const SETTING_CHKS = ['forced', 'night', 'dayNight', 'marines', 'embark', 'fleet', 'noTrade', 'logistician',
                       'marchingCity', 'poet', 'stops'];
 /* Boxes that are on unless something says otherwise. Every route saved before a box existed has no
    opinion about it, and reading a missing key as "off" would silently change what those routes mean —
@@ -5482,12 +5485,13 @@ function landStep(a, b, o, road, crossMajor, bRi, geom) {
      does routeLeg ask again without this, and the column marches that leg by daylight. */
   if (o.night && o.roadsOnly && !road) return null;
   const key = pairKey(a, b), tb = regionTerrain(b, bRi);
-  const mpi = landMilesPerIRL({ road, terrain: tb, forced: o.forced, night: o.night, liThird: o.liThird, cavOnly: o.cavOnly, weather: o.weather, colMiles: o.colMiles });
+  const mpi = landMilesPerIRL({ road, terrain: tb, forced: o.forced, night: o.night, dayNight: o.dayNight, liThird: o.liThird, cavOnly: o.cavOnly, weather: o.weather, colMiles: o.colMiles });
   if (mpi <= 0) return null;
   // A night-marching column still has to cross roadless ground by daylight, so the note says which
   // of the two this step was: the distinction is the whole of what the night rule does to a route.
   let irl = RULES.HEX_MILES / mpi, note = road ? 'road' : 'off-road';
   if (o.night) note += nightStep(o, road) ? ' (night)' : ' (by day — no night march off-road)';
+  else if (o.dayNight) note += dayNightStep(o, road) ? ' (day+night)' : ' (by day — no night march off-road)';
   // "Coastal strip" means walkable ground in a hex whose sheet terrain is water. Merely having a
   // coast line somewhere in an otherwise ordinary land hex (an inlet or an inland lake) does not turn
   // every dry region of that hex into coastal-strip terrain.
@@ -5716,7 +5720,7 @@ function expand(h, ri, af, ships, g, o) {
   if (o.tradeRoad) for (const link of (S.adj.tradeByHex.get(h) || [])) {
     const other = link.a === h ? link.b : link.a;
     if (other === h) continue;
-    const mpi = landMilesPerIRL({ road: true, terrain: 'Flatlands', forced: o.forced, night: o.night, liThird: o.liThird, cavOnly: o.cavOnly, weather: o.weather, colMiles: o.colMiles });
+    const mpi = landMilesPerIRL({ road: true, terrain: 'Flatlands', forced: o.forced, night: o.night, dayNight: o.dayNight, liThird: o.liThird, cavOnly: o.cavOnly, weather: o.weather, colMiles: o.colMiles });
     if (mpi <= 0) continue;
     const miles = link.miles ?? (link.chain.length - 1) * RULES.HEX_MILES;
     const chain = link.a === h ? link.chain : [...link.chain].reverse();
@@ -5732,7 +5736,7 @@ function expand(h, ri, af, ships, g, o) {
     }
     // Road-grade infrastructure, so a night-marching column marches it by night like any other road.
     out.push({ toH: other, toRi, af: 0, ships: 0, g: 0, irl: miles / mpi,
-               note: `trade route (${Math.round(miles)} mi, no stops)${o.night ? ' (night)' : ''}`, chain, geom: geomPts,
+               note: `trade route (${Math.round(miles)} mi, no stops)${o.night ? ' (night)' : o.dayNight ? ' (day+night)' : ''}`, chain, geom: geomPts,
                hexes: link.hexes, miles });
   }
   return out;
@@ -5772,7 +5776,7 @@ const MAX_REGIONS = 1 << SKW.ri; // regions per hex the packing can address
 function departHexCost(h, ri, afloat, note, o) {
   if (afloat) return SHIP_IRL;
   const road = /^(road|trade route)/.test(note || '');
-  const mpi = landMilesPerIRL({ road, terrain: regionTerrain(h, ri), forced: o.forced, night: o.night,
+  const mpi = landMilesPerIRL({ road, terrain: regionTerrain(h, ri), forced: o.forced, night: o.night, dayNight: o.dayNight,
                                 liThird: o.liThird, cavOnly: o.cavOnly, weather: o.weather,
                                 colMiles: o.colMiles });
   return mpi > 0 ? RULES.HEX_MILES / mpi : Infinity;
@@ -6026,15 +6030,19 @@ function throughSharedEdges(pts) {
    fastest set of legs that still leaves the army at or above its allowed morale, with the certainty
    asked for. That is why the boxes override any legs marked by hand — two answers to the same
    question, and only one of them knows what the morale will be at the end. */
-function moraleOptimising(o) { return !!(o.forced || o.night) && o.moraleConf > 0; }
+function moraleOptimising(o) { return !!(o.forced || o.night || o.dayNight) && o.moraleConf > 0; }
 
 // The ways a single leg may be marched, given which paces are permitted. Ordinary first, so a tie
 // between marching hard and not is settled in favour of the army's spirit.
 function legModes(o) {
-  const out = [{ forced: false, night: false }];
-  if (o.forced) out.push({ forced: true, night: false });
-  if (o.night) out.push({ forced: false, night: true });
-  if (o.forced && o.night) out.push({ forced: true, night: true });
+  const paces = [{}];
+  if (o.night) paces.push({ night: true });
+  if (o.dayNight) paces.push({ dayNight: true });   // never both: a column marches one way or the other
+  const out = [];
+  for (const p of paces) {
+    out.push({ forced: false, night: false, dayNight: false, ...p });
+    if (o.forced) out.push({ forced: true, night: false, dayNight: false, ...p });
+  }
   return out;
 }
 
@@ -6048,20 +6056,25 @@ function legModes(o) {
 function legMoraleCost(o, mode, steps, irl) {
   const W = RULES.WEATHER_MORALE[o.weather] || {};
   const up = d => (d > 1e-9 ? Math.ceil(d - 1e-9) : 0);
-  let nightIrl = 0, offRoad = false, marchIrl = 0, miles = 0;
+  /* Two tallies that overlap rather than partition, because a day-and-night march is both: the dark
+     half calls for the night check and the daylight half still answers to the heat. Only a pure night
+     march escapes the sun, which is the whole reason to give up the daylight. */
+  let afterDark = 0, inDaylight = 0, offRoad = false, marchIrl = 0, miles = 0;
   for (const st of steps) {
     const note = st.note || '';
     if (st.ships || /sail/.test(note)) continue;      // a voyage is not a march; nobody checks morale
     marchIrl += st.irl || 0; miles += st.miles || 0;
-    if (/ \(night\)/.test(note)) nightIrl += st.irl || 0;
+    if (/ \(night\)/.test(note)) afterDark += st.irl || 0;
+    else if (/ \(day\+night\)/.test(note)) { afterDark += st.irl || 0; inDaylight += st.irl || 0; }
+    else inDaylight += st.irl || 0;
     if (/off-road/.test(note)) offRoad = true;
   }
-  const dayIrl = Math.max(0, marchIrl - nightIrl);
+  const dayIrl = inDaylight;
   let checks = 0, plain = 0, det = 0;
   // "You can force march on roads without risking morale" — the whole leg has to stay on the road.
   if (mode.forced && !marchingCityCovers(o, o.colMiles, !offRoad)) checks += up(marchIrl);
-  if (mode.night) checks += up(nightIrl);
-  if (W.dayLoss) det += W.dayLoss * up(dayIrl);       // heatwave: only day marching costs
+  checks += up(afterDark);                           // one check per IRL day with a night in it
+  if (W.dayLoss) det += W.dayLoss * up(dayIrl);      // heatwave: only daylight marching costs
   if (W.anyLoss) det += W.anyLoss * up(marchIrl);     // blizzard: any hour costs
   // Hot: "day marching more than 60 miles requires a morale check. Day forced marching requires a
   // morale check. Night marching is fine."
@@ -6179,8 +6192,9 @@ function stepCostAtPace(st, o, was, want) {
   const note = st.note || '';
   if (st.ships || /sail|embark|disembark|secure ships/.test(note)) return null;   // not a march
   const road = /^(road|trade route)/.test(note);
+  const night = / \(night\)/.test(note), dayNight = / \(day\+night\)/.test(note);
   const mpiAt = m => landMilesPerIRL({ road, terrain: regionTerrain(st.h, st.ri), forced: m.forced,
-                                       night: m.night && road, liThird: o.liThird, cavOnly: o.cavOnly,
+                                       night, dayNight, liThird: o.liThird, cavOnly: o.cavOnly,
                                        weather: o.weather, colMiles: o.colMiles });
   const miles = st.miles ?? RULES.HEX_MILES;
   const mWas = mpiAt(was), mWant = mpiAt(want);
@@ -6198,10 +6212,9 @@ function refineForcedSteps(steps, o, budget, nightIrl) {
   let fixed = 0, freeForced = 0;
   for (let i = 0; i < steps.length; i++) {
     const st = steps[i], note = st.note || '';
-    const night = / \(night\)/.test(note);
-    const was = { forced: !!st.paceForced, night };
-    const slow = stepCostAtPace(st, o, was, { forced: false, night });
-    const fast = stepCostAtPace(st, o, was, { forced: true, night });
+    const was = { forced: !!st.paceForced };
+    const slow = stepCostAtPace(st, o, was, { forced: false });
+    const fast = stepCostAtPace(st, o, was, { forced: true });
     /* A step only enters the knapsack if hurrying it genuinely saves time and genuinely spends
        budget. A zero or negative weight would let the traceback below walk back up its own table for
        ever, and a step that saves nothing has no business competing for the budget anyway. */
@@ -6215,27 +6228,40 @@ function refineForcedSteps(steps, o, budget, nightIrl) {
   }
   if (!cand.length) return null;
   // Steps the tradition covers are simply taken: they save time and cost nothing.
-  const cap = Math.max(0, Math.round(budget * PACE_Q) - Math.round(nightIrl * PACE_Q));
   const paid = cand.filter(c => !c.free);
+  const wOf = c => Math.max(1, Math.ceil(c.cost * PACE_Q));
+  /* Never more capacity than there is anything to spend it on. Beyond the total weight of every
+     candidate the table is flat, and a budget of forty-odd checks would otherwise size it in the tens
+     of thousands for the sake of five days of marching. */
+  /* The dark half is charged its own whole checks before the daylight gets any budget. Subtracting
+     the raw hours instead let ceil(forced) + ceil(night) come to one more check than the budget
+     allowed whenever both had a part-day in them — the two are rounded up separately, so only whole
+     checks can be taken off the top. */
+  const room = Math.max(0, (budget - Math.ceil(nightIrl - 1e-9)) * PACE_Q);
+  const cap = Math.min(room, paid.reduce((a, c) => a + wOf(c), 0));
   const dp = new Array(cap + 1).fill(0);            // best time saved for this many hundredths spent
-  const pick = new Array(cap + 1).fill(null);
+  /* One row per candidate saying whether taking it is what made dp[v] what it is *after that
+     candidate was considered*. The chain of back-pointers this replaces was wrong: a later candidate
+     could improve dp[v - w] without touching the pointer that had been written into dp[v], so
+     following it rebuilt a set that was no longer the one the table had scored — and the steps it
+     quietly dropped were the ones with unusual weights, which is to say the fords. Walking the rows
+     backwards from the last candidate cannot come apart that way. */
+  const take = [];
   for (const c of paid) {
-    const w = Math.max(1, Math.ceil(c.cost * PACE_Q));
-    if (w > cap) continue;
-    for (let v = cap; v >= w; v--) {
-      const cand2 = dp[v - w] + c.saved;
-      if (cand2 > dp[v] + 1e-12) { dp[v] = cand2; pick[v] = { c, prev: v - w }; }
+    const w = wOf(c), row = new Uint8Array(cap + 1);
+    if (w <= cap) for (let v = cap; v >= w; v--) {
+      const gain = dp[v - w] + c.saved;
+      if (gain > dp[v] + 1e-12) { dp[v] = gain; row[v] = 1; }
     }
+    take.push(row);
   }
   let bestV = 0;
   for (let v = 1; v <= cap; v++) if (dp[v] > dp[bestV] + 1e-12) bestV = v;
   const chosen = new Set(cand.filter(c => c.free).map(c => c.i));
   let forcedIrl = 0;
-  for (const c of cand) if (c.free) forcedIrl += 0;                  // covered: no days charged
-  for (let v = bestV, guard = 0; pick[v] && guard <= paid.length; guard++) {
-    const { c, prev } = pick[v];
-    chosen.add(c.i); forcedIrl += c.cost;
-    v = prev;
+  for (let k = paid.length - 1, v = bestV; k >= 0; k--) {
+    if (!take[k][v]) continue;
+    chosen.add(paid[k].i); forcedIrl += paid[k].cost; v -= wOf(paid[k]);
   }
   return { chosen, forcedIrl, total: fixed + freeForced - dp[bestV] };
 }
@@ -6262,7 +6288,11 @@ function routeLeg(rt, o) {
     for (const cur of dp.values()) {
       const state = cur.state;
       for (const mode of modes) {
-        let lo = mode ? { ...o, forced: mode.forced, night: mode.night } : legOpts(o, wps[i]);
+        // Every field of the mode, or the alternatives are not alternatives: leaving `dayNight` on the
+        // ambient options made the "ordinary march" branch solve as a day-and-night one too, so the
+        // search compared a pace against itself and the optimiser spent morale it had not been given.
+        let lo = mode ? { ...o, forced: mode.forced, night: mode.night, dayNight: mode.dayNight }
+                      : legOpts(o, wps[i]);
         // The morale a leg costs is charged whether or not the paces are being solved for: a heatwave
         // takes its point a day from a column that is merely walking, and a leg marked by hand rolls
         // its checks like any other. Without the optimiser the mode is simply whatever this leg is.
@@ -6331,8 +6361,9 @@ function routeLeg(rt, o) {
       st.paceForced = !!best.modes[li]?.forced;
       all.push(st);
     }));
+    // Whatever is already committed to the dark, whether the column gave up its daylight for it or not.
     let nightIrl = 0;
-    for (const st of all) if (/ \(night\)/.test(st.note || '')) nightIrl += st.irl || 0;
+    for (const st of all) if (/ \((night|day\+night)\)/.test(st.note || '')) nightIrl += st.irl || 0;
     const drifts = moraleDrifts(best.cost);
     const budget = Math.max(0, moraleCheckBudget(o.morale, best.det, o.moraleMin, o.moraleConf / 100,
                                                  o.moraleMax, drifts, o.moraleRest));
@@ -6342,8 +6373,7 @@ function routeLeg(rt, o) {
       all.forEach((st, i) => {
         const want = ref.chosen.has(i);
         if (want !== !!st.paceForced) {
-          const night = / \(night\)/.test(st.note || '');
-          const t = stepCostAtPace(st, o, { forced: !!st.paceForced, night }, { forced: want, night });
+          const t = stepCostAtPace(st, o, { forced: !!st.paceForced }, { forced: want });
           if (t !== null) st.irl = t;
         }
         st.paceForced = want;
@@ -8682,7 +8712,8 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
     // A step chosen hex by hex answers for itself; otherwise fall back to the leg's mode, then to
     // whatever was marked by hand.
     const forced = j > 0 && (st.paceForced !== undefined ? st.paceForced : om ? !!om.forced : !!w?.f);
-    const night = j > 0 && (om ? !!om.night : !!w?.n) && / \(night\)/.test(st.note || '');
+    const night = j > 0 && / \((night|day\+night)\)/.test(st.note || '');
+    const dayNight = night && / \(day\+night\)/.test(st.note || '');
     const cls = `class="strow${forced ? ' forced' : ''}${night ? ' night' : ''}"`;
     const attrs = `${cls} data-step="${j}"`;
     if (j === 0)
@@ -8697,7 +8728,7 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
     const mi = sameHex ? 0 : Math.round((st.miles ?? nh * RULES.HEX_MILES) - (st.dep ? RULES.HEX_MILES : 0));
     const note = st.note || '';
     const via = note + (forced ? ' <span class="fm">forced</span>' : '') +
-                (night ? ' <span class="nm">night</span>' : '');
+                (night ? ` <span class="nm">${dayNight ? 'day+night' : 'night'}</span>` : '');
     return `<tr ${attrs}><td title="${escHtml(hexLbl)}">${sameHex ? '' : hexLbl}</td>` +
            `<td class="dim" title="${escHtml(terr)}">${terr}</td><td title="${escHtml(note)}">${via}</td>` +
            `<td class="dim">${mi || ''}</td><td>${own.toFixed(2)}</td><td>${marchCum.toFixed(1)}</td></tr>` + pause;
@@ -8751,12 +8782,14 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
     (() => {
       // With the paces solved for, what counts is whether any leg actually came back marked for
       // night — the box only ever said it was allowed.
-      const om = r.morale?.optimised ? r.morale.modes : null;
-      const marked = om ? om.some(m => m?.night) : (o.night || rt.wps.some(w => w.n));
-      if (!marked) return '';
       const nights = r.steps.filter(st => / \(night\)/.test(st.note || '')).length;
+      const both = r.steps.filter(st => / \(day\+night\)/.test(st.note || '')).length;
       const byDay = r.steps.filter(st => /by day —/.test(st.note || '')).length;
-      return `<div class="nmnote">Night march: ${nights} step${nights === 1 ? '' : 's'} by night` +
+      if (!nights && !both) return '';
+      const parts = [];
+      if (nights) parts.push(`${nights} step${nights === 1 ? '' : 's'} by night`);
+      if (both) parts.push(`${both} day and night`);
+      return `<div class="nmnote">Marching after dark: ${parts.join(', ')}` +
              `${byDay ? `, ${byDay} off-road by day (no night marching off-road)` : ''}. ` +
              `2-in-6 wrong turn at each road fork is not costed.</div>`;
     })() +

@@ -521,8 +521,11 @@
         <!-- Resting morale, the level rest-drift pulls towards: 9, or 6 for a majority-peasant army.
              Kept rather than shown for the same reason as the maximum. -->
         <input type="hidden" id="moraleRest" value="9">
-        <label class="chk" title="Tradition: a column over 6 miles long with at least 1 wagon per 30 infantry may force march on roads without risking morale."><input type="checkbox" id="marchingCity"> Marching City — free forced march on roads</label>
-        <label class="chk" title="Commander trait: morale rolls count 2 higher when reading the consequences of a failed check. Does not change how often a check fails."><input type="checkbox" id="poet"> Poet — gentler failures</label>
+        <label class="chk" title="Permit the forced pace. Which legs use it is chosen to fit the morale allowed, and overrides legs marked by hand."><input type="checkbox" id="forced"> Forced march</label>
+        <label class="chk" title="Permit marching by night: 6 mi/night on roads, 12 forced. Slower than daylight, but the heat rules leave it alone. Roads only — a leg with no road path is marched by day. Which legs use it is chosen to fit the morale allowed."><input type="checkbox" id="night"> Night march</label>
+        <label class="chk" title="Permit marching day and night: the column's road miles by daylight and another 6 after dark, 18 a day or 30 forced. Roads only for the dark half, so off-road it is an ordinary day march. In a heatwave it pays both ways — the daylight still costs a point a day and the dark half still calls for its check."><input type="checkbox" id="dayNight"> Day and night march</label>
+        <label class="chk" title="Tradition: a column over 6 miles long with at least 1 wagon per 30 infantry may force march on roads without risking morale."><input type="checkbox" id="marchingCity"> Marching City</label>
+        <label class="chk" title="Commander trait: morale rolls count 2 higher when reading the consequences of a failed check. Does not change how often a check fails."><input type="checkbox" id="poet"> Poet</label>
         <div id="moralePanel"></div>
         <details class="hint">
           <summary>How morale is spent</summary>
@@ -545,13 +548,11 @@
       <div class="group" id="condGroup">
         <h2>Conditions</h2>
         <!-- The detail lives in the tooltips; the labels stay short enough to scan. -->
-        <label class="chk" title="Permit the forced pace. Which legs use it is chosen to fit the morale allowed, and overrides legs marked by hand."><input type="checkbox" id="forced"> Forced march</label>
-        <label class="chk" title="Permit marching by night: 6 mi/night on roads, 12 forced. Slower than daylight, but the heat rules leave it alone. Roads only — a leg with no road path is marched by day. Which legs use it is chosen to fit the morale allowed."><input type="checkbox" id="night"> Night march</label>
-        <label class="chk" title="May land anywhere. Embarking still requires a port."><input type="checkbox" id="marines"> Marines — land anywhere</label>
+        <label class="chk" title="May land anywhere. Embarking still requires a port."><input type="checkbox" id="marines"> Marines</label>
         <label class="chk" title="May secure ships at a sea or major-river port for 7 IRL days."><input type="checkbox" id="embark" checked> Allow securing a fleet</label>
         <label class="chk" title="Starts with ships. Re-embarking costs 1 day; marching inland leaves the ships behind."><input type="checkbox" id="fleet"> Start as fleet</label>
         <label class="chk" title="Trade routes are used by default. They run end to end only, with no stops in between."><input type="checkbox" id="noTrade"> Avoid trade routes</label>
-        <label class="chk" title="Commander trait: the army stretches half as long on the road. Halves the column for the 6-mile limit and for fording."><input type="checkbox" id="logistician"> Logistician — half column length</label>
+        <label class="chk" title="Commander trait: the army stretches half as long on the road. Halves the column for the 6-mile limit and for fording."><input type="checkbox" id="logistician"> Logistician</label>
         <label class="field"><span>Weather</span><select id="weather">
           <option value="clear">Clear / light rain</option>
           <option value="hot">Hot</option>
