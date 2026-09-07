@@ -653,6 +653,11 @@ body.colsizing { cursor: col-resize; user-select: none; }
    readable, and the band survives the hover highlight. */
 .stepstbl tr.forced td:first-child { box-shadow: inset 2px 0 0 var(--warn); }
 .stepstbl .fm { color: var(--warn); font-size: 9.5px; text-transform: uppercase; letter-spacing: .05em; }
+/* Night marching gets its own rail and tag, on the other side of the row so a leg that is both
+   forced and marched by night shows both at once rather than one hiding the other. */
+.stepstbl tr.night td:last-child { box-shadow: inset -2px 0 0 var(--accent); }
+.stepstbl .nm { color: var(--accent); font-size: 9.5px; text-transform: uppercase; letter-spacing: .05em; }
+.routeout .nmnote { margin-top: var(--s1); color: var(--ink-2); font-size: var(--f2); }
 .stepstbl td:nth-child(4), .stepstbl td:nth-child(5), .stepstbl td:nth-child(6) { text-align: right; font-variant-numeric: tabular-nums; }
 
 /* Whose settings the boxes below are showing — the group heading carries it, so the answer is

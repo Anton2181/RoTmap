@@ -28,6 +28,16 @@ const RULES = {
   // column over the length limit it halves the limit instead. See landMilesPerIRL.
   OFFROAD_MULT: 0.5,
 
+  // "An army undergoing a night march travels 6 miles per night, or 12 miles at a forced march ...
+  // Armies cannot night march off-road."
+  // Marching by night is an alternative to marching by day, not an addition to it — the weather table
+  // sets the two against each other ("Day marching gives -1 Morale per IRL day. Night marching is
+  // fine"), so these replace the 12/18 road pace rather than adding to it, over the same 4-of-5 and
+  // 5-of-5 cadences: 24 mi/IRL, or 60 forced. Always slower than the same march made by day, which is
+  // the point — night marching is what you do to get out of the heat, not to arrive sooner.
+  // The 6-mile column limit is exactly these two numbers, so it never binds a night march.
+  NIGHT: { day: 6, forcedDay: 12 },
+
   MOUNTAIN_MULT: 0.5,       // "Mountains ... Movement speed halved."
   CAV_FORCED_MULT: 2,       // "Armies of exclusively cavalry double their forced march pace."
   // "Light infantry detachments can move at normal speed off-road and ignore the mountain speed
@@ -79,8 +89,8 @@ const RULES = {
 
   // Marines (a tradition): "Marines can disembark anywhere." Taking ship still needs a port.
   // Reference, not used by the path cost: messengers 48 mi per in-game day (240/IRL), news 90 mi per
-  // IRL day overland; night march 6 mi a night (12 forced), roads only, no night marching off-road;
-  // light-cavalry harassment can halve speed; morale check per forced-march day; the Engineers
+  // IRL day overland; light-cavalry harassment can halve speed; morale checks per forced-march day
+  // and per five nights marched; the 2-in-6 wrong turn at a fork on a night march; the Engineers
   // tradition ignores river-crossing penalties; fog costs no speed but risks losing the way.
 };
 
@@ -92,6 +102,11 @@ function landMilesPerIRL(o) {
   // Start from the road pace, then let the long column cut it. Both are paces on a road, so this
   // settles what the column makes in a day before anything about the ground it is crossing.
   let day = forced ? RULES.MARCH.forcedRoad : RULES.MARCH.road;
+  // Night marching is a road pace and only a road pace: an army cannot night march off-road, so a
+  // step with no road under it is one the column makes by day, at the ordinary day rate, and needs
+  // no special case here — leaving `day` at the day pace is what "marched this stretch by daylight"
+  // means. Callers that must say so in words ask nightStep().
+  if (o.night && o.road) day = forced ? RULES.NIGHT.forcedDay : RULES.NIGHT.day;
   // Cavalry double their forced pace, and the column limit is a ceiling over that rather than
   // something to double past: the doubling clause speaks of a forced march pace in general, the
   // column clause of what a long column may do at a forced march, and the narrower one wins. Twelve
@@ -127,3 +142,7 @@ function fordIRLDays(a, weather) {
   if (colMiles <= 0) return 0;
   return RULES.FORD.dayPerColMile * colMiles / RULES.GAME_DAYS_PER_IRL;
 }
+
+// Whether a step under these conditions is actually marched by night. Night marching is roads only,
+// so a night-marching column still crosses roadless ground by day; the readout says which is which.
+function nightStep(o, road) { return !!o.night && !!road; }

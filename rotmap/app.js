@@ -4781,7 +4781,7 @@ function minorCross(a, b, geom) {
 const ROUTE_SETTINGS = {
   li: 0, cav: 2000, inf: 8000, wag: 80, non: 2500,
   forced: false, marines: false, embark: true, fleet: false, noTrade: false, logistician: false,
-  weather: 'clear',
+  night: false, weather: 'clear',
 };
 const SETTINGS_LS = 'rotmap_settings_v1';
 let SETTINGS = { ...ROUTE_SETTINGS };
@@ -4830,7 +4830,7 @@ function armyOpts(set) {
     // are not what holds the column to a walking pace. They still lengthen the column for fords.
     cavOnly: army.cav > 0 && army.inf === 0 && army.wag === 0,
     colMiles: columnMiles(army),
-    forced: c('forced'), fleet: c('fleet'),
+    forced: c('forced'), night: c('night'), fleet: c('fleet'),
     // Two independent permissions, not one. `secureFleet` licenses only the month spent getting
     // ships you don't have; boarding ships you *do* have is licensed by having them, which is what
     // `fleet` says. The saved key stays `embark` — every column in every saved route and every
@@ -4840,10 +4840,26 @@ function armyOpts(set) {
   };
 }
 
+/* Marks that a single leg can carry, over and above the route-wide conditions: which flag on the
+   waypoint, and which condition it turns on. A leg is solved at the pace of the waypoint it sets out
+   from, and a mark can only ever turn a pace *on* for a stretch — the route-wide box already covers
+   the whole march, so there is nothing for a mark to add where it is ticked. */
+const LEG_MARKS = [
+  { key: 'f', opt: 'forced', word: 'forced', label: 'Force the march' },
+  { key: 'n', opt: 'night',  word: 'night',  label: 'March by night' },
+];
+// The conditions a leg setting out from this waypoint is solved under. Re-solved rather than
+// rescaled afterwards: a different pace can be worth a different road, and only searching finds it.
+function legOpts(o, w) {
+  let lo = o;
+  for (const m of LEG_MARKS) if (w?.[m.key] && !o[m.opt]) lo = { ...lo, [m.opt]: true };
+  return lo;
+}
+
 /* The panel is a view of one settings object. Writing a box writes through to whichever object is
    active and recomputes; changing the active route rereads the boxes from it. */
 const SETTING_NUMS = ['li', 'cav', 'inf', 'wag', 'non'];
-const SETTING_CHKS = ['forced', 'marines', 'embark', 'fleet', 'noTrade', 'logistician', 'stops'];
+const SETTING_CHKS = ['forced', 'night', 'marines', 'embark', 'fleet', 'noTrade', 'logistician', 'stops'];
 /* Boxes that are on unless something says otherwise. Every route saved before a box existed has no
    opinion about it, and reading a missing key as "off" would silently change what those routes mean —
    `stops` in particular, where off would stop billing halts on marches that were planned with them. */
@@ -5431,9 +5447,12 @@ function landStep(a, b, o, road, crossMajor, bRi, geom) {
   // Terrain is a property of the ground being marched onto, which is the destination *region* — a
   // hex split between hill and flat charges whichever half the column actually enters.
   const key = pairKey(a, b), tb = regionTerrain(b, bRi);
-  const mpi = landMilesPerIRL({ road, terrain: tb, forced: o.forced, liThird: o.liThird, cavOnly: o.cavOnly, weather: o.weather, colMiles: o.colMiles });
+  const mpi = landMilesPerIRL({ road, terrain: tb, forced: o.forced, night: o.night, liThird: o.liThird, cavOnly: o.cavOnly, weather: o.weather, colMiles: o.colMiles });
   if (mpi <= 0) return null;
+  // A night-marching column still has to cross roadless ground by daylight, so the note says which
+  // of the two this step was: the distinction is the whole of what the night rule does to a route.
   let irl = RULES.HEX_MILES / mpi, note = road ? 'road' : 'off-road';
+  if (o.night) note += nightStep(o, road) ? ' (night)' : ' (by day — no night march off-road)';
   // "Coastal strip" means walkable ground in a hex whose sheet terrain is water. Merely having a
   // coast line somewhere in an otherwise ordinary land hex (an inlet or an inland lake) does not turn
   // every dry region of that hex into coastal-strip terrain.
@@ -5662,7 +5681,7 @@ function expand(h, ri, af, ships, g, o) {
   if (o.tradeRoad) for (const link of (S.adj.tradeByHex.get(h) || [])) {
     const other = link.a === h ? link.b : link.a;
     if (other === h) continue;
-    const mpi = landMilesPerIRL({ road: true, terrain: 'Flatlands', forced: o.forced, liThird: o.liThird, cavOnly: o.cavOnly, weather: o.weather, colMiles: o.colMiles });
+    const mpi = landMilesPerIRL({ road: true, terrain: 'Flatlands', forced: o.forced, night: o.night, liThird: o.liThird, cavOnly: o.cavOnly, weather: o.weather, colMiles: o.colMiles });
     if (mpi <= 0) continue;
     const miles = link.miles ?? (link.chain.length - 1) * RULES.HEX_MILES;
     const chain = link.a === h ? link.chain : [...link.chain].reverse();
@@ -5676,8 +5695,9 @@ function expand(h, ri, af, ships, g, o) {
       const w = regionsOf(other).findIndex(regWalkable);
       if (w >= 0) toRi = w;
     }
+    // Road-grade infrastructure, so a night-marching column marches it by night like any other road.
     out.push({ toH: other, toRi, af: 0, ships: 0, g: 0, irl: miles / mpi,
-               note: `trade route (${Math.round(miles)} mi, no stops)`, chain, geom: geomPts,
+               note: `trade route (${Math.round(miles)} mi, no stops)${o.night ? ' (night)' : ''}`, chain, geom: geomPts,
                hexes: link.hexes, miles });
   }
   return out;
@@ -5910,9 +5930,7 @@ function routeLeg(rt, o) {
   for (let i = 0; i + 1 < wps.length; i++) {
     const next = new Map();
     for (const [state, cur] of dp) {
-      // A leg the column is pushing gets solved at the forced pace, not merely rescaled afterwards:
-      // a faster march can be worth a different road, and only re-solving finds it.
-      const lo = wps[i].f && !o.forced ? { ...o, forced: true } : o;
+      const lo = legOpts(o, wps[i]);
       const legs = dijkstraLeg(wps[i].h, wps[i].ri | 0, state >> 1, state & 1, wps[i + 1].h, wps[i + 1].ri | 0, lo);
       for (const [stEnd, r] of legs) {
         const nc = cur.cost + r.irl, ex = next.get(stEnd);
@@ -6286,9 +6304,9 @@ function optimiseRouteOrder(rt, mode) {
   const o = armyOpts(rt.set);
   // Pass, Visit and Wait travel with their waypoint when the order changes. With no explicit Visit or
   // Wait and route halts switched off, this naturally reduces to one order rounded at the finish.
-  // The forced-march flag says "push on from here", so it belongs to the waypoint and travels with it
-  // when the order changes — a leg is solved at the pace of the stop it sets out from.
-  const oAt = k => (wps[k].f && !o.forced ? { ...o, forced: true } : o);
+  // A pace mark says "from here onwards", so it belongs to the waypoint and travels with it when the
+  // order changes — a leg is solved at the pace of the stop it sets out from.
+  const oAt = k => legOpts(o, wps[k]);
   const statesAt = k => {
     const f = forcedAf(region(wps[k].h, wps[k].ri | 0));
     return STATES.filter(([af]) => f === null || af === f).map(([af, sh]) => af * 2 + sh);
@@ -6477,9 +6495,9 @@ function routeProbeFields() {
     // is right: paying a day for ships to reach the hovered hex is a day this leg costs.
     routeProbe.baseExact = r.irl;
   }
-  // The forced-march flag sits on the waypoint a push starts *from*, so a forced last leg means the
-  // leg being previewed is forced too — solved at that pace, not rescaled after the fact.
-  const lo = last.f && !o.forced ? { ...o, forced: true } : o;
+  // A pace mark sits on the waypoint its stretch starts *from*, so a marked last leg means the leg
+  // being previewed carries it too — solved at that pace, not rescaled after the fact.
+  const lo = legOpts(o, last);
   for (const [state, cost] of ends)
     routeProbe.fields.push({ cost, F: dijkstraField(lh, lri, state >> 1, state & 1, lo) });
   return routeProbe.fields;
@@ -8164,15 +8182,19 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
     // bookkeeping the solver needs and the reader does not. It only earns a row if it costs
     // something; the free ones would otherwise double every port and every bridge in the list.
     if (j > 0 && sameHex && st.irl < 0.005) return pause;
-    const forced = j > 0 && rt.wps[st.leg]?.f;
-    const cls = `class="strow${forced ? ' forced' : ''}"`;
+    // A leg's marks colour its rows. `night` is only claimed where the step was actually marched by
+    // night — a roadless step under a night march is daylight work, and the note already says so.
+    const w = j > 0 ? rt.wps[st.leg] : null;
+    const forced = !!w?.f, night = !!w?.n && / \(night\)/.test(st.note || '');
+    const cls = `class="strow${forced ? ' forced' : ''}${night ? ' night' : ''}"`;
     const attrs = `${cls} data-step="${j}"`;
     if (j === 0) return `<tr ${attrs}><td>${hexLbl}</td><td class="dim">${terr}</td><td class="dim">start</td><td></td><td></td><td></td></tr>` + pause;
     // Miles for this step: a trade hop covers several hexes in one go and knows its own length.
     const nh = sameHex ? 0 : (st.hexes ?? (st.chain ? st.chain.length - 1 : 1));
     const mi = sameHex ? 0 : Math.round(st.miles ?? nh * RULES.HEX_MILES);
     const note = st.note || '';
-    const via = note + (forced ? ' <span class="fm">forced</span>' : '');
+    const via = note + (forced ? ' <span class="fm">forced</span>' : '') +
+                (night ? ' <span class="nm">night</span>' : '');
     return `<tr ${attrs}><td title="${escHtml(hexLbl)}">${sameHex ? '' : hexLbl}</td>` +
            `<td class="dim" title="${escHtml(terr)}">${terr}</td><td title="${escHtml(note)}">${via}</td>` +
            `<td class="dim">${mi || ''}</td><td>${st.irl.toFixed(2)}</td><td>${marchCum.toFixed(1)}</td></tr>` + pause;
@@ -8204,6 +8226,19 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
       rt.wps.forEach((w, i) => { if (w.f && !rt.wps[i - 1]?.f) runs++; });
       return `<div class="fmnote">Forced march: ${runs} section${runs > 1 ? 's' : ''}, ` +
              `${legs} of ${Math.max(1, rt.wps.length - 1)} legs — right-click a step to change where.</div>`;
+    })() +
+    /* Neither of the night rule's other two clauses can be costed. Morale is not tracked at all, and
+       the wrong turn is a die roll on a road fork — a route that takes the wrong path is a different
+       route, not a slower one, so charging an average for it would quietly bill every night march for
+       a detour it may never make. Both are said plainly instead, and left to the table. */
+    (() => {
+      const marked = o.night || rt.wps.some(w => w.n);
+      if (!marked) return '';
+      const nights = r.steps.filter(st => / \(night\)/.test(st.note || '')).length;
+      const byDay = r.steps.filter(st => /by day —/.test(st.note || '')).length;
+      return `<div class="nmnote">Night march: ${nights} step${nights === 1 ? '' : 's'} by night` +
+             `${byDay ? `, ${byDay} off-road by day (no night marching off-road)` : ''}. ` +
+             `Not costed: morale check every 5 nights, and 2-in-6 wrong turn at each road fork.</div>`;
     })() +
     `<table>${wasteRow}<tr><td>Distance</td><td>${r.hexes} hexes ≈ ${Math.round(r.miles ?? r.hexes * RULES.HEX_MILES)} mi</td></tr>` +
     `<tr><td>Column</td><td>${o.colMiles.toFixed(1)} mi${o.army.logistician ? ' <span class="dim">(Logistician — half length)</span>' : ''}` +
@@ -8279,7 +8314,7 @@ function ordinal(n) {
 
    `lastResults` is what the readout was last drawn from, so a click can look up the step it names. */
 let lastResults = [];
-let fmPending = null;   // {ri, wi} — a forced march started but not yet ended
+const spanPending = {};   // mark key -> {ri, wi}: a stretch started but not yet ended
 
 // The waypoint index this step sits at, planting one if the step is merely passed through.
 function waypointAtStep(ri, j) {
@@ -8288,50 +8323,55 @@ function waypointAtStep(ri, j) {
   if (j === 0) return 0;
   if (st.wp) return st.leg + 1;            // the step *is* the waypoint that ends its leg
   const at = st.leg + 1;
-  rt.wps.splice(at, 0, { h: st.h, ri: st.ri | 0, f: rt.wps[st.leg]?.f });
+  // Splitting a marked leg must not quietly drop the marks from its second half.
+  const w = { h: st.h, ri: st.ri | 0 };
+  for (const m of LEG_MARKS) if (rt.wps[st.leg]?.[m.key]) w[m.key] = rt.wps[st.leg][m.key];
+  rt.wps.splice(at, 0, w);
   return at;
 }
-/* Every leg from `a` up to (not including) `b` marches at the forced pace. A route can hold as many
-   of these as you like — a dash to the river, an ordinary march along it, another dash at the end —
-   so marking one never disturbs the others.
+/* Every leg from `a` up to (not including) `b` carries the mark. A route can hold as many stretches
+   as you like — a dash to the river, an ordinary march along it, another dash at the end — so
+   marking one never disturbs the others, and the two marks are independent of each other: a stretch
+   can be forced, marched by night, both, or neither.
 
-   `f === 2` is a provisional run: named a start but not yet an end, so it reaches the finish for
-   now. Ending the push converts the part before the end and drops the rest, leaving any committed
+   `2` is a provisional run: named a start but not yet an end, so it reaches the finish for now.
+   Ending the stretch converts the part before the end and drops the rest, leaving any committed
    sections elsewhere in the route exactly as they were. */
-function setForcedSpan(ri, a, b, mark) {
+function setMarkSpan(ri, key, a, b, mark) {
   const rt = S.routes[ri];
   const lo = Math.min(a, b), hi = Math.max(a, b);
-  rt.wps.forEach((w, i) => { if (i >= lo && i < hi) w.f = mark || true; });
+  rt.wps.forEach((w, i) => { if (i >= lo && i < hi) w[key] = mark || true; });
 }
-function clearForced(ri) {
+function clearMark(ri, key) {
   pushUndoRoutes();
-  for (const w of S.routes[ri].wps) delete w.f;
-  fmPending = null;
+  for (const w of S.routes[ri].wps) delete w[key];
+  spanPending[key] = null;
   computeRoute();
 }
-function startForcedAt(ri, j) {
+function startMarkAt(ri, key, j) {
   pushUndoRoutes();
   const wi = waypointAtStep(ri, j);
   if (wi < 0) return;
-  fmPending = { ri, wi };
-  // Until an end is named, the push runs to the finish — the common case, and one click is enough
+  spanPending[key] = { ri, wi };
+  // Until an end is named, the stretch runs to the finish — the common case, and one click is enough
   // when the army simply keeps going. Marked provisionally so ending it can trim the tail back
   // without touching a section marked earlier in the route.
-  setForcedSpan(ri, wi, S.routes[ri].wps.length - 1, 2);
+  setMarkSpan(ri, key, wi, S.routes[ri].wps.length - 1, 2);
   computeRoute();
 }
-function endForcedAt(ri, j) {
+function endMarkAt(ri, key, j) {
   pushUndoRoutes();
   const wi = waypointAtStep(ri, j);
   if (wi < 0) return;
   const wps = S.routes[ri].wps;
-  // Which push is being ended: the one just started, or failing that the last one begun before here.
-  let from = (fmPending && fmPending.ri === ri) ? fmPending.wi : -1;
-  if (from < 0) for (let i = wi - 1; i >= 0; i--) { if (!wps[i].f) break; from = i; }
+  // Which stretch is being ended: the one just started, or failing that the last begun before here.
+  const pend = spanPending[key];
+  let from = (pend && pend.ri === ri) ? pend.wi : -1;
+  if (from < 0) for (let i = wi - 1; i >= 0; i--) { if (!wps[i][key]) break; from = i; }
   // Only the provisional tail is given up. Sections settled earlier keep their marks.
-  wps.forEach(w => { if (w.f === 2) delete w.f; });
-  if (from >= 0 && from < wi) setForcedSpan(ri, from, wi);
-  fmPending = null;
+  wps.forEach(w => { if (w[key] === 2) delete w[key]; });
+  if (from >= 0 && from < wi) setMarkSpan(ri, key, from, wi);
+  spanPending[key] = null;
   computeRoute();
 }
 // Cut the route in two at this step. Both halves keep the hex, so the second picks up exactly where
@@ -8399,7 +8439,7 @@ function setWaypointAction(ri, wi, action, wait = 0) {
 function waypointClipboardTag(rt, wi) {
   const w = rt.wps[wi], action = waypointAction(rt, w);
   const words = [action === 'wait' ? `wait ${wpWaitAt(rt, w)}d` : action];
-  if (w?.f) words.push('forced');
+  for (const m of LEG_MARKS) if (w?.[m.key]) words.push(m.word);
   return ` [${words.join(', ')}]`;
 }
 function stepsToText(ri, simple) {
@@ -8504,7 +8544,7 @@ function hexListFromText(txt) {
     if (!action) continue;
     const w = { h, action };
     if (wait && +wait[1] > 0) w.wait = +wait[1];
-    if (/\bforced\b/.test(spec)) w.f = true;
+    for (const m of LEG_MARKS) if (new RegExp('\\b' + m.word + '\\b').test(spec)) w[m.key] = true;
     if (waypoints[waypoints.length - 1]?.h !== h) waypoints.push(w);
   }
   if (waypoints.length >= 2) return { hexes: waypoints.map(w => w.h), waypoints, skipped: taggedSkipped };
@@ -8582,7 +8622,8 @@ function clearRouteWaypoints(i) {
   pushUndoRoutes();
   const n = rt.wps.length;
   rt.wps = [];
-  if (fmPending && fmPending.ri === i) fmPending = null;   // its waypoint is gone with the rest
+  for (const m of LEG_MARKS)                              // its waypoint is gone with the rest
+    if (spanPending[m.key]?.ri === i) spanPending[m.key] = null;
   S.activeRoute = i;
   computeRoute();
   toast(`Cleared ${n} waypoint${n > 1 ? 's' : ''} from ${rt.name} — Ctrl+Z to undo`);
@@ -10180,7 +10221,7 @@ function removeLastWaypoint() {
 }
 document.getElementById('undoWp').onclick = removeLastWaypoint;
 document.getElementById('undoWpFloat').onclick = removeLastWaypoint;
-for (const id of ['inf', 'cav', 'wag', 'non', 'li', 'forced', 'marines', 'fleet', 'embark', 'noTrade', 'logistician', 'stops', 'weather'])
+for (const id of ['inf', 'cav', 'wag', 'non', 'li', 'forced', 'night', 'marines', 'fleet', 'embark', 'noTrade', 'logistician', 'stops', 'weather'])
   document.getElementById(id).addEventListener('change', () => readRouteForm(id));
 
 document.getElementById('refetchBtn').onclick = async () => {
@@ -10924,8 +10965,8 @@ function hexMenu(h, pt, wp) {
         closeCtx();
         pushUndoRoutes();
         const w = { h, ri: clickedRi };
-        // Splitting a forced leg must not quietly turn its second half back to ordinary pace.
-        if (rt.wps[ins.at - 1]?.f) w.f = rt.wps[ins.at - 1].f;
+        // Splitting a marked leg must not quietly turn its second half back to ordinary pace.
+        for (const m of LEG_MARKS) if (rt.wps[ins.at - 1]?.[m.key]) w[m.key] = rt.wps[ins.at - 1][m.key];
         rt.wps.splice(ins.at, 0, w);
         S.activeRoute = ri;
         computeRoute();
@@ -11058,14 +11099,17 @@ function stepMenu(ri, j) {
   return box => {
     const name = placeName(st.h, st.ri);
     ctxHead(box, (name ? `<b>${escHtml(name)}</b> — ` : '') + `hex ${st.h} · step ${j}`);
-    const anyForced = rt.wps.some(w => w.f);
-    const pending = !!(fmPending && fmPending.ri === ri);
-    ctxItem(box, anyForced ? 'Force the march from here too' : 'Force the march from here',
-            () => { closeCtx(); startForcedAt(ri, j); });
-    if (pending || anyForced)
-      ctxItem(box, 'End the push here', () => { closeCtx(); endForcedAt(ri, j); });
-    if (anyForced)
-      ctxItem(box, `Back to normal pace<span class="arw">all</span>`, () => { closeCtx(); clearForced(ri); });
+    for (const m of LEG_MARKS) {
+      const any = rt.wps.some(w => w[m.key]);
+      const pending = spanPending[m.key]?.ri === ri;
+      ctxItem(box, `${m.label} from here${any ? ' too' : ''}`,
+              () => { closeCtx(); startMarkAt(ri, m.key, j); });
+      if (pending || any)
+        ctxItem(box, `End the ${m.word} stretch here`, () => { closeCtx(); endMarkAt(ri, m.key, j); });
+      if (any)
+        ctxItem(box, `Stop marching ${m.word}<span class="arw">all</span>`,
+                () => { closeCtx(); clearMark(ri, m.key); });
+    }
     ctxSep(box);
     ctxItem(box, 'Split the route here', () => { closeCtx(); splitRouteAt(ri, j); });
     ctxItem(box, 'Centre the map here', () => { closeCtx(); panToSelection({ h: st.h }); });

@@ -20,7 +20,7 @@ Scale: 1 hex = 30 miles. 1 IRL day = 5 in-game days. Normal march = 4 marching d
 | Mountains | ×0.5 | — |
 | Column > 6 mi, normal | 6 on road, 3 off | 24 / 12 |
 | Column > 6 mi, forced | 12 on road, 6 off | 60 / 30 |
-| Night march | 6 (12 forced), roads only | — |
+| Night march | 6 on road (12 forced), roads only | 24 / 60 |
 
 Column length: 1 mi per 5,000 infantry+noncombatants, 2,000 cavalry, or 50 wagons. The **Logistician**
 trait ("your army stretches half as long on the road") halves it, and halves it for fording too, since
@@ -36,7 +36,18 @@ finished number, and **a road is worth double at every army size**. Reading it t
 ceiling both surfaces are clamped to — makes road and off-road identical at 6 mi/day for any column
 over the limit, which leaves a road worth nothing to a large army and has the pathfinder send it
 straight across country. That is what this calculator used to do.
-Forced march: morale check per day (doubles → −1 morale). Night march: same check; 2-in-6 wrong turn at forks.
+Forced march: morale check per day (doubles → −1 morale). Night march: same check every 5 nights;
+2-in-6 wrong turn at forks. Neither is costed — morale is not tracked, and a wrong turn makes a
+different route rather than a slower one — so the readout states them instead.
+
+Night marching is an **alternative** to marching by day, not an addition to it: the weather table sets
+the two against each other ("Heatwave — day marching gives −1 Morale per IRL day. Night marching is
+fine"), and under Hot it is night marching that escapes the morale check. So it replaces the 12/18
+road pace over the same cadences — 24 mi/IRL, 60 forced — and is always slower than the same march
+made by daylight. You march at night to get out of the heat, not to arrive sooner. Being roads only,
+a night-marching column still crosses roadless ground by day at the ordinary off-road rate; the step
+list says which stretches were which. The 6-mile column limit is exactly the two night paces, so it
+never binds a night march.
 Light infantry detachments move at normal (road) speed off-road and ignore the mountain penalty; an army with ≥⅓ light infantry ignores the *battle* rough-terrain penalty only.
 
 ## Rivers
