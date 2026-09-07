@@ -6062,6 +6062,48 @@ function moraleOptimising(o) { return !!(o.forced || o.night || o.dayNight); }
 const NOT_A_MARCH = /sail|embark|disembark|secure ships/;
 function isMarchStep(st) { return !NOT_A_MARCH.test((st && st.note) || ''); }
 
+/* The march written out as the things that happen to morale, in the order they happen — which is the
+   only order a rest-drift can be judged in. Walked day by day: each whole IRL day of the journey is
+   asked what the column was doing in it, and the checks and certain losses for that day are emitted
+   before the day after's. Every twentieth day earns its drift where it falls, not at the end. */
+function moraleEvents(steps, o) {
+  const W = RULES.WEATHER_MORALE[o.weather] || {};
+  const ev = [];
+  let elapsed = 0, nextDrift = RULES.MORALE.RECOVERY_IRL_DAYS;
+  // Time spent so far in each kind of marching, so a day can be attributed once it completes.
+  let forcedAcc = 0, nightAcc = 0, dayAcc = 0, marchAcc = 0, dayMiles = 0;
+  let forcedDone = 0, nightDone = 0, dayDone = 0, marchDone = 0;
+  const flush = () => {
+    while (forcedAcc - forcedDone >= 1 - 1e-9) { forcedDone++; ev.push({ kind: 'check', why: 'forced' }); }
+    while (nightAcc - nightDone >= 1 - 1e-9) { nightDone++; ev.push({ kind: 'check', why: 'night' }); }
+    if (W.dayLoss) while (dayAcc - dayDone >= 1 - 1e-9) { dayDone++; ev.push({ kind: 'loss', n: W.dayLoss }); }
+    if (W.anyLoss) while (marchAcc - marchDone >= 1 - 1e-9) { marchDone++; ev.push({ kind: 'loss', n: W.anyLoss }); }
+    while (elapsed >= nextDrift - 1e-9) { ev.push({ kind: 'drift' }); nextDrift += RULES.MORALE.RECOVERY_IRL_DAYS; }
+  };
+  for (const st of steps) {
+    const irl = st.irl || 0;
+    elapsed += irl;
+    if (isMarchStep(st)) {
+      const note = st.note || '';
+      const dark = / \((night|day\+night)\)/.test(note), both = / \(day\+night\)/.test(note);
+      const f = st.paceFrac ?? (st.paceForced ? 1 : 0);
+      marchAcc += irl;
+      dayMiles += st.miles ?? RULES.HEX_MILES;
+      if (dark) nightAcc += st.nightDays ?? irl;
+      if (!dark || both) dayAcc += irl;
+      if (f > 1e-12 && !marchingCityCovers(o, o.colMiles, /^(road|trade route)/.test(note)))
+        forcedAcc += st.forcedDays ?? (f * irl);
+    }
+    flush();
+  }
+  // Hot: "day marching more than 60 miles requires a morale check. Day forced marching requires a
+  // morale check." A check that can fail but never tires — it carries no doubles rider.
+  if (dayAcc > 0 && (W.dayForcedCheck && forcedAcc > 0 ||
+                     W.dayMilesCheck && dayMiles / dayAcc > W.dayMilesCheck))
+    for (let k = 0; k < Math.ceil(dayAcc - 1e-9); k++) ev.push({ kind: 'plain' });
+  return ev;
+}
+
 // The ways a single leg may be marched, given which paces are permitted. Ordinary first, so a tie
 // between marching hard and not is settled in favour of the army's spirit.
 /* Every pace the search must try, because each can change which way the column goes. Night marching
@@ -6148,6 +6190,13 @@ function moraleFeasible(o, checks, det, irlDays) {
   return moraleAtLeast(o.morale, checks, det, o.moraleMin, o.moraleMax,
                        moraleDrifts(irlDays), o.moraleRest) >= o.moraleConf / 100;
 }
+// The same question asked of the march itself rather than of its totals, so that a drift falls where
+// it actually falls. This is what decides whether an arrangement may be used.
+function moraleFeasibleWalk(o, steps) {
+  if (!(o.moraleConf > 0)) return true;
+  return moraleWalkAtLeast(o.morale, moraleEvents(steps, o), o.moraleMin,
+                           { poet: o.poet, max: o.moraleMax, rest: o.moraleRest }) >= o.moraleConf / 100;
+}
 
 
 /* ---------------- the morale card ----------------
@@ -6163,9 +6212,14 @@ function moraleCardHTML(o, r) {
   if (!r || r.fail) return '';
   const mo = r.morale || { checks: 0, det: 0, plain: 0, legCosts: [] };
   const conf = o.moraleConf / 100;
-  const drifts = moraleDrifts(r.irl);
-  const dist = moraleDist(o.morale, mo.checks, mo.det, o.moraleMax, drifts, o.moraleRest);
-  const pAt = moraleAtLeast(o.morale, mo.checks, mo.det, o.moraleMin, o.moraleMax, drifts, o.moraleRest);
+  /* Read off the march in order, the same way the optimiser judged it — the totals alone cannot say
+     whether a rest-drift arrived before or after the day that cost the point it would have mended. */
+  const events = moraleEvents(r.steps, o);
+  const drifts = events.filter(e => e.kind === 'drift').length;
+  const walk = moraleWalk(o.morale, events, { poet: o.poet, max: o.moraleMax, rest: o.moraleRest });
+  const dist = walk.dist;
+  let pAt = 0;
+  for (let m = Math.max(0, o.moraleMin); m < dist.length; m++) pAt += dist[m];
   const risk = mo.checks + mo.plain + mo.det + drifts;
   /* Only a certainty may print as 100%, and only an impossibility as 0. Rounding 99.7% up put
      "100% at or above 6" directly above "below: 0.3%", which is a plain contradiction on the same
@@ -6199,14 +6253,14 @@ function moraleCardHTML(o, r) {
   }
   const met = pAt >= conf;
   const belowP = 1 - pAt;
-  const out = moraleOutlook(o.morale, mo.legCosts.length ? mo.legCosts : [{ checks: mo.checks, plain: mo.plain, det: mo.det }],
-                            { poet: o.poet, max: o.moraleMax, drifts, rest: o.moraleRest });
+  const out = walk;
   // The consequences table, worst first — a mutiny is the thing worth seeing, however unlikely.
   const results = Object.entries(out.byResult).map(([k, p]) => [+k, p])
     .filter(([, p]) => p > 0.0005).sort((a, b) => a[0] - b[0]).slice(0, 4);
   return `<div class="moralecard">` +
     `<div class="mhead">after this march` +
-      `<span class="mspend">${mo.checks} check${mo.checks === 1 ? '' : 's'}` +
+      `<span class="mspend">${events.filter(e => e.kind === 'check').length} check` +
+      `${events.filter(e => e.kind === 'check').length === 1 ? '' : 's'}` +
       `${mo.det ? ` · −${mo.det} certain` : ''}${mo.plain ? ` · ${mo.plain} heat check${mo.plain === 1 ? '' : 's'}` : ''}` +
       `${drifts ? ` · ${drifts} rest-drift toward ${o.moraleRest}` : ''}</span></div>` +
     `<div class="mbig ${met ? 'ok' : 'no'}">${pct(pAt)} <span>at or above ${o.moraleMin}` +
@@ -6296,20 +6350,40 @@ function stepCostAtPace(st, o, was, want) {
    is slower and legal rather than faster and impossible. Returns true if anything changed. */
 function repairShortNightRuns(all, o) {
   const isDark = st => / \((night|day\+night)\)/.test(st.note || '');
+  const toDay = st => {
+    const keep = { forced: !!st.paceForced };
+    const t = stepCostAtPace(st, o, keep, { forced: keep.forced, night: false, dayNight: false });
+    if (t === null) return false;
+    st.irl = t;
+    if (st.dep) st.dep = stepDepAtPace(st, o, { forced: keep.forced, night: false, dayNight: false });
+    st.note = (st.note || '').replace(/ \((night|day\+night)\)/, '');
+    delete st.nightDays;
+    return true;
+  };
   let changed = false;
   for (let a = 0; a < all.length; ) {
     if (!isDark(all[a])) { a++; continue; }
     let b = a, dur = 0;
     while (b < all.length && isDark(all[b])) { dur += all[b].irl || 0; b++; }
-    if (dur < 1 - 1e-9) {
-      for (let k = a; k < b; k++) {
-        const st = all[k], was = { forced: !!st.paceForced };
-        const t = stepCostAtPace(st, o, was, { forced: !!st.paceForced, night: false, dayNight: false });
-        if (t === null) continue;
-        st.irl = t;
-        if (st.dep) st.dep = stepDepAtPace(st, o, { forced: !!st.paceForced, night: false, dayNight: false });
-        st.note = (st.note || '').replace(/ \((night|day\+night)\)/, '');
-        changed = true;
+    const whole = Math.floor(dur + 1e-9);
+    if (whole < 1) {                                   // too short to be an order at all
+      for (let k = a; k < b; k++) changed = toDay(all[k]) || changed;
+    } else if (dur - whole > 1e-9) {
+      /* Trim the tail back to whole days. The order was "march by night for N days"; when the last
+         night is over the column goes back to marching by daylight, wherever that leaves it — which
+         is generally mid-hex, so that hex is part dark and part not and costs the two rates in
+         proportion. `nightDays` is how much of it was actually after dark. */
+      let over = dur - whole;
+      for (let k = b - 1; k >= a && over > 1e-9; k--) {
+        const st = all[k], nightCost = st.irl || 0;
+        if (nightCost <= over + 1e-9) { over -= nightCost; changed = toDay(st) || changed; continue; }
+        const keep = { forced: !!st.paceForced };
+        const dayCost = stepCostAtPace(st, o, keep, { forced: keep.forced, night: false, dayNight: false });
+        if (dayCost === null) break;
+        const f = 1 - over / nightCost;                // the part still marched after dark
+        st.irl = f * nightCost + (1 - f) * dayCost;
+        st.nightDays = f * nightCost;
+        over = 0; changed = true;
       }
     }
     a = b;
@@ -6352,7 +6426,13 @@ function refineForcedSteps(steps, o, budget, nightIrl) {
     const was = { forced: !!st.paceForced };
     const slow = stepCostAtPace(st, o, was, { forced: false });
     const fast = stepCostAtPace(st, o, was, { forced: true });
-    if (slow === null || fast === null || !(slow - fast > 1e-9) || !(fast > 1e-9)) { fixed += st.irl; continue; }
+    /* Steps already marched after dark are left alone. Hurrying a night stretch shortens it, which
+       leaves it no longer a whole number of nights; re-quantising it then changes the forced days,
+       which changes the nights again. The two orders cannot both be whole while each keeps re-pricing
+       the other, so the night stretches are settled first and the forced orders are laid over the
+       daylight. A leg can still be ordered both by hand. */
+    if (slow === null || fast === null || !(slow - fast > 1e-9) || !(fast > 1e-9) ||
+        / \((night|day\+night)\)/.test(note)) { fixed += st.irl; continue; }
     // "You can force march on roads without risking morale" — per step, so a leg that dips off the
     // road only pays for the days that actually leave it.
     const free = marchingCityCovers(o, o.colMiles, /^(road|trade route)/.test(note));
@@ -6553,6 +6633,21 @@ function routeLeg(rt, o) {
       st.paceForced = isMarchStep(st) && !!best.modes[li]?.forced;
       all.push(st);
     }));
+    /* The leg search is allowed a forced pace because a ford is worth going round at speed — but a
+       leg is not an order. Orders come in whole days, so whatever it decided about hurrying is put
+       back before the refinement lays the real orders down; only the *road it chose* survives. Left
+       standing, a short leg came back marked hard for a third of a day, which is not an order anyone
+       can give. */
+    if (o.forced) {
+      for (const st of all) {
+        if (!st.paceForced) continue;
+        const t = stepCostAtPace(st, o, { forced: true }, { forced: false });
+        if (t !== null) { st.irl = t; if (st.dep) st.dep = stepDepAtPace(st, o, { forced: false }); }
+        st.paceForced = false; st.paceFrac = 0;
+      }
+      let c = 0; for (const st of all) c += st.irl || 0;
+      best.cost = c;
+    }
     /* Night stretches too short to be an order go back to daylight before anything else is decided,
        so the forced choice below and the check count both see the march the column can actually be
        told to make. */
@@ -6565,7 +6660,7 @@ function routeLeg(rt, o) {
         if (!isMarchStep(st)) continue;
         const dark = / \((night|day\+night)\)/.test(note), both = / \(day\+night\)/.test(note);
         d0.marchDays += st.irl || 0; d0.dayMiles += st.miles ?? RULES.HEX_MILES;
-        if (dark) d0.nightDays += st.irl || 0;
+        if (dark) d0.nightDays += st.nightDays ?? (st.irl || 0);
         if (!dark || both) d0.dayDays += st.irl || 0;
         if (st.paceForced) {
           d0.forcedDay = true;
@@ -6578,7 +6673,7 @@ function routeLeg(rt, o) {
     }
     // Whatever is already committed to the dark, whether the column gave up its daylight for it or not.
     let nightIrl = 0;
-    for (const st of all) if (/ \((night|day\+night)\)/.test(st.note || '')) nightIrl += st.irl || 0;
+    for (const st of all) if (/ \((night|day\+night)\)/.test(st.note || '')) nightIrl += st.nightDays ?? (st.irl || 0);
     if (!o.forced) { best.stepForced = all.map(st => !!st.paceForced); }
     /* What a set of forced steps would cost, without committing to it. Needed because the budget and
        the answer chase each other: a faster march earns fewer rest-drift ticks, and an army being
@@ -6586,7 +6681,7 @@ function routeLeg(rt, o) {
        march is not affordable against the fast one it produces. */
     const priceChoice = frac => {
       const days = { forcedDays: 0, nightDays: 0, dayDays: 0, marchDays: 0, dayMiles: 0, forcedDay: false };
-      const irls = [], fracs = []; let cost = 0;
+      const irls = [], fracs = [], parts = []; let cost = 0;
       for (let i = 0; i < all.length; i++) {
         const st = all[i];
         // How much of this step is hurried: all of it, none of it, or the part of it that fell inside
@@ -6599,20 +6694,22 @@ function routeLeg(rt, o) {
           const fast = stepCostAtPace(st, o, { forced: !!st.paceForced }, { forced: true });
           if (slow !== null && fast !== null) { irl = f * fast + (1 - f) * slow; forcedPart = f * fast; }
         }
-        irls.push(irl); fracs.push(f); cost += irl;
+        /* How much of this step was actually spent marching hard: `f` of its *forced* cost, never
+           `f` of the mixed cost it ends up billing — that read a whole-day order back as 11.067. */
+        irls.push(irl); fracs.push(f); parts.push(forcedPart); cost += irl;
         const note = st.note || '';
         if (!isMarchStep(st)) continue;
         const dark = / \((night|day\+night)\)/.test(note), both = / \(day\+night\)/.test(note);
         days.marchDays += irl;
         days.dayMiles += st.miles ?? RULES.HEX_MILES;
-        if (dark) days.nightDays += irl;
+        if (dark) days.nightDays += st.nightDays ?? irl;
         if (!dark || both) days.dayDays += irl;
         if (f > 1e-12) {
           days.forcedDay = true;
           if (!marchingCityCovers(o, o.colMiles, /^(road|trade route)/.test(note))) days.forcedDays += forcedPart;
         }
       }
-      return { cost, irls, fracs, days, tot: moraleCostOfDays(o, days) };
+      return { cost, irls, fracs, parts, days, tot: moraleCostOfDays(o, days) };
     };
 
     /* Spend as much as the army can stand, then step back a check at a time until the march that
@@ -6634,7 +6731,11 @@ function routeLeg(rt, o) {
         const cand = refineForcedSteps(all, o, bud, nightIrl);
         if (!cand) continue;
         const pr = priceChoice(cand.frac);
-        if (!best.relaxed && !moraleFeasible(o, pr.tot.checks, pr.tot.det, pr.cost)) continue;
+        // Judged on the march itself: a drift only mends a point already lost, so where the hard
+        // days fall in the journey decides whether it mends anything at all.
+        const trial = all.map((st, i) => ({ ...st, irl: pr.irls[i], paceFrac: pr.fracs[i],
+                                            paceForced: pr.fracs[i] > 1e-12 }));
+        if (!best.relaxed && !moraleFeasibleWalk(o, trial)) continue;
         if (!priced || pr.cost < priced.cost - 1e-9) { ref = cand; priced = pr; }
       }
     }
@@ -6646,13 +6747,38 @@ function routeLeg(rt, o) {
         if (st.dep) st.dep = stepDepAtPace(st, o, { forced: f > 0.5 });
         st.paceFrac = f;
         st.paceForced = f > 1e-12;
+        st.forcedDays = priced.parts[i];
         st.irl = priced.irls[i];
       });
       best.cost = priced.cost;
       best.checks = priced.tot.checks; best.plain = priced.tot.plain; best.det = priced.tot.det;
+      /* Hurrying a night stretch shortens it, which can leave it no longer a whole number of nights —
+         the trim above ran before these steps were re-priced. Trim again on the finished march, then
+         count everything off the steps as they now stand rather than off the tallies that led here. */
+      repairShortNightRuns(all, o);
+      const fin = { forcedDays: 0, nightDays: 0, dayDays: 0, marchDays: 0, dayMiles: 0, forcedDay: false };
+      let finCost = 0;
+      for (const st of all) {
+        finCost += st.irl || 0;
+        if (!isMarchStep(st)) continue;
+        const note = st.note || '';
+        const dark = / \((night|day\+night)\)/.test(note), both = / \(day\+night\)/.test(note);
+        const f = st.paceFrac ?? (st.paceForced ? 1 : 0);
+        fin.marchDays += st.irl || 0;
+        fin.dayMiles += st.miles ?? RULES.HEX_MILES;
+        if (dark) fin.nightDays += st.nightDays ?? (st.irl || 0);
+        if (!dark || both) fin.dayDays += st.irl || 0;
+        if (f > 1e-12) {
+          fin.forcedDay = true;
+          if (!marchingCityCovers(o, o.colMiles, /^(road|trade route)/.test(note))) fin.forcedDays += st.forcedDays ?? (f * (st.irl || 0));
+        }
+      }
+      const finTot = moraleCostOfDays(o, fin);
+      best.cost = finCost;
+      best.checks = finTot.checks; best.plain = finTot.plain; best.det = finTot.det;
       best.legCosts = [{ checks: best.checks, plain: best.plain, det: best.det }];
       best.stepForced = all.map(st => !!st.paceForced);
-      best.forcedDays = priced.days.forcedDays;
+      best.forcedDays = fin.forcedDays;
     }
   }
   if (!best) return { irl: 0, hexes: 0, miles: 0, steps: [], pts: [], ends: null, fail: null };

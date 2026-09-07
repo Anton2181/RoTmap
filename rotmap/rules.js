@@ -367,3 +367,67 @@ function marchingCityCovers(o, colMiles, allRoad) {
   const inf = o.army?.inf || 0;
   return o.army?.wag * RULES.MORALE.MARCHING_CITY_WAGON_PER_INF >= inf;
 }
+
+/* ---------------- the march as a sequence, not a sum ----------------
+   Morale is not a total to be added up at the end. A rest-drift repairs a point only if the point
+   has already been lost, so *when* a check falls decides whether a drift can undo it: an army that
+   forces the march in the last days of a long journey has already passed its twentieth day at full
+   morale, and the tick it earned there mends nothing. Applying every loss and then every drift — the
+   closed form this replaces — quietly handed those armies a point back.
+
+   So the march is walked as an ordered list of things that happen: a check on a day marched hard or
+   after dark, a certain loss on a day of sun or blizzard, a drift at every twentieth day. One roll of
+   2d6 per event, read twice as ever — doubles costs a point, over the army's morale is a failure. */
+function moraleWalk(start, events, { poet = false, max = RULES.MORALE.MAX, rest } = {}) {
+  const cap = max, target = rest ?? RULES.MORALE.REST, zeros = () => new Array(cap + 1).fill(0);
+  let dist = zeros(), clean = zeros();
+  const s0 = Math.max(0, Math.min(cap, start));
+  dist[s0] = 1; clean[s0] = 1;
+  const byResult = {}; let expFails = 0, sizeLoss = 0, dets = 0;
+  const shift = poet ? RULES.MORALE.POET_BONUS : 0;
+  const move = (arr, f) => { const n = zeros(); for (let m = 0; m <= cap; m++) if (arr[m]) n[f(m)] += arr[m]; return n; };
+  for (const ev of events) {
+    if (ev.kind === 'loss') {
+      const f = m => Math.max(0, m - ev.n);
+      dist = move(dist, f); clean = move(clean, f);
+      continue;
+    }
+    if (ev.kind === 'drift') {
+      const f = m => (m === target ? m : m > target ? m - 1 : m + 1);
+      dist = move(dist, f); clean = move(clean, f);
+      continue;
+    }
+    const wears = ev.kind === 'check';               // a plain check can fail but does not tire
+    const nd = zeros(), nc = zeros();
+    for (let m = 0; m <= cap; m++) {
+      const pm = dist[m], pc = clean[m];
+      if (!pm && !pc) continue;
+      for (let r = 2; r <= 12; r++) {
+        const p = d2Prob(r);
+        if (!p) continue;
+        const dbl = wears ? (D2_DOUBLE_WAYS[r] || 0) / D2_WAYS[r] : 0;
+        const to = Math.max(0, m - 1);
+        if (pm) {
+          const pr = pm * p;
+          if (r > m) {
+            const idx = Math.min(12, r + shift), con = RULES.CONSEQUENCES[idx];
+            byResult[idx] = (byResult[idx] || 0) + pr;
+            expFails += pr; sizeLoss += pr * (con.size || 0); dets += pr * (con.dets || 0);
+          }
+          nd[to] += pr * dbl; nd[m] += pr * (1 - dbl);
+        }
+        if (pc && r <= m) { const pr = pc * p; nc[to] += pr * dbl; nc[m] += pr * (1 - dbl); }
+      }
+    }
+    dist = nd; clean = nc;
+  }
+  return { dist, anyFail: 1 - clean.reduce((a, b) => a + b, 0), expFails, sizeLoss, dets, byResult };
+}
+
+// P(the army finishes at or above `floor`) after walking this march.
+function moraleWalkAtLeast(start, events, floor, opts) {
+  const d = moraleWalk(start, events, opts).dist;
+  let p = 0;
+  for (let m = Math.max(0, floor); m < d.length; m++) p += d[m];
+  return p;
+}

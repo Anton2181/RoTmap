@@ -97,9 +97,11 @@ securing a fleet is marching, and neither calls for anything. Checks are counted
 of forced march, check morale" is a running total, not something each order restarts — so where the
 waypoints fall no longer changes what a march costs in morale.
 
-The morale loss is a binomial in the number of checks and does not depend on the order they come in,
-which is what lets the optimiser rearrange legs freely and still be exact. The *failure* risk does
-depend on order — an army worn down by the first half of a march fails more often in the second — so
+Order matters, so the march is walked as a sequence rather than added up: a rest-drift repairs a
+point only if the point has already been lost, so an army that forces the march in the last days of a
+long journey has already passed its twentieth day at full morale and the tick it earned there mends
+nothing. Checks, certain losses and drifts are applied where they fall. The *failure* risk likewise
+depends on order — an army worn down by the first half of a march fails more often in the second — so
 it is walked check by check over the running distribution of morale rather than averaged. Traits:
 **Marching City** (over 6 miles long, ≥1 wagon per 30 infantry) drops the forced-march checks on
 road; and **Poet** shifts a failed roll two rows up the consequences table without changing how often it
