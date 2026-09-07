@@ -502,6 +502,36 @@
         </details>
       </div>
 
+      <!-- Morale sits between the march and the conditions because it is the thing that limits how
+           hard the march may be ordered. With either pace box ticked, these four numbers are what the
+           optimiser solves against: it spends morale to buy speed, up to the risk allowed here. -->
+      <div class="group" id="moraleGroup">
+        <h2>Morale</h2>
+        <div class="fields">
+          <label class="field" title="What the army has now. 9 is the default resting morale; 12 the usual maximum."><span>Current</span><input type="number" id="morale" value="9" min="0" max="12" step="1"></label>
+          <label class="field" title="The lowest morale the army may be allowed to reach by the end of the route."><span>Allowed floor</span><input type="number" id="moraleMin" value="6" min="0" max="12" step="1"></label>
+          <label class="field" title="How sure the commander wants to be of staying at or above the floor. The optimiser spends morale up to this bar and no further."><span>Certainty %</span><input type="number" id="moraleConf" value="50" min="1" max="99" step="5"></label>
+          <label class="field" title="12 by default. A majority-peasant army has a maximum of 9 and a resting morale of 6."><span>Maximum</span><input type="number" id="moraleMax" value="12" min="1" max="12" step="1"></label>
+        </div>
+        <div id="moralePanel"></div>
+        <details class="hint">
+          <summary>How morale is spent</summary>
+          <p>A forced-march day and a night-march day each call for a check: <b>2d6</b>, and on
+          <b>doubles</b> the army loses a point of morale — 1 in 6, whatever its morale is. A day that
+          is both forced and by night rolls both checks. Part-days round up, per leg.</p>
+          <p>The same roll is read a second time: <b>over</b> the army's morale is a failed check, and
+          the roll indexes the consequences table — desertion, defection, at worst mutiny. That risk
+          grows as morale falls, so it is walked check by check rather than averaged, and reported
+          under the histogram. It is not what the optimiser trades against; morale is.</p>
+          <p>With <b>Forced march</b> or <b>Night march</b> ticked the pace is no longer applied to
+          the whole route. Instead the legs to march hard are chosen for you — the fastest set that
+          still keeps the army at or above the floor with the certainty asked for — and those choices
+          replace any legs you marked by hand. Untick both to mark legs yourself again.</p>
+          <p>Not modelled: recovery towards resting morale (1 per 20 IRL days), rest, supply, pay, and
+          battle. The army that sets out is the army that arrives, minus what the table takes.</p>
+        </details>
+      </div>
+
       <div class="group" id="condGroup">
         <h2>Conditions</h2>
         <!-- The detail lives in the tooltips; the labels stay short enough to scan. -->
@@ -512,8 +542,12 @@
         <label class="chk" title="Starts with ships. Re-embarking costs 1 day; marching inland leaves the ships behind."><input type="checkbox" id="fleet"> Start as fleet</label>
         <label class="chk" title="Trade routes are used by default. They run end to end only, with no stops in between."><input type="checkbox" id="noTrade"> Avoid trade routes</label>
         <label class="chk" title="Commander trait: the army stretches half as long on the road. Halves the column for the 6-mile limit and for fording."><input type="checkbox" id="logistician"> Logistician — half column length</label>
+        <label class="chk" title="Tradition: a column over 6 miles long with at least 1 wagon per 30 infantry may force march on roads without risking morale."><input type="checkbox" id="marchingCity"> Marching City — free forced march on roads</label>
+        <label class="chk" title="Commander trait: morale rolls count 2 higher when reading the consequences of a failed check. Does not change how often a check fails."><input type="checkbox" id="poet"> Poet — gentler failures</label>
+        <label class="chk" title="Commander trait: no morale loss on defeat in battle. Recorded on the column, but battles are not modelled here, so it does not change a march."><input type="checkbox" id="stubborn"> Stubborn — no morale loss on defeat</label>
         <label class="field"><span>Weather</span><select id="weather">
-          <option value="clear">Clear / light rain / hot</option>
+          <option value="clear">Clear / light rain</option>
+          <option value="hot">Hot</option>
           <option value="heavy_rain">Heavy rain (bad)</option>
           <option value="storm">Storm (very bad)</option>
           <option value="snow">Snow (bad)</option>

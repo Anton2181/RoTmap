@@ -68,6 +68,9 @@ const RULES = {
   // Weather multipliers (rules table). ford=false means fording is impossible.
   WEATHER: {
     clear:      { road: 1,    off: 1,    ford: true,  forced: true },
+    // Hot was folded into clear while nothing read the morale rules; it costs no speed, but it is the
+    // weather night marching exists for, so it needs to be its own answer now that morale is modelled.
+    hot:        { road: 1,    off: 1,    ford: true,  forced: true },
     heavy_rain: { road: 0.75, off: 0.5,  ford: false, forced: true },
     storm:      { road: 0.5,  off: 0.25, ford: false, forced: false },
     snow:       { road: 0.75, off: 0.5,  ford: true,  forced: true },
@@ -146,3 +149,181 @@ function fordIRLDays(a, weather) {
 // Whether a step under these conditions is actually marched by night. Night marching is roads only,
 // so a night-marching column still crosses roadless ground by day; the readout says which is which.
 function nightStep(o, road) { return !!o.night && !!road; }
+
+/* ---------------- morale ---------------- */
+/* "Certain events call for a morale check: roll 2d6 equal to or under the army's morale. On a success,
+   the army holds; on a failure, consult the table below, using the morale roll as the result. In
+   certain cases, morale checks carry additional specific consequences; the default results still
+   apply."
+
+   So one marching check is a single 2d6 roll carrying two independent outcomes, and the calculator
+   has to keep them apart:
+     - **doubles** costs a point of morale ("check morale: on a roll of doubles, lose 1 morale"),
+       at a flat 1 in 6 whatever the army's morale is;
+     - a roll **over** the army's morale is a failure, and the roll indexes the consequences table.
+   The first is what the histogram and the optimiser are about. The second is the graver risk and is
+   reported beside them, because a mutiny is not a slower march. */
+RULES.MORALE = {
+  MAX: 12, REST: 9,              // "armies have a resting morale of 9 and a maximum morale of 12"
+  PEASANT_MAX: 9, PEASANT_REST: 6, // "if the majority of your army is peasant infantry"
+  DOUBLES: 6 / 36,               // the marching rider: 6 doubles out of 36 faces
+  MARCHING_CITY_WAGON_PER_INF: 30, // "at least 1 wagon for every 30 infantry", and over 6 miles long
+  POET_BONUS: 2,                 // "your morale rolls count as 2 higher for ... failed consequences"
+  RECOVERY_IRL_DAYS: 20,         // "every 20 IRL days, morale changes by 1 towards resting" — not modelled
+};
+
+// Weather riders on morale. Speed multipliers live in WEATHER; these are what the same weather does
+// to the army's spirit, which is a separate question and only Hot, Heatwave and Blizzard ask it.
+RULES.WEATHER_MORALE = {
+  hot:      { dayForcedCheck: true, dayMilesCheck: 60 }, // checks, no automatic loss; "night marching is fine"
+  heatwave: { dayLoss: 1 },                              // "day marching gives -1 Morale per IRL day"
+  blizzard: { anyLoss: 1 },                              // "marching gives -1 morale per IRL day"
+};
+
+/* The consequences table, indexed by the failed roll. `size` is the expected fraction of the army
+   lost outright, so a result that only threatens a loss is written at its expectation: mutiny is a
+   3-in-6 chance of losing half, which is a quarter of the army on average. `dets` counts detachments
+   that leave for good and `away` those that leave and come back; `temp` marks a result that costs no
+   permanent strength at all, and `grows` one that makes the column longer rather than shorter. */
+RULES.CONSEQUENCES = {
+  2:  { name: 'Mutiny',            size: 0.25, mutiny: true, detail: '3-in-6 that half the army disbands' },
+  3:  { name: 'Mass desertion',    size: 0.30, detail: 'army and supplies -30%' },
+  4:  { name: 'Defection',         size: 0,    dets: 4, detail: '2d3 detachments defect (4 on average)' },
+  5:  { name: 'Major desertion',   size: 0.20, detail: 'army and supplies -20%' },
+  6:  { name: 'Advance on pay',    size: 0,    coin: true, detail: 'a quarter of the army\'s pay in coin' },
+  7:  { name: 'Defection',         size: 0,    dets: 1, detail: 'one detachment defects' },
+  8:  { name: 'Desertion',         size: 0.10, detail: 'army and supplies -10%' },
+  9:  { name: 'Detachments stray', size: 0,    away: 3.5, temp: true, detail: '1d6 detachments away 1d4+1 IRL days' },
+  10: { name: 'Camp followers',    size: 0,    grows: 0.05, detail: 'noncombatants +5% — a longer column' },
+  11: { name: 'Detachment strays', size: 0,    away: 1, temp: true, detail: 'one detachment away 1d4+1 IRL days' },
+  12: { name: 'No consequences',   size: 0,    temp: true, detail: 'the army holds' },
+};
+
+// 2d6, as 36ths: how many of the 36 faces show each total, and how many of those are doubles.
+const D2_WAYS = { 2:1, 3:2, 4:3, 5:4, 6:5, 7:6, 8:5, 9:4, 10:3, 11:2, 12:1 };
+const D2_DOUBLE_WAYS = { 2:1, 4:1, 6:1, 8:1, 10:1, 12:1 };   // 1-1, 2-2, ... 6-6
+function d2Prob(total) { return (D2_WAYS[total] || 0) / 36; }
+// A check is failed when the roll is strictly over the army's morale ("equal to or under" holds).
+function checkFailProb(morale) {
+  let p = 0;
+  for (let r = 2; r <= 12; r++) if (r > morale) p += d2Prob(r);
+  return p;
+}
+
+// Binomial pmf over k successes in n trials, built as a whole array: the number of checks a route
+// makes is small, and the caller always wants the entire distribution rather than one term.
+function binomDist(n, p) {
+  const out = new Array(n + 1).fill(0);
+  out[0] = Math.pow(1 - p, n);
+  for (let k = 1; k <= n; k++) out[k] = out[k - 1] * ((n - k + 1) / k) * (p / (1 - p));
+  return out;
+}
+
+/* The distribution of the morale an army finishes a march with. Every check subtracts a point with
+   the same 1-in-6 whatever the morale at the time, so the total loss is binomial and does not depend
+   on the order the checks come in — which is what lets the optimiser reorder and re-mark legs freely
+   and still get an exact answer. The weather's automatic losses are certain, so they simply shift it.
+   Morale floors at 0; an army there fails every check it makes. */
+function moraleDist(start, checks, detLoss, max) {
+  const cap = max || RULES.MORALE.MAX;
+  const dist = new Array(cap + 1).fill(0);
+  const loss = binomDist(checks, RULES.MORALE.DOUBLES);
+  for (let k = 0; k < loss.length; k++) {
+    const m = Math.max(0, Math.min(cap, start - detLoss - k));
+    dist[m] += loss[k];
+  }
+  return dist;
+}
+// P(the army finishes at or above `floor`).
+function moraleAtLeast(start, checks, detLoss, floor, max) {
+  const d = moraleDist(start, checks, detLoss, max);
+  let p = 0;
+  for (let m = Math.max(0, floor); m < d.length; m++) p += d[m];
+  return p;
+}
+/* The most checks a march can carry and still finish at or above `floor` with at least `conf`
+   confidence. Monotone in the number of checks, so this counts up until it breaks; -1 means the
+   deterministic losses alone already put the army under, and no arrangement of legs can help. */
+function moraleCheckBudget(start, detLoss, floor, conf, max) {
+  if (moraleAtLeast(start, 0, detLoss, floor, max) < conf) return -1;
+  let n = 0;
+  while (n < 400 && moraleAtLeast(start, n + 1, detLoss, floor, max) >= conf) n++;
+  return n;
+}
+
+/* What the failed checks are likely to do. Unlike the morale loss this *does* depend on the order and
+   on the morale at the time of each roll — an army worn down by the first half of a march fails more
+   often in the second — so it is walked check by check over the running distribution of morale
+   rather than reduced to a binomial. Returns the chance of at least one failure, the expected
+   fraction of the army lost, and the odds of each result on the table.
+
+   `legs` is [{checks, plain, det}] in marching order. A `plain` check is one that can fail but
+   carries no doubles rider — the Hot weather checks — so it threatens the army without wearing it
+   down, and the two kinds cannot be added together. `poet` shifts the *consequence* two rows up the table
+   without changing whether the roll failed, which is what the trait says. */
+function moraleOutlook(start, legs, { poet = false, max = RULES.MORALE.MAX } = {}) {
+  const cap = max, zeros = () => new Array(cap + 1).fill(0);
+  /* Two distributions are carried, not one. `dist` is every path, and answers what morale the army
+     ends on. `clean` is only those paths that have not yet failed a check, and its total mass at the
+     end is the chance of coming through without a failure — which is *not* one minus the sum of the
+     per-check failure probabilities, because a march can fail twice and that sum double-counts it. */
+  let dist = zeros(), clean = zeros();
+  const s0 = Math.max(0, Math.min(cap, start));
+  dist[s0] = 1; clean[s0] = 1;
+  const byResult = {}; let expFails = 0, sizeLoss = 0, dets = 0;
+  const shift = poet ? RULES.MORALE.POET_BONUS : 0;
+  for (const leg of legs) {
+    if (leg.det) {                                  // certain losses land before the leg's checks
+      const nd = zeros(), nc = zeros();
+      for (let m = 0; m <= cap; m++) {
+        const to = Math.max(0, m - leg.det);
+        nd[to] += dist[m]; nc[to] += clean[m];
+      }
+      dist = nd; clean = nc;
+    }
+    for (let c = 0; c < (leg.checks || 0) + (leg.plain || 0); c++) {
+      // The morale-costing rolls first, then the plain ones; within a leg the order between them
+      // makes no difference to either answer, since both read the same 2d6 against the same morale.
+      const wears = c < (leg.checks || 0);
+      const nd = zeros(), nc = zeros();
+      for (let m = 0; m <= cap; m++) {
+        const pm = dist[m], pc = clean[m];
+        if (!pm && !pc) continue;
+        for (let r = 2; r <= 12; r++) {
+          const p = d2Prob(r);
+          if (!p) continue;
+          // The chance this total was rolled as doubles, given the total. Independent of whether the
+          // check passed: one roll, read twice.
+          const dbl = wears ? (D2_DOUBLE_WAYS[r] || 0) / D2_WAYS[r] : 0;
+          const to = Math.max(0, m - 1);
+          if (pm) {
+            const pr = pm * p;
+            if (r > m) {                            // failed: the roll is the result
+              const idx = Math.min(12, r + shift), con = RULES.CONSEQUENCES[idx];
+              byResult[idx] = (byResult[idx] || 0) + pr;
+              expFails += pr; sizeLoss += pr * (con.size || 0); dets += pr * (con.dets || 0);
+            }
+            nd[to] += pr * dbl; nd[m] += pr * (1 - dbl);
+          }
+          if (pc && r <= m) {                       // only a passed check keeps a path clean
+            const pr = pc * p;
+            nc[to] += pr * dbl; nc[m] += pr * (1 - dbl);
+          }
+        }
+      }
+      dist = nd; clean = nc;
+    }
+  }
+  return { anyFail: 1 - clean.reduce((a, b) => a + b, 0), expFails, sizeLoss, dets, byResult, dist };
+}
+
+/* Whether the Marching City tradition covers this column's forced marching: "if your army is more
+   than 6 miles long and has at least 1 wagon for every 30 infantry, you can force march on roads
+   without risking morale". All three facts are already known — the length from columnMiles, the ratio
+   from the boxes, and the road from the step. */
+function marchingCityCovers(o, colMiles, allRoad) {
+  if (!o.marchingCity || !allRoad) return false;
+  if (colMiles <= RULES.LONG_COLUMN.limit) return false;
+  const inf = o.army?.inf || 0;
+  return o.army?.wag * RULES.MORALE.MARCHING_CITY_WAGON_PER_INF >= inf;
+}

@@ -50,6 +50,47 @@ list says which stretches were which. The 6-mile column limit is exactly the two
 never binds a night march.
 Light infantry detachments move at normal (road) speed off-road and ignore the mountain penalty; an army with ≥⅓ light infantry ignores the *battle* rough-terrain penalty only.
 
+## Morale
+
+Base resting morale 9, maximum 12; a majority-peasant army rests at 6 with a maximum of 9.
+
+A morale check is **2d6 ≤ morale** — equal or under holds. A failed roll indexes the consequences
+table (2 mutiny · 3 mass desertion −30% · 4 defection ×2d3 · 5 major desertion −20% · 6 advance on pay
+· 7 defection ×1 · 8 desertion −10% · 9 detachments away · 10 camp followers +5% · 11 detachment away
+· 12 nothing). Forced marching and night marching each add a rider to the same roll: **on doubles,
+lose 1 morale** — a flat 1 in 6 whatever the army's morale.
+
+So one marching day's roll is read twice, and the calculator keeps the two apart:
+
+| | trigger | cost |
+|---|---|---|
+| Doubles rider | each IRL day of forced or night marching | −1 morale, p = 1/6 |
+| Failed check | roll over current morale | a result from the table |
+| Heatwave | each IRL day of **day** marching | −1 morale, certain |
+| Blizzard | each IRL day of any marching | −1 morale, certain |
+| Hot | day forced marching, or day marching over 60 mi | a check, no morale cost |
+
+A day that is both forced **and** by night rolls both checks. Part-days round up, per leg. Sailing is
+not marching and calls for nothing.
+
+The morale loss is a binomial in the number of checks and does not depend on the order they come in,
+which is what lets the optimiser rearrange legs freely and still be exact. The *failure* risk does
+depend on order — an army worn down by the first half of a march fails more often in the second — so
+it is walked check by check over the running distribution of morale rather than averaged. Traits:
+**Marching City** (over 6 miles long, ≥1 wagon per 30 infantry) drops the forced-march checks on
+road; **Poet** shifts a failed roll two rows up the consequences table without changing how often it
+fails; **Stubborn** applies only to battle and so does nothing to a march.
+
+With **Forced march** or **Night march** ticked the box stops meaning "the whole route" and starts
+meaning "where it pays": the legs to march hard are chosen as the fastest set that still leaves the
+army at or above its allowed floor with the certainty asked for, and those choices override any legs
+marked by hand. Where the floor is already out of reach the gentlest march is shown instead, and the
+card says so.
+
+Not modelled: recovery towards resting morale (1 per 20 IRL days), rest, supply, pay, battle, and the
+feedback from a consequence back into the march — a desertion shortens the column and would speed the
+army up, which is not a trade worth optimising into.
+
 ## Rivers
 
 - Minor rivers (1 px on the map) are fordable. Major rivers (3 px) can ONLY be crossed where a road crosses them — no fording, by anyone.

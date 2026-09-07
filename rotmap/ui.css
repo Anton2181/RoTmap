@@ -658,6 +658,50 @@ body.colsizing { cursor: col-resize; user-select: none; }
 .stepstbl tr.night td:last-child { box-shadow: inset -2px 0 0 var(--accent); }
 .stepstbl .nm { color: var(--accent); font-size: 9.5px; text-transform: uppercase; letter-spacing: .05em; }
 .routeout .nmnote { margin-top: var(--s1); color: var(--ink-2); font-size: var(--f2); }
+
+/* ---- the morale card ----------------------------------------------------
+   A distribution over the morale the army could finish on. One series, so no legend: the heading
+   names it, the floor is a labelled rule, and the split either side of the floor is summed in words
+   under the chart — colour is never carrying the meaning alone. Bars are thin with rounded tops
+   anchored to the baseline, a 2px gap between them, and the axis is recessive. */
+.moralecard { margin-top: var(--s4); padding-top: var(--s3); border-top: 1px solid var(--line); }
+.moralecard .mhead {
+  display: flex; justify-content: space-between; align-items: baseline; gap: var(--s2);
+  color: var(--ink-2); font-size: var(--f1); text-transform: uppercase; letter-spacing: .06em;
+}
+.moralecard .mspend { color: var(--ink-3); text-transform: none; letter-spacing: 0; }
+.moralecard .mnone { color: var(--ink-2); font-size: var(--f2); margin-top: var(--s2); }
+/* The headline: one number, large, with the question it answers beside it in ordinary text. */
+.moralecard .mbig { margin-top: var(--s2); font-size: var(--f5); font-weight: 600; letter-spacing: -.02em; }
+.moralecard .mbig.ok { color: var(--good); }
+.moralecard .mbig.no { color: var(--bad); }
+.moralecard .mbig span { font-size: var(--f2); font-weight: 400; color: var(--ink-2); letter-spacing: 0; }
+
+.moralecard .mchart {
+  display: flex; align-items: flex-end; gap: 2px; margin-top: var(--s4);
+  padding-bottom: var(--s1); border-bottom: 1px solid var(--line);
+}
+.moralecard .mbar { flex: 1 1 0; display: flex; flex-direction: column; align-items: center; gap: 3px; cursor: default; }
+.moralecard .mbar i { display: block; width: 100%; background: var(--accent); border-radius: var(--r1) var(--r1) 0 0; }
+.moralecard .mbar.under i { background: var(--bad); }
+.moralecard .mbar b { font-weight: 400; font-size: var(--f1); color: var(--ink-3); }
+.moralecard .mbar:hover i { filter: brightness(1.25); }
+.moralecard .mbar:hover b { color: var(--ink); }
+.moralecard .mval { font-size: 9.5px; color: var(--ink-2); white-space: nowrap; }
+
+.moralecard .mfoot { display: flex; align-items: center; gap: var(--s1); margin-top: var(--s2);
+                     color: var(--ink-2); font-size: var(--f1); flex-wrap: wrap; }
+.moralecard .mfoot .k { width: 8px; height: 8px; border-radius: 2px; margin-left: var(--s3); }
+.moralecard .mfoot .k:first-child { margin-left: 0; }
+.moralecard .mfoot .k.ok { background: var(--accent); }
+.moralecard .mfoot .k.no { background: var(--bad); }
+.moralecard .mwarn { margin-top: var(--s2); color: var(--warn); font-size: var(--f1); }
+
+.moralecard .mfail { margin-top: var(--s3); color: var(--ink-2); font-size: var(--f1); }
+.moralecard .mfail b { color: var(--ink); font-weight: 600; }
+.moralecard .mfail ul { margin: var(--s1) 0 0; padding: 0; list-style: none; }
+.moralecard .mfail li { display: flex; gap: var(--s2); color: var(--ink-3); padding: 1px 0; }
+.moralecard .mfail li span { flex: 0 0 42px; text-align: right; color: var(--ink-2); font-variant-numeric: tabular-nums; }
 .stepstbl td:nth-child(4), .stepstbl td:nth-child(5), .stepstbl td:nth-child(6) { text-align: right; font-variant-numeric: tabular-nums; }
 
 /* Whose settings the boxes below are showing — the group heading carries it, so the answer is
