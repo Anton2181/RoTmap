@@ -469,6 +469,14 @@
           <label class="field"><span>Wagons</span><input type="number" id="wag" value="80" step="10"></label>
           <label class="field"><span>Noncombatants</span><input type="number" id="non" value="2500" step="100"></label>
         </div>
+        <!-- Morale is as much a fact about this army as its wagons are, so it is entered with them.
+             What the march then does to it is shown under March, where the pace is chosen. -->
+        <div class="fields">
+          <label class="field" title="What the army has now. 9 is the usual resting morale; 12 the maximum."><span>Morale now</span><input type="number" id="morale" value="9" min="0" max="12" step="1"></label>
+          <label class="field" title="The lowest morale the army may be allowed to reach by the end of the route."><span>Allowed floor</span><input type="number" id="moraleMin" value="6" min="0" max="12" step="1"></label>
+          <label class="field" title="How sure of staying at or above the floor the commander wants to be. The pace is pushed up to this bar and no further."><span>Certainty %</span><input type="number" id="moraleConf" value="50" min="1" max="99" step="5"></label>
+          <label class="field" title="12 by default. A majority-peasant army has a maximum of 9 and a resting morale of 6."><span>Max morale</span><input type="number" id="moraleMax" value="12" min="1" max="12" step="1"></label>
+        </div>
         <div class="btnrow">
           <button class="btn" type="button" id="copyArmy" title="Copy this column and its conditions as text.">Copy column</button>
           <button class="btn" type="button" id="pasteArmy" title="Paste column settings. Unspecified values return to their defaults.">Paste column</button>
@@ -502,17 +510,10 @@
         </details>
       </div>
 
-      <!-- Morale sits between the march and the conditions because it is the thing that limits how
-           hard the march may be ordered. With either pace box ticked, these four numbers are what the
-           optimiser solves against: it spends morale to buy speed, up to the risk allowed here. -->
+      <!-- What the march costs the army, sitting between the pace that spends it and the conditions
+           that shape it. The numbers it reads are entered with the column above. -->
       <div class="group" id="moraleGroup">
-        <h2>Morale</h2>
-        <div class="fields">
-          <label class="field" title="What the army has now. 9 is the default resting morale; 12 the usual maximum."><span>Current</span><input type="number" id="morale" value="9" min="0" max="12" step="1"></label>
-          <label class="field" title="The lowest morale the army may be allowed to reach by the end of the route."><span>Allowed floor</span><input type="number" id="moraleMin" value="6" min="0" max="12" step="1"></label>
-          <label class="field" title="How sure the commander wants to be of staying at or above the floor. The optimiser spends morale up to this bar and no further."><span>Certainty %</span><input type="number" id="moraleConf" value="50" min="1" max="99" step="5"></label>
-          <label class="field" title="12 by default. A majority-peasant army has a maximum of 9 and a resting morale of 6."><span>Maximum</span><input type="number" id="moraleMax" value="12" min="1" max="12" step="1"></label>
-        </div>
+        <h2>Morale <span class="forwhom" id="moraleFor"></span></h2>
         <div id="moralePanel"></div>
         <details class="hint">
           <summary>How morale is spent</summary>
@@ -521,13 +522,13 @@
           is both forced and by night rolls both checks. Part-days round up, per leg.</p>
           <p>The same roll is read a second time: <b>over</b> the army's morale is a failed check, and
           the roll indexes the consequences table — desertion, defection, at worst mutiny. That risk
-          grows as morale falls, so it is walked check by check rather than averaged, and reported
-          under the histogram. It is not what the optimiser trades against; morale is.</p>
-          <p>With <b>Forced march</b> or <b>Night march</b> ticked the pace is no longer applied to
-          the whole route. Instead the legs to march hard are chosen for you — the fastest set that
-          still keeps the army at or above the floor with the certainty asked for — and those choices
-          replace any legs you marked by hand. Untick both to mark legs yourself again.</p>
-          <p>Not modelled: recovery towards resting morale (1 per 20 IRL days), rest, supply, pay, and
+          grows as morale falls, so it is walked check by check rather than averaged. It is not what
+          the pace is traded against; morale is.</p>
+          <p>Ticking <b>Forced march</b> or <b>Night march</b> does not apply that pace to the whole
+          route. It permits it, and the legs to march hard are then chosen for you — the fastest set
+          that still keeps the army at or above the floor with the certainty asked for. Those choices
+          replace any legs you marked by hand; untick both to mark legs yourself again.</p>
+          <p>Not modelled: recovery towards resting morale (1 per 20 IRL days), rest, supply, pay and
           battle. The army that sets out is the army that arrives, minus what the table takes.</p>
         </details>
       </div>
@@ -535,8 +536,8 @@
       <div class="group" id="condGroup">
         <h2>Conditions</h2>
         <!-- The detail lives in the tooltips; the labels stay short enough to scan. -->
-        <label class="chk" title="Use forced pace for the whole route. Right-click a step to force only part of it."><input type="checkbox" id="forced"> Forced march (whole route)</label>
-        <label class="chk" title="Marches by night instead of by day: 6 mi/night on roads, 12 forced. Slower than daylight, but the heat rules leave it alone. Roads only — roadless stretches are still marched by day. Right-click a step to march by night for part of a route."><input type="checkbox" id="night"> Night march (whole route)</label>
+        <label class="chk" title="Permit the forced pace. Which legs use it is chosen to fit the morale allowed, and overrides legs marked by hand."><input type="checkbox" id="forced"> Forced march</label>
+        <label class="chk" title="Permit marching by night: 6 mi/night on roads, 12 forced. Slower than daylight, but the heat rules leave it alone. Roads only — a leg with no road path is marched by day. Which legs use it is chosen to fit the morale allowed."><input type="checkbox" id="night"> Night march</label>
         <label class="chk" title="May land anywhere. Embarking still requires a port."><input type="checkbox" id="marines"> Marines — land anywhere</label>
         <label class="chk" title="May secure ships at a sea or major-river port for 7 IRL days."><input type="checkbox" id="embark" checked> Allow securing a fleet</label>
         <label class="chk" title="Starts with ships. Re-embarking costs 1 day; marching inland leaves the ships behind."><input type="checkbox" id="fleet"> Start as fleet</label>

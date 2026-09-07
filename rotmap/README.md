@@ -556,7 +556,8 @@ because which leg is eating the budget is what you can do something about. A hex
 march wants a road; one held back by the news wants a courier posted, not a garrison moved.
 
 The march is costed **inward**, in the direction it is actually made, which is not the same
-calculation as the outward one every other mode does. A hex is paid for by the step that enters it,
+calculation as the outward one every other mode does. Every hex but the one a march sets out from is
+paid for by the step that enters it,
 so a march solved outward from the origin never pays for the hex it is aimed at — and on a fortress
 in the mountains that is a whole day at half pace, unpaid, on precisely the ground fortresses stand on. So
 this mode runs the movement graph backwards, recovering each node's incoming moves from its possible
@@ -586,7 +587,8 @@ They snap to the line *currently* being drawn too, which is what lets you draw a
 
 Coasts are **routable subhexes**, not just paint. Splitting a hex yields two (or more) co-equal regions — each land region and each sea region is its own first-class node in the movement graph (a hex can have several, e.g. two land strips separated by a sea inlet). Waypoint markers are centred on their region. Hovering highlights the exact subhex under the cursor (tinted region + "land subhex"/"sea subhex" in the tooltip). In Route mode, clicking inside a region adds a waypoint for *that* region (filled = sea, ring = land).
 
-One hex is one hex: the cost of a hex is paid by the step that crosses *into* it, so moving between two subhexes of the same hex — a bay opening into a channel, a river mouth — is free and shows as `sail (within hex)` for 0 days. Charging a full hex again there would double-count the crossing, and a hex entered through its sea half and left from its river half must still cost exactly one hex.
+One hex is one hex: except for the hex a march sets out from — which is paid for by the step that
+carries the column out of it, priced the way it leaves — the cost of a hex is paid by the step that crosses *into* it, so moving between two subhexes of the same hex — a bay opening into a channel, a river mouth — is free and shows as `sail (within hex)` for 0 days. Charging a full hex again there would double-count the crossing, and a hex entered through its sea half and left from its river half must still cost exactly one hex.
 
 Because each region is its own node, **naval subhexes block land movement**: an army can't march straight across a sea inlet — it must go around it (through connected land, possibly via a neighbouring hex) or embark at a coastal port. Marching between two land regions of adjacent hexes is only allowed where those land regions actually meet along the shared edge. The step breakdown labels each hex "Sea subhex" / "Land subhex".
 

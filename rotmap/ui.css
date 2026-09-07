@@ -664,7 +664,8 @@ body.colsizing { cursor: col-resize; user-select: none; }
    names it, the floor is a labelled rule, and the split either side of the floor is summed in words
    under the chart — colour is never carrying the meaning alone. Bars are thin with rounded tops
    anchored to the baseline, a 2px gap between them, and the axis is recessive. */
-.moralecard { margin-top: var(--s4); padding-top: var(--s3); border-top: 1px solid var(--line); }
+/* In the side panel under its own heading, so no rule and no top margin of its own. */
+.moralecard { margin-top: var(--s1); }
 .moralecard .mhead {
   display: flex; justify-content: space-between; align-items: baseline; gap: var(--s2);
   color: var(--ink-2); font-size: var(--f1); text-transform: uppercase; letter-spacing: .06em;

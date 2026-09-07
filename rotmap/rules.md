@@ -2,6 +2,15 @@
 
 Scale: 1 hex = 30 miles. 1 IRL day = 5 in-game days. Normal march = 4 marching days per 5; forced = 5 per 5.
 
+**Counting hexes.** A march pays for every hex it stands in, the one it sets out from included: a
+journey through N hexes costs N crossings, not N−1. Each hex but the first is paid for by the step
+that enters it; the first is paid for by the step that leaves it, priced the way the column departs —
+on the road if it takes one, at that hex's own terrain, and at the sailing rate if it puts out onto
+the water. Moving between subhexes of one hex — boarding a ship, crossing its own bridge — is not a
+crossing and costs nothing, and a route that begins and ends in the same hex costs nothing at all.
+Only the beginning of a march is charged this way: a waypoint partway along was already paid for by
+the leg that arrived at it, so adding waypoints to a route never changes what it costs.
+
 ## Land speeds (miles per marching day → miles per IRL day)
 
 | Situation | mi/day | mi/IRL day |
@@ -150,7 +159,7 @@ and these are two orders — news lands during a day, and the column forms up an
 So the smallest possible answer for any hex but the origin's own is 2 days, and half a day of riding
 plus half a day of marching is 2, not 1.
 
-The march is costed **inward**. This matters: a hex is paid for by the step that enters it, so a
+The march is costed **inward**. This matters: every hex but the first is paid for by the step that enters it, so a
 march solved outward from the siege never pays for the besieged hex itself and pays instead for
 wherever it stops. On a fortress in the mountains that is a whole day at half pace, always in the
 player's favour, and on exactly the terrain fortresses are built on.

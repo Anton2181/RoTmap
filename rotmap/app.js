@@ -4887,6 +4887,7 @@ function syncRouteForm() {
   // thing stopping one set of boxes from looking like it means two different things at once.
   const setFor = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
   setFor('settingsFor', rt ? rt.name : 'no route — defaults');
+  setFor('moraleFor', rt ? rt.name : og ? og.name : '');
   setFor('isoFor', og ? og.name : 'no origin — defaults');
   syncingForm = false;
   syncIsoForm();
@@ -5738,8 +5739,37 @@ const SK_RI = SKW.af + SKW.sh + SKW.g, SK_AF = SKW.sh + SKW.g, SK_H = SKW.ri + S
 const sk = (h, ri, af, sh, g) => ((((h << SKW.ri | ri) << SKW.af | af) << SKW.sh | sh) << SKW.g) | g;
 const skDec = k => ({ h: k >>> SK_H, ri: (k >>> SK_RI) & ((1 << SKW.ri) - 1), af: (k >>> SK_AF) & 1 });
 const MAX_REGIONS = 1 << SKW.ri; // regions per hex the packing can address
+/* The hex a column sets out from is a hex it has to cross. Every other hex on a march is paid for by
+   the step that enters it, which leaves the first one free — and free is wrong: an army standing in
+   Hills with a road under it still has thirty miles of its own ground to cover before it reaches the
+   next hex's boundary. So the first move that actually *leaves* the origin hex carries that crossing
+   as well, priced the way the column is setting out: on the road if it takes one, at the origin
+   region's own terrain, under the same pace, weather and column — and at the sailing rate if the
+   march begins by putting out onto the water.
+
+   Charged on departure rather than at the seed, because what it costs is not known until the way out
+   is chosen: leaving along a road and leaving cross-country are different prices for the same hex,
+   and seeding a single number would have to guess. Shuffling about *inside* the origin hex — boarding
+   a ship, crossing its own bridge — is not a crossing and stays free, so a column that embarks and
+   then sails pays the hex once, on the way out, at the rate it left by.
+
+   `dep` is folded into the departing step's own cost, so the step list still sums to the total and
+   the day the column spends crossing its own hex is a day the morale checks can see. */
+// What crossing the hex `h`/`ri` costs a column setting out from it by the move described — afloat
+// means it sails out, and the note says whether it leaves along a road. Shared by both searches so
+// the forward march and the backwards relief cannot come to different answers about the same ground.
+function departHexCost(h, ri, afloat, note, o) {
+  if (afloat) return SHIP_IRL;
+  const road = /^(road|trade route)/.test(note || '');
+  const mpi = landMilesPerIRL({ road, terrain: regionTerrain(h, ri), forced: o.forced, night: o.night,
+                                liThird: o.liThird, cavOnly: o.cavOnly, weather: o.weather,
+                                colMiles: o.colMiles });
+  return mpi > 0 ? RULES.HEX_MILES / mpi : Infinity;
+}
+
 function dijkstraField(fromH, fromRi, af0, sh0, o) {
   const dist = new Map(), prev = new Map();
+  const departCost = (afloat, note) => departHexCost(fromH, fromRi, afloat, note, o);
   dist.set(sk(fromH, fromRi, af0, sh0, 0), 0);
   const pq = [[0, fromH, fromRi, af0, sh0, 0]];
   while (pq.length) {
@@ -5749,12 +5779,22 @@ function dijkstraField(fromH, fromRi, af0, sh0, o) {
     const k1 = sk(h, ri, af, sh, g);
     if (d > (dist.get(k1) ?? Infinity)) continue;
     for (const mv of expand(h, ri, af, sh, g, o)) {
-      const k2 = sk(mv.toH, mv.toRi, mv.af, mv.ships, mv.g), nd = d + mv.irl;
+      // The one move that pays for the origin hex: the one that carries the column out of it.
+      /* Only the hex a *march* sets out from is paid for on the way out, and a route is solved a leg
+         at a time from each waypoint in turn — so charging every field's own origin would bill each
+         interior waypoint twice, once for the leg that enters it and once for the leg that leaves.
+         `chargeDepart` is how the caller says which field is the real beginning. */
+      const leaving = o.chargeDepart !== false && h === fromH && mv.toH !== fromH;
+      const dep = leaving ? departCost(af, mv.note) : 0;
+      const stepIrl = mv.irl + dep;
+      const k2 = sk(mv.toH, mv.toRi, mv.af, mv.ships, mv.g), nd = d + stepIrl;
       if (nd < (dist.get(k2) ?? Infinity)) {
         dist.set(k2, nd);
-        prev.set(k2, { k: k1, note: mv.note, irl: mv.irl, chain: mv.chain, geom: mv.geom,
-                       geomKind: mv.geomKind,
-                       hexes: mv.hexes, miles: mv.miles });
+        prev.set(k2, { k: k1, irl: stepIrl, chain: mv.chain, geom: mv.geom, geomKind: mv.geomKind,
+                       note: dep ? (mv.note || '') + ', +1 hex setting out' : mv.note,
+                       // The origin hex counts towards the distance as well as the time.
+                       hexes: dep ? (mv.hexes ?? 1) + 1 : mv.hexes,
+                       miles: dep ? (mv.miles ?? RULES.HEX_MILES) + RULES.HEX_MILES : mv.miles });
         pq.push([nd, mv.toH, mv.toRi, mv.af, mv.ships, mv.g]);
       }
     }
@@ -6030,8 +6070,8 @@ function moraleCardHTML(o, r) {
     return v.toFixed(v < 10 || v > 90 ? 1 : 0) + '%';
   };
   if (!risk)
-    return `<div class="moralecard"><div class="mhead">Morale</div>` +
-           `<div class="mnone">Nothing on this route calls for a check. The army arrives at ${o.morale}.</div></div>`;
+    return `<div class="moralecard"><div class="mnone">Nothing on this route calls for a check — ` +
+           `the army arrives at ${o.morale}.</div></div>`;
 
   // Only the reachable range is drawn: bars for morale the army cannot finish on are not information.
   let lo = 0, hi = dist.length - 1;
@@ -6055,7 +6095,7 @@ function moraleCardHTML(o, r) {
   const results = Object.entries(out.byResult).map(([k, p]) => [+k, p])
     .filter(([, p]) => p > 0.0005).sort((a, b) => a[0] - b[0]).slice(0, 4);
   return `<div class="moralecard">` +
-    `<div class="mhead">Morale after this march` +
+    `<div class="mhead">after this march` +
       `<span class="mspend">${mo.checks} check${mo.checks === 1 ? '' : 's'}` +
       `${mo.det ? ` · −${mo.det} certain` : ''}${mo.plain ? ` · ${mo.plain} heat check${mo.plain === 1 ? '' : 's'}` : ''}</span></div>` +
     `<div class="mbig ${met ? 'ok' : 'no'}">${pct(pAt)} <span>at or above ${o.moraleMin}` +
@@ -6094,11 +6134,12 @@ function routeLeg(rt, o) {
     for (const cur of dp.values()) {
       const state = cur.state;
       for (const mode of modes) {
-        const lo = mode ? { ...o, forced: mode.forced, night: mode.night } : legOpts(o, wps[i]);
+        let lo = mode ? { ...o, forced: mode.forced, night: mode.night } : legOpts(o, wps[i]);
         // The morale a leg costs is charged whether or not the paces are being solved for: a heatwave
         // takes its point a day from a column that is merely walking, and a leg marked by hand rolls
         // its checks like any other. Without the optimiser the mode is simply whatever this leg is.
         const eff = mode || { forced: !!lo.forced, night: !!lo.night };
+        lo = i === 0 ? lo : { ...lo, chargeDepart: false };   // only the first leg sets out
         // Roads first for a night march; daylight only where the road runs out (see landStep).
         let legs = eff.night
           ? dijkstraLeg(wps[i].h, wps[i].ri | 0, state >> 1, state & 1, wps[i + 1].h, wps[i + 1].ri | 0, { ...lo, roadsOnly: true })
@@ -6517,7 +6558,12 @@ function optimiseRouteOrder(rt, mode) {
   // Wait and route halts switched off, this naturally reduces to one order rounded at the finish.
   // A pace mark says "from here onwards", so it belongs to the waypoint and travels with it when the
   // order changes — a leg is solved at the pace of the stop it sets out from.
-  const oAt = k => legOpts(o, wps[k]);
+  /* Costed without the setting-out charge. The matrix exists to compare *orders*, and every order
+     pays for exactly one origin hex — the one it begins at — which routeLeg then bills for real. With
+     the start pinned that is a constant and the ordering is unaffected; with both ends free it can
+     differ by one hex's crossing between two arrangements, which is the one place this is a heuristic
+     rather than exact. Charging it per field instead would bill every waypoint in every order. */
+  const oAt = k => ({ ...legOpts(o, wps[k]), chargeDepart: false });
   const statesAt = k => {
     const f = forcedAf(region(wps[k].h, wps[k].ri | 0));
     return STATES.filter(([af]) => f === null || af === f).map(([af, sh]) => af * 2 + sh);
@@ -6708,7 +6754,7 @@ function routeProbeFields() {
   }
   // A pace mark sits on the waypoint its stretch starts *from*, so a marked last leg means the leg
   // being previewed carries it too — solved at that pace, not rescaled after the fact.
-  const lo = legOpts(o, last);
+  const lo = { ...legOpts(o, last), chargeDepart: rt.wps.length <= 1 };
   for (const [state, cost] of ends)
     routeProbe.fields.push({ cost, F: dijkstraField(lh, lri, state >> 1, state & 1, lo) });
   return routeProbe.fields;
@@ -6974,7 +7020,10 @@ function reliefMarch(toH, toRi, o, maxD) {
             const k = sk(mv.toH, mv.toRi, mv.af, mv.ships, mv.g);
             let a = inE.get(k);
             if (!a) inE.set(k, a = []);
-            a.push([from, mv.irl]);
+            // The third figure is what this hex costs the column that *starts* here and leaves by
+            // this move. It is carried but never propagated: only the first hex of a march is paid
+            // for on the way out, every later one having been paid for on the way in.
+            a.push([from, mv.irl, mv.toH === p ? 0 : departHexCost(p, ri, af, mv.note, o)]);
           }
         }
       }
@@ -6989,7 +7038,7 @@ function reliefMarch(toH, toRi, o, maxD) {
      a column that marches in and one that lands in from the river have both relieved the place. What
      it cannot do is count a fleet sitting in the water as an arrival — that state is only seeded when
      the besieged subhex is itself navigable, which `forcedAf` decides. */
-  const dist = new Map(), heap = [];
+  const dist = new Map(), depDist = new Map(), heap = [];
   const rs0 = regionsOf(toH), f0 = forcedAf(rs0[toRi | 0] || rs0[0]);
   const gs0 = new Set([0]);
   for (const v of S.adj.hexRoadGroup.get(toH)?.values() || []) gs0.add(v | 0);
@@ -7006,9 +7055,16 @@ function reliefMarch(toH, toRi, o, maxD) {
     if (d > (dist.get(k) ?? Infinity)) continue;
     if (d > maxD) continue;
     ensure(h);                                   // in-edges of everything in this hex, computed once
-    for (const [from, irl] of inE.get(k) || []) {
+    for (const [from, irl, dep] of inE.get(k) || []) {
       const nd = d + irl;
       if (nd < (dist.get(from) ?? Infinity)) { dist.set(from, nd); hpush(heap, [nd, from, from >>> SK_H]); }
+      /* `d` is settled when a node is popped, so this minimises (this move + crossing the hex it
+         leaves + the rest of the march) over every way out of `from` — which is exactly the march a
+         garrison stationed there would make, departure included. Kept apart from `dist` because that
+         is what propagates: charge the crossing there and every hex in between would pay it twice,
+         once entering and once leaving. */
+      const withDep = d + irl + dep;
+      if (withDep < (depDist.get(from) ?? Infinity)) depDist.set(from, withDep);
     }
   }
   /* Read off per subhex, from the state a force *stationed* there would set out in — the same start
@@ -7025,7 +7081,10 @@ function reliefMarch(toH, toRi, o, maxD) {
     regionsOf(h).forEach((r, ri) => {
       if (ri >= MAX_REGIONS || !isoHolds(h, ri, o)) return;   // no ships, no billet at sea
       const [af0, sh0] = startState(h, ri, o);
-      const v = dist.get(sk(h, ri, af0, sh0, 0));
+      const key = sk(h, ri, af0, sh0, 0);
+      // Departure-inclusive: a garrison marching to the relief crosses its own hex first. The bare
+      // distance is the fallback for the besieged hex itself, which sets out from nowhere.
+      const v = depDist.get(key) ?? dist.get(key);
       if (v !== undefined && v <= maxD) best.set(nk(h, ri), v);
     });
   }
@@ -8363,11 +8422,20 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
   renderRouteList(results);
   syncRouteForm();
   const rt = S.routes[S.activeRoute], r = results[S.activeRoute];
-  if (!rt) { out.innerHTML = ''; return; }
-  if (rt.wps.length < 2) { out.innerHTML = '<div class="hint">Add a destination hex.</div>'; return; }
+  /* The morale card is a panel of its own now rather than a tail on the readout, so it has to be
+     written on every exit from here — including the ones that give up early. Left alone it would go
+     on showing the last route that worked, which is the one thing a card about risk must not do. */
+  const showMorale = html => { const mp = document.getElementById('moralePanel'); if (mp) mp.innerHTML = html; };
+  if (!rt) { out.innerHTML = ''; showMorale('<div class="hint">No route yet.</div>'); return; }
+  if (rt.wps.length < 2) {
+    out.innerHTML = '<div class="hint">Add a destination hex.</div>';
+    showMorale('<div class="hint">Add a destination hex.</div>');
+    return;
+  }
   if (r.fail) {
     out.innerHTML = `<div class="err">${rt.name}: no route between hex ${r.fail[0]} and hex ${r.fail[1]} with these settings. ` +
       `Check water access, trade routes, river crossings, and weather.</div>`;
+    showMorale('<div class="hint">No route to cost.</div>');
     return;
   }
   const ord = orderedOf(rt, r);
@@ -8430,6 +8498,7 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
       `${ord.waits ? ` + ${ord.waits} d waiting` : ''}` +
       `${ord.waste > 0.05 ? ` — <span class="warn">${ord.waste.toFixed(1)} d wasted</span>` : ''}</td></tr>`
     : '';
+  showMorale(moraleCardHTML(o, r));
   out.innerHTML =
     `<div class="big" style="color:${rt.color}">${rt.name}: ${ord ? ord.days + ' IRL days' : r.irl.toFixed(1) + ' IRL days'} ` +
     `<span style="color:#9aa4b2">(${r.irl.toFixed(1)} marched${ord?.waits ? ` + ${ord.waits} waiting` : ''} · ${game.toFixed(0)} in-game)</span></div>` +
@@ -8460,7 +8529,6 @@ function computeRoute({ preview = false, previewIso = false } = {}) {
              `${byDay ? `, ${byDay} off-road by day (no night marching off-road)` : ''}. ` +
              `2-in-6 wrong turn at each road fork is not costed.</div>`;
     })() +
-    moraleCardHTML(o, r) +
     `<table>${wasteRow}<tr><td>Distance</td><td>${r.hexes} hexes ≈ ${Math.round(r.miles ?? r.hexes * RULES.HEX_MILES)} mi</td></tr>` +
     `<tr><td>Column</td><td>${o.colMiles.toFixed(1)} mi${o.army.logistician ? ' <span class="dim">(Logistician — half length)</span>' : ''}` +
     `${o.colMiles > RULES.LONG_COLUMN.limit ? ' <span class="warn">(over 6 mi — road pace halved, off-road with it)</span>' : ''}</td></tr>${paceRow}</table>` +
@@ -12235,7 +12303,7 @@ function placeSettings(pane) {
              : pane === 'route' ? 'routeSettingsSlot' : 'settingsPark');
   const park = document.getElementById('settingsPark');
   if (!slot || !park) return;
-  for (const id of ['colGroup', 'marchGroup', 'condGroup']) {
+  for (const id of ['colGroup', 'marchGroup', 'moraleGroup', 'condGroup']) {
     const g = document.getElementById(id);
     if (g && g.parentElement !== slot) slot.appendChild(g);
   }
